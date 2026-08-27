@@ -89,7 +89,9 @@ __declspec(dllexport) int dlssnr_call_last_create = 0;
 __declspec(dllexport) void *dlssnr_call_create(const wchar_t *snippetPath, const wchar_t *dataPath,
                                                ID3D12Device *device, ID3D12GraphicsCommandList *cmd,
                                                void *capabilityParams, unsigned int width,
-                                               unsigned int height, int preset) {
+                                               unsigned int height, int preset, float intensity,
+                                               int style, float localStructure, float localTone,
+                                               float skinStructure, int useAutoMask) {
     if (!loadSnippet(snippetPath) || !capabilityParams) {
         return nullptr;
     }
@@ -108,6 +110,16 @@ __declspec(dllexport) void *dlssnr_call_create(const wchar_t *snippetPath, const
     if (preset != 0) {
         setUInt(capabilityParams, "DLSSNR.Hint.Render.Preset", (unsigned int) preset);
     }
+
+    // The tuning has to be here rather than at evaluate. Everything this sets before create takes
+    // effect; everything set only at evaluate is ignored, which is why none of these controls did
+    // anything for a long time. The model reads them once, when it builds the feature.
+    setFloat(capabilityParams, "DLSSNR.Intensity", intensity);
+    setUInt(capabilityParams, "DLSSNR.Style", (unsigned int) style);
+    setFloat(capabilityParams, "DLSSNR.LocalStructureStrength", localStructure);
+    setFloat(capabilityParams, "DLSSNR.LocalToneStrength", localTone);
+    setFloat(capabilityParams, "DLSSNR.SkinStructureStrength", skinStructure);
+    setUInt(capabilityParams, "DLSSNR.UseAutoMask", (unsigned int) useAutoMask);
     void *handle = nullptr;
     dlssnr_call_last_create = g_snip.create(cmd, 18, capabilityParams, &handle);
     return handle;

@@ -5832,15 +5832,15 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
 
         ImGui::SeparatorText("Model");
 
+        ImGui::TextUnformatted("Read when the model is built, so a change rebuilds it after a moment.");
+
         int preset = (int) config->DlssNrPreset.value_or_default();
         if (ImGui::SliderInt("Model preset", &preset, 0, 8))
             config->DlssNrPreset = (uint32_t) preset;
 
         ShowHelpMarker("0 leaves the choice to the model."
                        "\n\nUndocumented, and not the same scale as the super resolution or ray"
-                       "\nreconstruction presets -- the same number means something different here."
-                       "\n\nBaked in when the model is created, so it takes effect on the next restart,"
-                       "\nunlike everything else in this panel.");
+                       "\nreconstruction presets -- the same number means something different here.");
 
         int style = (int) config->DlssNrStyle.value_or_default();
         if (ImGui::SliderInt("Style", &style, 0, 8))

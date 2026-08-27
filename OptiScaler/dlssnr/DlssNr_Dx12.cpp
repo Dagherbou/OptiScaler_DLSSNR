@@ -17,7 +17,8 @@ namespace
 // contain "nvngx.dll", so the calls are made from a small library named for exactly that reason and
 // shipped beside OptiScaler; see nvngx.dll_dlssnr.dll.
 using PFN_NrCreate = void*(__cdecl*) (const wchar_t*, const wchar_t*, ID3D12Device*,
-                                      ID3D12GraphicsCommandList*, void*, unsigned int, unsigned int, int);
+                                      ID3D12GraphicsCommandList*, void*, unsigned int, unsigned int, int,
+                                      float, int, float, float, float, int);
 using PFN_NrEvaluate = int(__cdecl*) (ID3D12GraphicsCommandList*, void*, void*, ID3D12Resource*,
                                       ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, unsigned int,
                                       unsigned int, unsigned int, unsigned int, int, int, float, int,
@@ -74,6 +75,16 @@ struct NrState
     unsigned int guideWidth = 0;
     unsigned int guideHeight = 0;
     bool guidesReady = false;
+
+    // The values the live feature was created with, and when a difference from them was first seen.
+    unsigned int builtPreset = 0;
+    float builtIntensity = 0.0f;
+    unsigned int builtStyle = 0;
+    float builtLocalStructure = 0.0f;
+    float builtLocalTone = 0.0f;
+    float builtSkinStructure = 0.0f;
+    bool builtAutoMask = false;
+    unsigned long long settledAt = 0;
 
     // Once something fails there is no recovering it mid-session, and retrying every frame turns a
     // failure into a crash. It stays off and says why.
@@ -351,6 +362,46 @@ ID3D12Resource* CloneGuideAlways(ID3D12Device* device, ID3D12GraphicsCommandList
     return *clone;
 }
 
+// A change has to hold still before it is acted on: a slider being dragged reports a new value every
+// frame, and each one would otherwise mean a new model.
+constexpr unsigned long long kSettleFrames = 30;
+
+bool TuningMatchesFeature(const Config& cfg)
+{
+    return g_nr.builtPreset == cfg.DlssNrPreset.value_or_default() &&
+           g_nr.builtIntensity == cfg.DlssNrIntensity.value_or_default() &&
+           g_nr.builtStyle == cfg.DlssNrStyle.value_or_default() &&
+           g_nr.builtLocalStructure == cfg.DlssNrLocalStructure.value_or_default() &&
+           g_nr.builtLocalTone == cfg.DlssNrLocalTone.value_or_default() &&
+           g_nr.builtSkinStructure == cfg.DlssNrSkinStructure.value_or_default() &&
+           g_nr.builtAutoMask == cfg.DlssNrAutoMask.value_or_default();
+}
+
+void RecordBuiltTuning(const Config& cfg)
+{
+    g_nr.builtPreset = cfg.DlssNrPreset.value_or_default();
+    g_nr.builtIntensity = cfg.DlssNrIntensity.value_or_default();
+    g_nr.builtStyle = cfg.DlssNrStyle.value_or_default();
+    g_nr.builtLocalStructure = cfg.DlssNrLocalStructure.value_or_default();
+    g_nr.builtLocalTone = cfg.DlssNrLocalTone.value_or_default();
+    g_nr.builtSkinStructure = cfg.DlssNrSkinStructure.value_or_default();
+    g_nr.builtAutoMask = cfg.DlssNrAutoMask.value_or_default();
+}
+
+// Waits for every list this has submitted. Releasing the feature before that is what took the game down
+// each of the previous times, and this is the first place with the means to avoid it.
+void WaitForAllSubmitted()
+{
+    if (g_nr.presentFence == nullptr || g_nr.presentFenceNext == 0)
+        return;
+
+    if (g_nr.presentFence->GetCompletedValue() >= g_nr.presentFenceNext)
+        return;
+
+    if (SUCCEEDED(g_nr.presentFence->SetEventOnCompletion(g_nr.presentFenceNext, g_nr.presentFenceEvent)))
+        WaitForSingleObject(g_nr.presentFenceEvent, 1000);
+}
+
 bool EnsurePresentList(ID3D12Device* device)
 {
     if (g_nr.presentList != nullptr)
@@ -512,8 +563,11 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
         g_nr.feature =
             g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                        device, cmdList, g_nr.capabilityParams, width, height,
-                        (int) cfg.DlssNrPreset.value_or_default());
+                        device, cmdList, g_nr.capabilityParams, width, height, (int) cfg.DlssNrPreset.value_or_default(),
+                        cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
+                        cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
+                        cfg.DlssNrSkinStructure.value_or_default(),
+                        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0);
 
         if (g_nr.feature == nullptr)
         {
@@ -529,6 +583,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         g_nr.width = width;
         g_nr.height = height;
         g_nr.reset = true;
+        RecordBuiltTuning(cfg);
         LOG_INFO("DLSS-NR running at {}x{}, guides {}x{}", width, height, guideWidth, guideHeight);
     }
 
@@ -777,6 +832,28 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         return;
     }
 
+    // A tuning change means a new model, since the values are only read when one is built.
+    if (g_nr.feature != nullptr && !TuningMatchesFeature(cfg))
+    {
+        if (g_nr.settledAt == 0)
+            g_nr.settledAt = g_frames;
+
+        if (g_frames - g_nr.settledAt >= kSettleFrames)
+        {
+            WaitForAllSubmitted();
+            g_nr.release(g_nr.feature);
+            g_nr.feature = nullptr;
+            g_nr.settledAt = 0;
+            LOG_INFO("DLSS-NR rebuilding for changed tuning");
+        }
+    }
+    else
+    {
+        g_nr.settledAt = 0;
+    }
+
+    ++g_frames;
+
     const unsigned int slot = backBufferIndex % kPresentAllocators;
     ID3D12CommandAllocator* allocator = g_nr.presentAllocators[slot];
 
@@ -809,8 +886,11 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
 
         g_nr.feature =
             g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                        device, cmdList, g_nr.capabilityParams, width, height,
-                        (int) cfg.DlssNrPreset.value_or_default());
+                        device, cmdList, g_nr.capabilityParams, width, height, (int) cfg.DlssNrPreset.value_or_default(),
+                        cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
+                        cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
+                        cfg.DlssNrSkinStructure.value_or_default(),
+                        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0);
 
         if (g_nr.feature == nullptr)
         {
@@ -827,8 +907,11 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         g_nr.width = width;
         g_nr.height = height;
         g_nr.reset = true;
-        LOG_INFO("DLSS-NR running on the finished frame at {}x{}, guides {}x{}", width, height,
-                 g_nr.guideWidth, g_nr.guideHeight);
+        RecordBuiltTuning(cfg);
+        LOG_INFO("DLSS-NR running on the finished frame at {}x{}, guides {}x{} (intensity {}, style {}, "
+                 "local structure {}, local tone {}, skin {})",
+                 width, height, g_nr.guideWidth, g_nr.guideHeight, g_nr.builtIntensity, g_nr.builtStyle,
+                 g_nr.builtLocalStructure, g_nr.builtLocalTone, g_nr.builtSkinStructure);
     }
 
     // The frame is already display-referred here -- it has been through the game's own tonemapper --
