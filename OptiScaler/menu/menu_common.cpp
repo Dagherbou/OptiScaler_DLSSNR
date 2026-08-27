@@ -5792,6 +5792,24 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
         ImGui::Spacing();
         ImGui::PushItemWidth(220.0f * ctx.menuResScale);
 
+        ImGui::SeparatorText("Where it runs");
+
+        static const char* injectNames[] = { "Before frame generation", "Finished frame (better image)" };
+        int injectPoint = (int) config->DlssNrInjectPoint.value_or_default();
+        if (ImGui::Combo("Inject point", &injectPoint, injectNames, IM_ARRAYSIZE(injectNames)))
+            config->DlssNrInjectPoint = (uint32_t) injectPoint;
+
+        ShowHelpMarker("Finished frame: the model sees the picture after the game's own tonemapper,"
+                       "\nwhich is exactly what it was trained on, and its answer is used as it comes."
+                       "\nCosts a run per presented frame, so roughly double with frame generation, and"
+                       "\neach generated frame is enhanced on its own."
+                       "\n\nBefore frame generation: one run per rendered frame and generated frames"
+                       "\ninherit the result, but the tonemapper has not run yet, so the model works on"
+                       "\nan approximation of it and the answer has to be applied carefully. Cheaper,"
+                       "\nand less detail."
+                       "\n\nTakes effect on restart: only one model may exist at a time, and swapping it"
+                       "\nmid-session is not worth the crash it caused every time it was tried.");
+
         ImGui::SeparatorText("How much of it lands");
 
         float transfer = config->DlssNrTransferStrength.value_or_default();
@@ -5862,6 +5880,12 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
 
         ImGui::SeparatorText("Colour");
 
+        if (config->DlssNrInjectPoint.value_or_default() == DlssNr::INJECT_PRESENT)
+        {
+            ImGui::TextUnformatted("Not used here: the finished frame needs no conversion.");
+        }
+        else
+        {
         bool autoWhite = config->DlssNrAutoWhitePoint.value_or_default();
         if (ImGui::Checkbox("Automatic white point", &autoWhite))
             config->DlssNrAutoWhitePoint = autoWhite;
@@ -5904,6 +5928,8 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\ninto the frame does the most damage -- an early version turned every strip light"
                        "\nin the scene into a string of coloured cells. 1x disables the pass entirely;"
                        "\n2x leaves detail intact while making that failure impossible.");
+
+        }
 
         ImGui::SeparatorText("Inspect");
 

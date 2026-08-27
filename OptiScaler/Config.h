@@ -255,6 +255,10 @@ class Config
     // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
     CustomOptional<bool> DlssNrEnabled { false };
+    // 0 before frame generation, 1 on the finished frame at present. Defaults to the finished frame:
+    // that is the picture the model was trained on, so it is the better image, and the cost is the
+    // honest trade rather than something to hide behind a default.
+    CustomOptional<uint32_t> DlssNrInjectPoint { 1 };
     CustomOptional<uint32_t> DlssNrPreset { 0 };
     CustomOptional<float> DlssNrIntensity { 1.0f };
     CustomOptional<uint32_t> DlssNrStyle { 0 };

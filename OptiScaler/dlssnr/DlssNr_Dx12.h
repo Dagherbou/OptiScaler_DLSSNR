@@ -15,12 +15,22 @@
 // per rendered frame. Here it is a lookup on the feature handle.
 namespace DlssNr
 {
+// Where the model runs. Two genuine trade-offs rather than one compromise: before frame generation it
+// costs one run per rendered frame and generated frames inherit the result, but the game's tonemapper
+// has not run yet so it works on a proxy; on the finished frame it sees exactly the sort of picture it
+// was trained on, at a run per presented frame.
+constexpr unsigned int INJECT_BEFORE_FG = 0;
+constexpr unsigned int INJECT_PRESENT = 1;
 // Runs the model over Output on the same command list, immediately after the upscaler has written it.
 // Called only for upscaler evaluates -- never for frame generation, which is the whole point.
 //
 // Safe to call every frame; it builds what it needs on first use and disables itself for the session if
 // anything fails, rather than retrying into a crash.
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params);
+
+// Runs the model over the finished frame, on a command list of its own, and submits it. Called every
+// present; does nothing unless that inject point is selected.
+void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, unsigned int backBufferIndex);
 
 // Whether the model is loaded and running, for the overlay.
 bool IsRunning();
