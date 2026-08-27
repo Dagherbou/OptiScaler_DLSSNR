@@ -1,6 +1,8 @@
 ﻿#include "pch.h"
 #include "menu_common.h"
 
+#include <dlssnr/DlssNr_Dx12.h>
+
 #include "input/input_system.h"
 
 #include "font/Hack_Compressed.h"
@@ -5754,6 +5756,103 @@ void MenuCommon::RenderActiveImageSettings(RenderMenuContext& ctx)
     }
 }
 
+void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
+{
+    auto config = ctx.config;
+
+    // DLSS Neural Rendering -----------------------------
+    ImGui::Spacing();
+    if (auto ch = ScopedCollapsingHeader("DLSS Neural Rendering"); ch.IsHeaderOpen())
+    {
+        ScopedIndent indent {};
+        ImGui::Spacing();
+
+        bool enabled = config->DlssNrEnabled.value_or_default();
+        if (ImGui::Checkbox("Enable Neural Rendering", &enabled))
+            config->DlssNrEnabled = enabled;
+
+        ShowHelpMarker("Synthesises detail in the upscaler's output, before frame generation sees it."
+                       "\n\nRequires nvngx_dlssnr.dll and nvngx.dll_dlssnr.dll beside OptiScaler."
+                       "\nUndocumented and driven directly, so nothing here is officially supported.");
+
+        if (!DlssNr::IsRunning())
+        {
+            const char* reason = DlssNr::FailureReason();
+
+            if (reason[0] != 0)
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f), "Off for this session: %s.", reason);
+            else if (enabled)
+                ImGui::TextUnformatted("Waiting for the upscaler to run.");
+        }
+        else
+        {
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running.");
+        }
+
+        ImGui::Spacing();
+        ImGui::PushItemWidth(220.0f * ctx.menuResScale);
+
+        int preset = (int) config->DlssNrPreset.value_or_default();
+        if (ImGui::SliderInt("Model preset", &preset, 0, 8))
+            config->DlssNrPreset = (uint32_t) preset;
+
+        ShowHelpMarker("0 leaves the choice to the model."
+                       "\n\nThe Neural Rendering presets are undocumented, and they are not the same scale"
+                       "\nas the super resolution or ray reconstruction ones -- the same number means"
+                       "\nsomething different here. Takes effect when the upscaler is next created.");
+
+        float intensity = config->DlssNrIntensity.value_or_default();
+        if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 1.0f, "%.2f"))
+            config->DlssNrIntensity = intensity;
+
+        int style = (int) config->DlssNrStyle.value_or_default();
+        if (ImGui::SliderInt("Style", &style, 0, 8))
+            config->DlssNrStyle = (uint32_t) style;
+
+        ShowHelpMarker("Also undocumented. This range is a guess at what the model accepts.");
+
+        float localStructure = config->DlssNrLocalStructure.value_or_default();
+        if (ImGui::SliderFloat("Local structure", &localStructure, 0.0f, 1.0f, "%.2f"))
+            config->DlssNrLocalStructure = localStructure;
+
+        float localTone = config->DlssNrLocalTone.value_or_default();
+        if (ImGui::SliderFloat("Local tone", &localTone, 0.0f, 1.0f, "%.2f"))
+            config->DlssNrLocalTone = localTone;
+
+        float skinStructure = config->DlssNrSkinStructure.value_or_default();
+        if (ImGui::SliderFloat("Skin structure", &skinStructure, 0.0f, 1.0f, "%.2f"))
+            config->DlssNrSkinStructure = skinStructure;
+
+        bool autoMask = config->DlssNrAutoMask.value_or_default();
+        if (ImGui::Checkbox("Auto mask", &autoMask))
+            config->DlssNrAutoMask = autoMask;
+
+        ShowHelpMarker("Lets the model decide where to apply enhancement.");
+
+        ImGui::Spacing();
+
+        bool tone = config->DlssNrToneTransform.value_or_default();
+        if (ImGui::Checkbox("Tone transform", &tone))
+            config->DlssNrToneTransform = tone;
+
+        ShowHelpMarker("The upscaler's output is linear HDR; the model was trained on finished,"
+                       "\ndisplay-referred frames. This encodes the frame before the model and applies"
+                       "\nthe exact inverse after, so anything the model leaves alone comes back"
+                       "\nunchanged.\n\nTurning it off feeds the model raw HDR, which does not merely"
+                       "\nshift colour -- it makes the frame unusable.");
+
+        float whitePoint = config->DlssNrWhitePoint.value_or_default();
+        if (ImGui::SliderFloat("White point", &whitePoint, 0.5f, 20.0f, "%.1f"))
+            config->DlssNrWhitePoint = whitePoint;
+
+        ShowHelpMarker("Linear value the encode maps to display white, which depends on the game's"
+                       "\nexposure. Too low and highlights flatten out before the model sees them; too"
+                       "\nhigh and it works on a dark, featureless frame.");
+
+        ImGui::PopItemWidth();
+    }
+}
+
 void MenuCommon::RenderMagnifierSettings(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
@@ -6907,6 +7006,7 @@ void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
 
         // Right column: image quality, initialization, advanced options, appearance, overlay and input settings.
         RenderActiveImageSettings(ctx);
+        RenderDlssNrSettings(ctx);
         RenderMagnifierSettings(ctx);
         RenderQuirksSettings(ctx);
         RenderAdvancedSettings(ctx);
