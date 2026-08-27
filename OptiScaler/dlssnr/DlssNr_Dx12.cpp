@@ -114,7 +114,8 @@ bool EnsureForwarder()
         return false;
     }
 
-    const auto path = found.value() / L"nvngx.dll_dlssnr.dll";
+    // FindFilePath hands back the file itself, not the directory holding it.
+    const auto path = found.value();
     g_nr.forwarder = LoadLibraryW(path.wstring().c_str());
 
     if (g_nr.forwarder == nullptr)
