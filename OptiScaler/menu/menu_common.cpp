@@ -5895,6 +5895,16 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                            "\nit works on a dark, featureless frame.");
         }
 
+        float maxRatio = config->DlssNrMaxRatio.value_or_default();
+        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
+            config->DlssNrMaxRatio = maxRatio;
+
+        ShowHelpMarker("The most the pass may brighten or darken any pixel."
+                       "\n\nLights are where the model has least to say and where scaling its answer back"
+                       "\ninto the frame does the most damage -- an early version turned every strip light"
+                       "\nin the scene into a string of coloured cells. 1x disables the pass entirely;"
+                       "\n2x leaves detail intact while making that failure impossible.");
+
         ImGui::SeparatorText("Inspect");
 
         static const char* debugNames[] = { "Off", "Proxy (what the model sees)", "Model output (raw)",

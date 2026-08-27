@@ -320,6 +320,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrColourStrength.set_from_config(readFloat("DlssNr", "ColourStrength"));
             DlssNrAutoWhitePoint.set_from_config(readBool("DlssNr", "AutoWhitePoint"));
             DlssNrWhitePoint.set_from_config(readFloat("DlssNr", "WhitePoint"));
+            DlssNrMaxRatio.set_from_config(readFloat("DlssNr", "MaxRatio"));
             DlssNrDebugView.set_from_config(readUInt("DlssNr", "DebugView"));
             DlssNrPreset.set_from_config(readUInt("DlssNr", "Preset"));
             DlssNrIntensity.set_from_config(readFloat("DlssNr", "Intensity"));
@@ -1164,6 +1165,7 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "AutoWhitePoint",
                  GetBoolValue(Instance()->DlssNrAutoWhitePoint.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WhitePoint", GetFloatValue(Instance()->DlssNrWhitePoint.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "MaxRatio", GetFloatValue(Instance()->DlssNrMaxRatio.value_for_config()).c_str());
     ini.SetValue("DlssNr", "DebugView", GetIntValue(Instance()->DlssNrDebugView.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Preset", GetIntValue(Instance()->DlssNrPreset.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Intensity", GetFloatValue(Instance()->DlssNrIntensity.value_for_config()).c_str());

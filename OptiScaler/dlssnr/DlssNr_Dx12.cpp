@@ -40,6 +40,11 @@ struct NrState
     ID3D12Resource* colorCopy = nullptr;
     ID3D12Resource* output = nullptr;
 
+    // The frame as the upscaler wrote it. The resolve adds the model's edit to this rather than
+    // reconstructing it by inverting the tone curve, which is what turned every light in the frame into
+    // a string of coloured cells.
+    ID3D12Resource* hdrCopy = nullptr;
+
     // Only created when a game hands over typeless guides, which most do and Cyberpunk does not.
     ID3D12Resource* depthClone = nullptr;
     ID3D12Resource* motionClone = nullptr;
@@ -368,15 +373,23 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
             g_nr.colorCopy->Release();
             g_nr.colorCopy = nullptr;
         }
+
+        if (g_nr.hdrCopy != nullptr)
+        {
+            g_nr.hdrCopy->Release();
+            g_nr.hdrCopy = nullptr;
+        }
     }
 
     if (g_nr.output == nullptr)
     {
         g_nr.output = CreateScratch(device, desc.Format, width, height);
         g_nr.colorCopy = CreateScratch(device, desc.Format, width, height);
+        g_nr.hdrCopy = CreateScratch(device, desc.Format, width, height);
     }
 
-    if (g_nr.feature == nullptr && g_nr.output != nullptr && g_nr.colorCopy != nullptr)
+    if (g_nr.feature == nullptr && g_nr.output != nullptr && g_nr.colorCopy != nullptr &&
+        g_nr.hdrCopy != nullptr)
     {
         auto snippet = Util::FindFilePath(g_dllDir, "nvngx_dlssnr.dll");
 
@@ -475,7 +488,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    g_codec.dispatch(cmdList, encodeParams, target, nullptr, g_nr.colorCopy);
+    g_codec.dispatch(cmdList, encodeParams, target, nullptr, nullptr, g_nr.colorCopy, g_nr.hdrCopy);
 
     // Measuring here, while the frame is already readable, costs one dispatch every so often and no
     // extra barriers. Twice a second is far more often than an exposure meaningfully moves.
@@ -487,8 +500,10 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    // The transition doubles as the wait for the encode's writes.
+    // The transitions double as the wait for the encode's writes.
     Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
     ID3D12Resource* depthIn = ReadableGuide(device, cmdList, depth, &g_nr.depthClone);
@@ -525,10 +540,12 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         resolveParams.transferStrength = cfg.DlssNrTransferStrength.value_or_default();
         resolveParams.colourStrength = cfg.DlssNrColourStrength.value_or_default();
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
+        resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
 
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        g_codec.dispatch(cmdList, resolveParams, g_nr.colorCopy, g_nr.output, target);
+        g_codec.dispatch(cmdList, resolveParams, g_nr.colorCopy, g_nr.output, g_nr.hdrCopy, target,
+                         nullptr);
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
@@ -538,6 +555,9 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         g_nr.reason = "the model refused to run";
         LOG_ERROR("DLSS-NR evaluate returned 0x{:X}, disabling for this session", (uint32_t) result);
     }
+
+    Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     // Put any guide clones back where the next frame's copy expects to find them.
     if (g_nr.depthClone != nullptr)
@@ -578,6 +598,12 @@ void Shutdown()
     {
         g_nr.colorCopy->Release();
         g_nr.colorCopy = nullptr;
+    }
+
+    if (g_nr.hdrCopy != nullptr)
+    {
+        g_nr.hdrCopy->Release();
+        g_nr.hdrCopy = nullptr;
     }
 
     if (g_nr.depthClone != nullptr)

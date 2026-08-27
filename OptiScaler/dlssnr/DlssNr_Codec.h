@@ -3,24 +3,32 @@
 //
 // Two passes:
 //
-//   ENCODE   linear HDR -> an sRGB-encoded picture in [0,1]. This is what the model is shown. Feeding it
-//            linear light instead does not shift colour slightly; it makes the frame unusable.
+//   ENCODE   linear HDR -> an sRGB-encoded picture in [0,1], plus an untouched copy of the frame. The
+//            picture is what the model is shown; the copy is what the answer is folded back into.
 //
-//   RESOLVE  proxy + model output -> linear HDR, written over the frame.
+//   RESOLVE  proxy + model output + that copy -> the finished frame.
 //
-// Resolve does not simply decode the model's output. It takes the *difference* between what the model
-// returned and what it was shown, and adds that back, which is what NVIDIA's own integration does. Three
-// things follow from it. At strength zero the frame is bit-for-bit what the upscaler produced, because
-// the encode and decode are exact inverses. Anything the model left alone stays exactly as it was, rather
-// than making a round trip through the curve. And the edit can be scaled -- including past 1.0, which is
-// the only honest way to answer "is this doing anything at all".
+// The first version of this decoded the model's output back through the inverse of the tone curve, and
+// that is what turned every strip light in Cyberpunk into a string of coloured cells. Two reasons, both
+// fatal on highlights:
 //
-// Luminance and colour are scaled separately because the model does both, and they are worth judging
-// apart: detail synthesis is a luminance edit, and any colour shift is usually the part you do not want.
+//   * The curve was applied per channel, so a saturated bright light had its channels compressed by
+//     different amounts and came back a different hue.
 //
-// The curve is Reinhard plus sRGB rather than anything filmic, chosen because it inverts exactly and
-// cheaply. It is not the game's own tonemapper, so the picture the model sees is not the one the player
-// finally sees -- but it is in the right domain, which is what the model actually needs.
+//   * x/(1-x) diverges as x approaches one. A light sitting at 0.99 in the encoded picture reconstructs
+//     to a hundred times the white point, and the model nudging one channel by a thousandth moves that
+//     by tens of percent. Highlights are exactly where the model has least to say and where the inverse
+//     amplifies most, which is the worst possible combination.
+//
+// So nothing is reconstructed by inversion any more. The encode maps luminance and carries chroma along
+// unchanged, so hue survives. The resolve keeps the original frame and adds the model's edit to it,
+// scaled by the local slope of the curve -- which for Reinhard against a white point works out to the
+// tidy (whitePoint + luminance), so a one percent edit on a bright light stays a one percent edit. At
+// zero edit the frame is bit-for-bit what the upscaler produced.
+//
+// On top of that the edit is rolled off as the proxy approaches white, and the total change is clamped
+// to a ratio of the original. Neither should be load-bearing given the above; they are there because a
+// detail pass has no business restyling a light source, whatever the model returns.
 
 #pragma once
 
@@ -49,12 +57,14 @@ cbuffer Params : register(b0)
     float gTransferStrength;
     float gColourStrength;
     uint  gDebugView;
-    uint  gPad;
+    float gMaxRatio;
 };
 
-Texture2D<float4>   gSource : register(t0);   // encode: the frame. resolve: the proxy.
-Texture2D<float4>   gModel  : register(t1);   // resolve: what the model returned.
-RWTexture2D<float4> gTarget : register(u0);
+Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
+Texture2D<float4>   gModel    : register(t1);  // resolve: what the model returned.
+Texture2D<float4>   gOriginal : register(t2);  // resolve: the untouched frame.
+RWTexture2D<float4> gTarget   : register(u0);  // encode: the proxy. resolve: the frame.
+RWTexture2D<float4> gKeep     : register(u1);  // encode: the untouched copy.
 
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 
@@ -72,65 +82,82 @@ float3 SrgbToLinear(float3 v)
     return lerp(v / 12.92, pow((v + 0.055) / 1.055, 2.4), step(0.04045, v));
 }
 
-// Reinhard against the white point, so an open-ended range lands in [0,1] and comes back exactly.
-float3 ToneDown(float3 v, float whitePoint)
-{
-    v = max(v, float3(0.0, 0.0, 0.0)) / whitePoint;
-    return v / (1.0 + v);
-}
-
-float3 ToneUp(float3 v, float whitePoint)
-{
-    // Clamped just below one: the inverse diverges there, and infinities in this buffer would reach
-    // frame generation.
-    v = min(saturate(v), float3(0.999, 0.999, 0.999));
-    return (v / (1.0 - v)) * whitePoint;
-}
-
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= gWidth || id.y >= gHeight)
         return;
 
-    float4 source = gSource.Load(int3(id.xy, 0));
-
     if (gMode == 0)
     {
-        gTarget[id.xy] = float4(LinearToSrgb(ToneDown(source.rgb, gWhitePoint)), source.a);
+        float4 source = gSource.Load(int3(id.xy, 0));
+        float3 frame = max(source.rgb, float3(0.0, 0.0, 0.0));
+
+        // Kept so the resolve has the frame as it was, rather than having to reconstruct it.
+        gKeep[id.xy] = float4(frame, source.a);
+
+        // Reinhard on luminance alone, with chroma carried along untouched. Compressing each channel
+        // separately is what shifted the hue of every saturated highlight.
+        float luma = dot(frame, kLuma);
+        float toned = (luma / gWhitePoint) / (1.0 + luma / gWhitePoint);
+        float scale = luma > 1e-6 ? toned / luma : 0.0;
+
+        gTarget[id.xy] = float4(LinearToSrgb(frame * scale), source.a);
         return;
     }
 
-    float3 proxy = source.rgb;
-    float3 model = gModel.Load(int3(id.xy, 0)).rgb;
-    float3 edit = model - proxy;
+    float4 proxySample = gSource.Load(int3(id.xy, 0));
+    float3 proxy = SrgbToLinear(proxySample.rgb);
+    float3 model = SrgbToLinear(gModel.Load(int3(id.xy, 0)).rgb);
+    float4 originalSample = gOriginal.Load(int3(id.xy, 0));
+    float3 original = originalSample.rgb;
+
+    // The slope of the encode at this pixel, so an edit made in the compressed picture lands as the
+    // equivalent edit in the original. For Reinhard against a white point this is exactly
+    // whitePoint + luminance -- bounded everywhere, unlike the inverse of the curve.
+    float originalLuma = dot(original, kLuma);
+    float slope = gWhitePoint + originalLuma;
 
     if (gDebugView == 1)
     {
-        gTarget[id.xy] = float4(ToneUp(SrgbToLinear(proxy), gWhitePoint), source.a);
+        gTarget[id.xy] = float4(proxy * gWhitePoint, originalSample.a);
         return;
     }
 
     if (gDebugView == 2)
     {
-        gTarget[id.xy] = float4(ToneUp(SrgbToLinear(model), gWhitePoint), source.a);
+        gTarget[id.xy] = float4(model * gWhitePoint, originalSample.a);
         return;
     }
 
     if (gDebugView == 3)
     {
         // Amplified and centred on grey, so both directions of the edit are visible at once.
-        float3 shown = saturate(0.5 + edit * 20.0);
-        gTarget[id.xy] = float4(ToneUp(SrgbToLinear(shown), gWhitePoint), source.a);
+        float3 shown = saturate(0.5 + (model - proxy) * 20.0);
+        gTarget[id.xy] = float4(SrgbToLinear(shown) * gWhitePoint, originalSample.a);
         return;
     }
+
+    float3 edit = model - proxy;
 
     // Split so the detail the model synthesised and any colour it shifted can be dialled apart.
     float lumaEdit = dot(edit, kLuma);
     float3 colourEdit = edit - lumaEdit;
-    float3 applied = proxy + lumaEdit * gTransferStrength + colourEdit * gColourStrength;
+    float3 applied = lumaEdit * gTransferStrength + colourEdit * gColourStrength;
 
-    gTarget[id.xy] = float4(ToneUp(SrgbToLinear(applied), gWhitePoint), source.a);
+    // Near white the proxy has lost the information the model would need, and anything it invents there
+    // is guesswork on a light source. Fade it out rather than trust it.
+    float proxyLuma = dot(proxy, kLuma);
+    applied *= 1.0 - smoothstep(0.85, 1.0, proxyLuma);
+
+    float3 result = original + applied * slope;
+
+    // A detail pass should not be able to restyle anything, whatever comes back. The small constant
+    // keeps this meaningful where the original is near black and a ratio alone would not be.
+    float3 ceiling = original * gMaxRatio + 0.01;
+    float3 floorValue = max(original / gMaxRatio - 0.01, float3(0.0, 0.0, 0.0));
+
+    gTarget[id.xy] = float4(clamp(result, floorValue, ceiling), originalSample.a);
 }
 )";
 
@@ -143,7 +170,7 @@ struct Params
     float transferStrength;
     float colourStrength;
     unsigned int debugView;
-    unsigned int pad;
+    float maxRatio;
 };
 
 // A typeless resource cannot be viewed, and the buffer the upscaler writes is occasionally declared that
@@ -197,10 +224,10 @@ class Codec
 
         D3D12_DESCRIPTOR_RANGE ranges[2] = {};
         ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        ranges[0].NumDescriptors = 2; // proxy and model
+        ranges[0].NumDescriptors = 3; // proxy, model, original
         ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        ranges[1].NumDescriptors = 1;
-        ranges[1].OffsetInDescriptorsFromTableStart = 2;
+        ranges[1].NumDescriptors = 2; // result, kept copy
+        ranges[1].OffsetInDescriptorsFromTableStart = 3;
 
         D3D12_ROOT_PARAMETER params[2] = {};
         params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -241,11 +268,11 @@ class Codec
         if (FAILED(hr))
             return false;
 
-        // Three descriptors per dispatch, two dispatches a frame; a ring of eight keeps a frame's
+        // Five descriptors per dispatch, two dispatches a frame; a ring of eight keeps a frame's
         // descriptors from being overwritten while it is still in flight.
         D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
         heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        heapDesc.NumDescriptors = kRingSlots * 3;
+        heapDesc.NumDescriptors = kRingSlots * kPerDispatch;
         heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
         if (FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&heap_))))
@@ -256,9 +283,11 @@ class Codec
         return true;
     }
 
-    // Both source textures must already be shader-readable and the target writable.
+    // Every texture must already be in the state its slot needs: sources shader-readable, targets
+    // writable. Slots a pass does not read still have to be populated, or the descriptor is undefined.
     void dispatch(ID3D12GraphicsCommandList* cmd, const Params& constants, ID3D12Resource* source,
-                  ID3D12Resource* model, ID3D12Resource* target)
+                  ID3D12Resource* model, ID3D12Resource* original, ID3D12Resource* target,
+                  ID3D12Resource* keep)
     {
         if (pipeline_ == nullptr)
             return;
@@ -267,31 +296,38 @@ class Codec
         ring_ = (ring_ + 1) % kRingSlots;
 
         D3D12_CPU_DESCRIPTOR_HANDLE cpu = heap_->GetCPUDescriptorHandleForHeapStart();
-        cpu.ptr += (SIZE_T) slot * 3 * stride_;
+        cpu.ptr += (SIZE_T) slot * kPerDispatch * stride_;
         D3D12_GPU_DESCRIPTOR_HANDLE gpu = heap_->GetGPUDescriptorHandleForHeapStart();
-        gpu.ptr += (UINT64) slot * 3 * stride_;
+        gpu.ptr += (UINT64) slot * kPerDispatch * stride_;
 
-        D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srv.Texture2D.MipLevels = 1;
+        ID3D12Resource* srvs[3] = { source, model != nullptr ? model : source,
+                                    original != nullptr ? original : source };
 
-        srv.Format = TypedFormat(source->GetDesc().Format);
-        device_->CreateShaderResourceView(source, &srv, cpu);
+        for (int i = 0; i < 3; ++i)
+        {
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Texture2D.MipLevels = 1;
+            srv.Format = TypedFormat(srvs[i]->GetDesc().Format);
 
-        // Encode never reads it, but the table must be fully populated or the descriptor is undefined.
-        D3D12_CPU_DESCRIPTOR_HANDLE modelHandle = cpu;
-        modelHandle.ptr += stride_;
-        ID3D12Resource* modelSource = model != nullptr ? model : source;
-        srv.Format = TypedFormat(modelSource->GetDesc().Format);
-        device_->CreateShaderResourceView(modelSource, &srv, modelHandle);
+            D3D12_CPU_DESCRIPTOR_HANDLE handle = cpu;
+            handle.ptr += (SIZE_T) i * stride_;
+            device_->CreateShaderResourceView(srvs[i], &srv, handle);
+        }
 
-        D3D12_CPU_DESCRIPTOR_HANDLE uavHandle = cpu;
-        uavHandle.ptr += (SIZE_T) 2 * stride_;
-        D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
-        uav.Format = TypedFormat(target->GetDesc().Format);
-        uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        device_->CreateUnorderedAccessView(target, nullptr, &uav, uavHandle);
+        ID3D12Resource* uavs[2] = { target, keep != nullptr ? keep : target };
+
+        for (int i = 0; i < 2; ++i)
+        {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
+            uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            uav.Format = TypedFormat(uavs[i]->GetDesc().Format);
+
+            D3D12_CPU_DESCRIPTOR_HANDLE handle = cpu;
+            handle.ptr += (SIZE_T) (3 + i) * stride_;
+            device_->CreateUnorderedAccessView(uavs[i], nullptr, &uav, handle);
+        }
 
         ID3D12DescriptorHeap* heaps[] = { heap_ };
         cmd->SetDescriptorHeaps(1, heaps);
@@ -327,6 +363,7 @@ class Codec
 
   private:
     static const unsigned int kRingSlots = 8;
+    static const unsigned int kPerDispatch = 5;
 
     ID3D12Device* device_ = nullptr;
     ID3D12RootSignature* root_ = nullptr;

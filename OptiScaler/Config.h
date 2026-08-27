@@ -275,6 +275,10 @@ class Config
     CustomOptional<bool> DlssNrAutoWhitePoint { true };
     CustomOptional<float> DlssNrWhitePoint { 2.0f };
 
+    // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
+    // light source, whatever the model returns.
+    CustomOptional<float> DlssNrMaxRatio { 2.0f };
+
     // 0 off, 1 the picture the model was shown, 2 its raw answer, 3 what it changed, amplified.
     CustomOptional<uint32_t> DlssNrDebugView { 0 };
 
