@@ -1,0 +1,400 @@
+#include "pch.h"
+
+#include "DlssNr_Dx12.h"
+
+#include "DlssNr_Tonemap.h"
+
+#include <Config.h>
+#include <State.h>
+#include <Util.h>
+
+#include <proxies/NVNGX_Proxy.h>
+
+namespace
+{
+// Everything the model is reached through. The snippet refuses callers whose module path does not
+// contain "nvngx.dll", so the calls are made from a small library named for exactly that reason and
+// shipped beside OptiScaler; see nvngx.dll_dlssnr.dll.
+using PFN_NrCreate = void*(__cdecl*) (const wchar_t*, const wchar_t*, ID3D12Device*,
+                                      ID3D12GraphicsCommandList*, void*, unsigned int, unsigned int, int);
+using PFN_NrEvaluate = int(__cdecl*) (ID3D12GraphicsCommandList*, void*, void*, ID3D12Resource*,
+                                      ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, unsigned int,
+                                      unsigned int, unsigned int, unsigned int, int, int, float, int,
+                                      float, float, float, int);
+using PFN_NrRelease = void(__cdecl*) (void*);
+
+struct NrState
+{
+    HMODULE forwarder = nullptr;
+    PFN_NrCreate create = nullptr;
+    PFN_NrEvaluate evaluate = nullptr;
+    PFN_NrRelease release = nullptr;
+    int* lastInit = nullptr;
+    int* lastCreate = nullptr;
+
+    NVSDK_NGX_Parameter* capabilityParams = nullptr;
+    void* feature = nullptr;
+
+    // The model cannot read and write one resource, so the frame is staged through these.
+    ID3D12Resource* colorCopy = nullptr;
+    ID3D12Resource* output = nullptr;
+
+    unsigned int width = 0;
+    unsigned int height = 0;
+    bool reset = true;
+
+    // Once something fails there is no recovering it mid-session, and retrying every frame turns a
+    // failure into a crash. It stays off and says why.
+    bool failed = false;
+    const char* reason = "";
+};
+
+NrState g_nr;
+tonemap::ToneTransform g_tone;
+
+std::filesystem::path g_dllDir;
+
+// Loads the forwarder that owns the calls into the snippet.
+bool EnsureForwarder()
+{
+    if (g_nr.forwarder != nullptr)
+        return g_nr.create != nullptr;
+
+    if (g_dllDir.empty())
+        g_dllDir = Util::DllPath().remove_filename();
+
+    const auto path = g_dllDir / L"nvngx.dll_dlssnr.dll";
+    g_nr.forwarder = LoadLibraryW(path.wstring().c_str());
+
+    if (g_nr.forwarder == nullptr)
+    {
+        LOG_ERROR("nvngx.dll_dlssnr.dll not found beside OptiScaler at {}", path.string());
+        g_nr.reason = "nvngx.dll_dlssnr.dll is missing";
+        return false;
+    }
+
+    g_nr.create = (PFN_NrCreate) GetProcAddress(g_nr.forwarder, "dlssnr_call_create");
+    g_nr.evaluate = (PFN_NrEvaluate) GetProcAddress(g_nr.forwarder, "dlssnr_call_evaluate");
+    g_nr.release = (PFN_NrRelease) GetProcAddress(g_nr.forwarder, "dlssnr_call_release");
+    g_nr.lastInit = (int*) GetProcAddress(g_nr.forwarder, "dlssnr_call_last_init");
+    g_nr.lastCreate = (int*) GetProcAddress(g_nr.forwarder, "dlssnr_call_last_create");
+
+    if (g_nr.create == nullptr || g_nr.evaluate == nullptr)
+    {
+        g_nr.reason = "the forwarder is missing its exports";
+        return false;
+    }
+
+    LOG_INFO("DLSS-NR forwarder loaded from {}", path.string());
+    return true;
+}
+
+// The model needs the driver core's own capability block: it carries the snippet and preset callbacks a
+// feature expects at create time, which a freshly allocated block does not have.
+bool EnsureCapabilityParams(ID3D12Device* device)
+{
+    if (g_nr.capabilityParams != nullptr)
+        return true;
+
+    if (!NVNGXProxy::IsDx12Inited() && !NVNGXProxy::InitDx12(device))
+    {
+        g_nr.reason = "the NGX core would not initialise";
+        return false;
+    }
+
+    if (NVNGXProxy::D3D12_GetCapabilityParameters() == nullptr)
+    {
+        g_nr.reason = "the NGX core has no capability parameters";
+        return false;
+    }
+
+    if (NVNGXProxy::D3D12_GetCapabilityParameters()(&g_nr.capabilityParams) != NVSDK_NGX_Result_Success ||
+        g_nr.capabilityParams == nullptr)
+    {
+        g_nr.capabilityParams = nullptr;
+        g_nr.reason = "the NGX core refused its capability parameters";
+        return false;
+    }
+
+    return true;
+}
+
+ID3D12Resource* CreateScratch(ID3D12Device* device, DXGI_FORMAT format, unsigned int width,
+                              unsigned int height)
+{
+    D3D12_HEAP_PROPERTIES heap {};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC desc {};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = width;
+    desc.Height = height;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = format;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    // The model writes its result, so the destination has to be a UAV.
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    ID3D12Resource* res = nullptr;
+    device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&res));
+    return res;
+}
+
+void Barrier(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* res, D3D12_RESOURCE_STATES from,
+             D3D12_RESOURCE_STATES to)
+{
+    if (from == to)
+        return;
+
+    D3D12_RESOURCE_BARRIER b {};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = res;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    b.Transition.StateBefore = from;
+    b.Transition.StateAfter = to;
+    cmdList->ResourceBarrier(1, &b);
+}
+
+// The upscaler's own names differ between super resolution and ray reconstruction, and only one set is
+// present on any given block.
+ID3D12Resource* GetResource(NVSDK_NGX_Parameter* params, const char* a, const char* b)
+{
+    ID3D12Resource* res = nullptr;
+
+    if (params->Get(a, &res) == NVSDK_NGX_Result_Success && res != nullptr)
+        return res;
+
+    res = nullptr;
+
+    if (params->Get(b, &res) == NVSDK_NGX_Result_Success)
+        return res;
+
+    return nullptr;
+}
+} // namespace
+
+namespace DlssNr
+{
+void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params)
+{
+    const Config& cfg = *Config::Instance();
+
+    if (!cfg.DlssNrEnabled.value_or_default() || g_nr.failed || cmdList == nullptr || params == nullptr)
+        return;
+
+    ID3D12Resource* target = GetResource(params, NVSDK_NGX_Parameter_Output, "DLSSD.Output");
+    ID3D12Resource* depth = GetResource(params, NVSDK_NGX_Parameter_Depth, "DLSSD.Depth");
+    ID3D12Resource* motion = GetResource(params, NVSDK_NGX_Parameter_MotionVectors, "DLSSD.MotionVectors");
+
+    // Without all three there is nothing to run on. This is not a failure -- some evaluates legitimately
+    // carry none of it -- so it stays quiet and tries again next frame.
+    if (target == nullptr || depth == nullptr || motion == nullptr)
+        return;
+
+    ID3D12Device* device = nullptr;
+
+    if (FAILED(target->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
+        return;
+
+    const D3D12_RESOURCE_DESC desc = target->GetDesc();
+    const auto width = (unsigned int) desc.Width;
+    const auto height = desc.Height;
+
+    // Depth and motion vectors are the upscaler's inputs and so are at render resolution, while colour
+    // and output are at display resolution. The model takes that as a subrect per resource rather than
+    // needing them resampled, which is why nothing here rescales anything.
+    unsigned int guideWidth = 0;
+    unsigned int guideHeight = 0;
+    params->Get(NVSDK_NGX_Parameter_Width, &guideWidth);
+    params->Get(NVSDK_NGX_Parameter_Height, &guideHeight);
+
+    if (guideWidth == 0 || guideHeight == 0)
+    {
+        guideWidth = width;
+        guideHeight = height;
+    }
+
+    if (!EnsureForwarder() || !EnsureCapabilityParams(device))
+    {
+        g_nr.failed = true;
+        LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
+        device->Release();
+        return;
+    }
+
+    if (g_nr.feature != nullptr && (g_nr.width != width || g_nr.height != height))
+    {
+        // A resolution change invalidates the model and both scratch textures. Nothing is released
+        // underneath the GPU here because this runs on the same command list the upscaler just used, and
+        // the previous frame's work has long since retired by the time a resolution actually changes.
+        g_nr.release(g_nr.feature);
+        g_nr.feature = nullptr;
+
+        if (g_nr.output != nullptr)
+        {
+            g_nr.output->Release();
+            g_nr.output = nullptr;
+        }
+
+        if (g_nr.colorCopy != nullptr)
+        {
+            g_nr.colorCopy->Release();
+            g_nr.colorCopy = nullptr;
+        }
+    }
+
+    if (g_nr.output == nullptr)
+    {
+        g_nr.output = CreateScratch(device, desc.Format, width, height);
+        g_nr.colorCopy = CreateScratch(device, desc.Format, width, height);
+    }
+
+    if (g_nr.feature == nullptr && g_nr.output != nullptr && g_nr.colorCopy != nullptr)
+    {
+        const auto snippet = Util::FindFilePath(g_dllDir, "nvngx_dlssnr.dll");
+
+        if (!snippet.has_value())
+        {
+            g_nr.failed = true;
+            g_nr.reason = "nvngx_dlssnr.dll was not found";
+            LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
+            device->Release();
+            return;
+        }
+
+        g_nr.feature =
+            g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
+                        device, cmdList, g_nr.capabilityParams, width, height,
+                        (int) cfg.DlssNrPreset.value_or_default());
+
+        if (g_nr.feature == nullptr)
+        {
+            g_nr.failed = true;
+            g_nr.reason = "the model would not initialise";
+            LOG_ERROR("DLSS-NR create failed: init 0x{:X}, create 0x{:X}",
+                      g_nr.lastInit != nullptr ? *g_nr.lastInit : 0,
+                      g_nr.lastCreate != nullptr ? *g_nr.lastCreate : 0);
+            device->Release();
+            return;
+        }
+
+        g_nr.width = width;
+        g_nr.height = height;
+        g_nr.reset = true;
+        LOG_INFO("DLSS-NR running at {}x{}, guides {}x{}", width, height, guideWidth, guideHeight);
+    }
+
+    if (g_nr.feature == nullptr)
+    {
+        device->Release();
+        return;
+    }
+
+    // The upscaler has just written this, so it is a UAV. The model wants it readable.
+    const bool tone = cfg.DlssNrToneTransform.value_or_default() && g_tone.ensure(device);
+    const float whitePoint = cfg.DlssNrWhitePoint.value_or_default();
+
+    if (tone)
+    {
+        // What the upscaler produces is linear HDR with an open-ended range, and the model was trained on
+        // finished, display-referred frames. Feeding it the former does not shift colour slightly, it
+        // makes the frame unusable. So it is encoded on the way in and the exact inverse applied on the
+        // way out, which also means the encode replaces the staging copy and the decode replaces the
+        // write-back: the round trip costs two dispatches and no copies.
+        Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        g_tone.dispatch(cmdList, target, g_nr.colorCopy, width, height, false, whitePoint);
+        Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        // The transition doubles as the wait for the encode's writes.
+        Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }
+    else
+    {
+        Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COPY_SOURCE);
+        Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->CopyResource(g_nr.colorCopy, target);
+        Barrier(cmdList, target, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }
+
+    const int result = g_nr.evaluate(
+        cmdList, g_nr.feature, g_nr.capabilityParams, g_nr.colorCopy, depth, motion, g_nr.output, width,
+        height, guideWidth, guideHeight, 1, g_nr.reset ? 1 : 0, cfg.DlssNrIntensity.value_or_default(),
+        (int) cfg.DlssNrStyle.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
+        cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
+        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0);
+
+    g_nr.reset = false;
+
+    if (result == NVSDK_NGX_Result_Success)
+    {
+        if (tone)
+        {
+            Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            g_tone.dispatch(cmdList, g_nr.output, target, width, height, true, whitePoint);
+            Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        }
+        else
+        {
+            Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_COPY_SOURCE);
+            Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_COPY_DEST);
+            cmdList->CopyResource(target, g_nr.output);
+            Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            Barrier(cmdList, target, D3D12_RESOURCE_STATE_COPY_DEST,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        }
+    }
+    else
+    {
+        g_nr.failed = true;
+        g_nr.reason = "the model refused to run";
+        LOG_ERROR("DLSS-NR evaluate returned 0x{:X}, disabling for this session", (uint32_t) result);
+    }
+
+    // Leave the staging copy as the next frame expects to find it.
+    Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    device->Release();
+}
+
+bool IsRunning() { return g_nr.feature != nullptr && !g_nr.failed; }
+
+const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
+
+void Shutdown()
+{
+    if (g_nr.feature != nullptr && g_nr.release != nullptr)
+        g_nr.release(g_nr.feature);
+
+    g_nr.feature = nullptr;
+
+    if (g_nr.output != nullptr)
+    {
+        g_nr.output->Release();
+        g_nr.output = nullptr;
+    }
+
+    if (g_nr.colorCopy != nullptr)
+    {
+        g_nr.colorCopy->Release();
+        g_nr.colorCopy = nullptr;
+    }
+
+    g_tone.destroy();
+}
+} // namespace DlssNr

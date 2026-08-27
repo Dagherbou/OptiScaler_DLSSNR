@@ -252,6 +252,19 @@ class Config
     CustomOptional<int32_t> NetworkModel { 0 };
     CustomOptional<bool> CreateHeaps { true };
 
+    // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
+    // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
+    CustomOptional<bool> DlssNrEnabled { false };
+    CustomOptional<bool> DlssNrToneTransform { true };
+    CustomOptional<float> DlssNrWhitePoint { 2.0f };
+    CustomOptional<uint32_t> DlssNrPreset { 0 };
+    CustomOptional<float> DlssNrIntensity { 1.0f };
+    CustomOptional<uint32_t> DlssNrStyle { 0 };
+    CustomOptional<float> DlssNrLocalStructure { 1.0f };
+    CustomOptional<float> DlssNrLocalTone { 1.0f };
+    CustomOptional<float> DlssNrSkinStructure { 1.0f };
+    CustomOptional<bool> DlssNrAutoMask { true };
+
     // DLSS
     CustomOptional<bool> DLSSEnabled { true };
     CustomOptional<bool> RenderPresetOverride { false };

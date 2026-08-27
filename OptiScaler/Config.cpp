@@ -314,6 +314,17 @@ bool Config::Reload(std::filesystem::path iniPath)
         {
             // Don't enable again if set false because of no nvngx found
             DLSSEnabled.set_from_config(readBool("DLSS", "Enabled"));
+
+            DlssNrEnabled.set_from_config(readBool("DlssNr", "Enabled"));
+            DlssNrToneTransform.set_from_config(readBool("DlssNr", "ToneTransform"));
+            DlssNrWhitePoint.set_from_config(readFloat("DlssNr", "WhitePoint"));
+            DlssNrPreset.set_from_config(readUInt("DlssNr", "Preset"));
+            DlssNrIntensity.set_from_config(readFloat("DlssNr", "Intensity"));
+            DlssNrStyle.set_from_config(readUInt("DlssNr", "Style"));
+            DlssNrLocalStructure.set_from_config(readFloat("DlssNr", "LocalStructure"));
+            DlssNrLocalTone.set_from_config(readFloat("DlssNr", "LocalTone"));
+            DlssNrSkinStructure.set_from_config(readFloat("DlssNr", "SkinStructure"));
+            DlssNrAutoMask.set_from_config(readBool("DlssNr", "AutoMask"));
             UseGenericAppIdWithDlss.set_from_config(readBool("DLSS", "UseGenericAppIdWithDlss"));
 
             RenderPresetOverride.set_from_config(readBool("DLSS", "RenderPresetOverride"));
@@ -1141,6 +1152,20 @@ bool Config::SaveIni()
     // DLSS
     {
         ini.SetValue("DLSS", "Enabled", GetBoolValue(Instance()->DLSSEnabled.value_for_config()).c_str());
+
+    ini.SetValue("DlssNr", "Enabled", GetBoolValue(Instance()->DlssNrEnabled.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "ToneTransform",
+                 GetBoolValue(Instance()->DlssNrToneTransform.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "WhitePoint", GetFloatValue(Instance()->DlssNrWhitePoint.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "Preset", GetIntValue(Instance()->DlssNrPreset.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "Intensity", GetFloatValue(Instance()->DlssNrIntensity.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "Style", GetIntValue(Instance()->DlssNrStyle.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "LocalStructure",
+                 GetFloatValue(Instance()->DlssNrLocalStructure.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "LocalTone", GetFloatValue(Instance()->DlssNrLocalTone.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "SkinStructure",
+                 GetFloatValue(Instance()->DlssNrSkinStructure.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "AutoMask", GetBoolValue(Instance()->DlssNrAutoMask.value_for_config()).c_str());
         ini.SetValue("DLSS", "RenderPresetOverride",
                      GetBoolValue(Instance()->RenderPresetOverride.value_for_config()).c_str());
         ini.SetValue("DLSS", "RenderPresetForAll",
