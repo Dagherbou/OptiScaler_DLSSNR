@@ -255,15 +255,28 @@ class Config
     // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
     CustomOptional<bool> DlssNrEnabled { false };
-    CustomOptional<bool> DlssNrToneTransform { true };
-    CustomOptional<float> DlssNrWhitePoint { 2.0f };
     CustomOptional<uint32_t> DlssNrPreset { 0 };
     CustomOptional<float> DlssNrIntensity { 1.0f };
     CustomOptional<uint32_t> DlssNrStyle { 0 };
     CustomOptional<float> DlssNrLocalStructure { 1.0f };
     CustomOptional<float> DlssNrLocalTone { 1.0f };
-    CustomOptional<float> DlssNrSkinStructure { 1.0f };
+    // -1 means follow local structure, which is the model's own default. It is not a strength of zero.
+    CustomOptional<float> DlssNrSkinStructure { -1.0f };
     CustomOptional<bool> DlssNrAutoMask { true };
+
+    // How much of the model's edit reaches the frame. Separated because detail synthesis is a luminance
+    // edit and any colour shift is usually the part you do not want, and allowed past 1.0 because
+    // exaggerating an edit is the only honest way to see whether there is one.
+    CustomOptional<float> DlssNrTransferStrength { 1.0f };
+    CustomOptional<float> DlssNrColourStrength { 1.0f };
+
+    // The linear value the encode maps to display white. Derived from the frame by default: measured
+    // means in one game have ranged from 0.065 to 185, so no fixed number can serve.
+    CustomOptional<bool> DlssNrAutoWhitePoint { true };
+    CustomOptional<float> DlssNrWhitePoint { 2.0f };
+
+    // 0 off, 1 the picture the model was shown, 2 its raw answer, 3 what it changed, amplified.
+    CustomOptional<uint32_t> DlssNrDebugView { 0 };
 
     // DLSS
     CustomOptional<bool> DLSSEnabled { true };

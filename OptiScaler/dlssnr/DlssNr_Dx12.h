@@ -28,5 +28,9 @@ bool IsRunning();
 // Why it is not, if it is not. Empty while it is running or has not been tried yet.
 const char* FailureReason();
 
+// The white point the exposure meter has settled on, or 0 if it has not taken a reading yet. For the
+// overlay, so the number in use is visible rather than inferred.
+float CurrentWhitePoint();
+
 void Shutdown();
 } // namespace DlssNr

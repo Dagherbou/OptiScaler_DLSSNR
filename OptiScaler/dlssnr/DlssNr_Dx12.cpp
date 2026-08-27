@@ -2,7 +2,8 @@
 
 #include "DlssNr_Dx12.h"
 
-#include "DlssNr_Tonemap.h"
+#include "DlssNr_Codec.h"
+#include "DlssNr_Probe.h"
 
 #include <Config.h>
 #include <State.h>
@@ -50,7 +51,33 @@ struct NrState
 };
 
 NrState g_nr;
-tonemap::ToneTransform g_tone;
+codec::Codec g_codec;
+
+// Exposure measurement, and the white point derived from it.
+probe::FrameReducer g_reducer;
+probe::BlockReader g_reader;
+float g_autoWhitePoint = 2.0f;
+bool g_autoWhitePointSettled = false;
+unsigned long long g_frames = 0;
+
+// The encoded mean is aimed here. Mid-grey rather than anything brighter: the model has to see both the
+// shadow detail it might lift and the highlights it must not blow out.
+constexpr float kTargetEncodedMean = 0.45f;
+
+// How fast the derived value follows the scene. Readings arrive a few times a second, and an exposure
+// that lunges at every cut is worse than one that arrives a moment late.
+constexpr float kWhitePointBlend = 0.25f;
+
+// Recomputes the white point from a measured mean. Inverting the encode for the white point that puts
+// that mean at the target gives wp = mean * (1 - t^g) / t^g.
+float WhitePointForMean(float meanLuma)
+{
+    const float encoded = powf(kTargetEncodedMean, 2.2f);
+    const float ratio = encoded / (1.0f - encoded);
+    const float wp = meanLuma / ratio;
+    // A black frame between scenes would otherwise drive this to zero and divide the next frame by it.
+    return wp < 0.01f ? 0.01f : (wp > 10000.0f ? 10000.0f : wp);
+}
 
 std::filesystem::path g_dllDir;
 
@@ -293,38 +320,76 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         return;
     }
 
-    // The upscaler has just written this, so it is a UAV. The model wants it readable.
-    const bool tone = cfg.DlssNrToneTransform.value_or_default() && g_tone.ensure(device);
-    const float whitePoint = cfg.DlssNrWhitePoint.value_or_default();
+    // The upscaler has just written this, so it is a UAV. The model needs it readable.
+    const bool haveCodec = g_codec.ensure(device);
 
-    if (tone)
+    if (!haveCodec)
     {
-        // What the upscaler produces is linear HDR with an open-ended range, and the model was trained on
-        // finished, display-referred frames. Feeding it the former does not shift colour slightly, it
-        // makes the frame unusable. So it is encoded on the way in and the exact inverse applied on the
-        // way out, which also means the encode replaces the staging copy and the decode replaces the
-        // write-back: the round trip costs two dispatches and no copies.
-        Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        g_tone.dispatch(cmdList, target, g_nr.colorCopy, width, height, false, whitePoint);
-        Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        // The transition doubles as the wait for the encode's writes.
-        Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        g_nr.failed = true;
+        g_nr.reason = "the colour codec would not compile";
+        LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
+        device->Release();
+        return;
     }
-    else
+
+    // What the upscaler produces is linear HDR with an open-ended range; the model was trained on
+    // finished, sRGB-encoded frames. The white point is what maps one to the other, and it is a property
+    // of the game's exposure rather than a number worth asking anyone to guess: measured means of 0.065,
+    // 1.8 and 185 have all been seen in this one game.
+    ++g_frames;
+    const bool autoWhite = cfg.DlssNrAutoWhitePoint.value_or_default();
+
+    if (autoWhite)
     {
-        Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_COPY_SOURCE);
-        Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_COPY_DEST);
-        cmdList->CopyResource(g_nr.colorCopy, target);
-        Barrier(cmdList, target, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        const probe::Stats stats = g_reader.collect();
+
+        if (stats.valid && stats.meanLuma > 0.0f)
+        {
+            const float target = WhitePointForMean(stats.meanLuma);
+
+            if (!g_autoWhitePointSettled)
+            {
+                // Nothing to ease away from on the first reading, and easing in from a wrong default is
+                // just a slow wrong answer.
+                g_autoWhitePoint = target;
+                g_autoWhitePointSettled = true;
+                LOG_INFO("DLSS-NR white point settled at {:.3f} (frame mean {:.4f})", g_autoWhitePoint,
+                         stats.meanLuma);
+            }
+            else
+            {
+                g_autoWhitePoint += (target - g_autoWhitePoint) * kWhitePointBlend;
+            }
+        }
     }
+
+    const float whitePoint = autoWhite && g_autoWhitePointSettled
+                                 ? g_autoWhitePoint
+                                 : cfg.DlssNrWhitePoint.value_or_default();
+
+    codec::Params encodeParams {};
+    encodeParams.mode = codec::MODE_ENCODE;
+    encodeParams.whitePoint = whitePoint;
+    encodeParams.width = width;
+    encodeParams.height = height;
+
+    Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    g_codec.dispatch(cmdList, encodeParams, target, nullptr, g_nr.colorCopy);
+
+    // Measuring here, while the frame is already readable, costs one dispatch every so often and no
+    // extra barriers. Twice a second is far more often than an exposure meaningfully moves.
+    if (autoWhite && (g_frames % 30 == 0) && g_reducer.ensure(device))
+    {
+        ID3D12Resource* reduced = g_reducer.dispatch(cmdList, target, width, height);
+        g_reader.capture(cmdList, reduced, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }
+
+    Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    // The transition doubles as the wait for the encode's writes.
+    Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
     const int result = g_nr.evaluate(
         cmdList, g_nr.feature, g_nr.capabilityParams, g_nr.colorCopy, depth, motion, g_nr.output, width,
@@ -337,26 +402,23 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     if (result == NVSDK_NGX_Result_Success)
     {
-        if (tone)
-        {
-            Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            g_tone.dispatch(cmdList, g_nr.output, target, width, height, true, whitePoint);
-            Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        }
-        else
-        {
-            Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_COPY_SOURCE);
-            Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_COPY_DEST);
-            cmdList->CopyResource(target, g_nr.output);
-            Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            Barrier(cmdList, target, D3D12_RESOURCE_STATE_COPY_DEST,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        }
+        // Resolve takes the difference between what the model returned and what it was shown, and adds
+        // that back to the frame. At strength zero the result is what the upscaler produced, exactly, and
+        // anything the model left alone is untouched rather than round-tripped through the curve.
+        codec::Params resolveParams {};
+        resolveParams.mode = codec::MODE_RESOLVE;
+        resolveParams.whitePoint = whitePoint;
+        resolveParams.width = width;
+        resolveParams.height = height;
+        resolveParams.transferStrength = cfg.DlssNrTransferStrength.value_or_default();
+        resolveParams.colourStrength = cfg.DlssNrColourStrength.value_or_default();
+        resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
+
+        Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        g_codec.dispatch(cmdList, resolveParams, g_nr.colorCopy, g_nr.output, target);
+        Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
     else
     {
@@ -375,6 +437,8 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 bool IsRunning() { return g_nr.feature != nullptr && !g_nr.failed; }
 
 const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
+
+float CurrentWhitePoint() { return g_autoWhitePointSettled ? g_autoWhitePoint : 0.0f; }
 
 void Shutdown()
 {
@@ -395,6 +459,8 @@ void Shutdown()
         g_nr.colorCopy = nullptr;
     }
 
-    g_tone.destroy();
+    g_codec.destroy();
+    g_reducer.destroy();
+    g_reader.destroy();
 }
 } // namespace DlssNr
