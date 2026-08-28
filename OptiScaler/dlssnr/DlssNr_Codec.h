@@ -40,6 +40,9 @@ namespace codec
 {
 constexpr int MODE_ENCODE = 0;
 constexpr int MODE_RESOLVE = 1;
+// Shrinks the frame so the model can work on fewer pixels. Filtered, not point sampled: the guidance is
+// explicit that a nearest-neighbour enlargement of this pass turns into harsh aliasing.
+constexpr int MODE_DOWNSAMPLE = 2;
 
 // Debug views, so the model's contribution can be looked at rather than guessed at.
 constexpr int DEBUG_OFF = 0;
@@ -67,6 +70,7 @@ Texture2D<float4>   gModel    : register(t1);  // resolve: what the model return
 Texture2D<float4>   gOriginal : register(t2);  // resolve: the untouched frame.
 RWTexture2D<float4> gTarget   : register(u0);  // encode: the proxy. resolve: the frame.
 RWTexture2D<float4> gKeep     : register(u1);  // encode: the untouched copy.
+SamplerState        gLinear   : register(s0);  // so the edit can be read at a different size
 
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 
@@ -89,6 +93,15 @@ void main(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= gWidth || id.y >= gHeight)
         return;
+
+    // Normalised, so the source may be any size relative to this dispatch.
+    float2 uv = (float2(id.xy) + 0.5) / float2(gWidth, gHeight);
+
+    if (gMode == 2)
+    {
+        gTarget[id.xy] = gSource.SampleLevel(gLinear, uv, 0);
+        return;
+    }
 
     if (gMode == 0)
     {
@@ -117,8 +130,10 @@ void main(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    float4 proxySample = gSource.Load(int3(id.xy, 0));
-    float4 modelSample = gModel.Load(int3(id.xy, 0));
+    // Sampled rather than loaded: when the model ran at a reduced resolution these are smaller than the
+    // frame, and its edit is enlarged here while the frame underneath stays untouched.
+    float4 proxySample = gSource.SampleLevel(gLinear, uv, 0);
+    float4 modelSample = gModel.SampleLevel(gLinear, uv, 0);
 
     // Nothing was encoded on the way in, so nothing is decoded here either.
     float3 proxy = gPassthrough != 0 ? proxySample.rgb : SrgbToLinear(proxySample.rgb);
@@ -259,9 +274,19 @@ class Codec
         params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         params[1].Constants.Num32BitValues = sizeof(Params) / 4;
 
+        D3D12_STATIC_SAMPLER_DESC sampler = {};
+        sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        sampler.MaxLOD = D3D12_FLOAT32_MAX;
+        sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
         D3D12_ROOT_SIGNATURE_DESC rootDesc = {};
         rootDesc.NumParameters = 2;
         rootDesc.pParameters = params;
+        rootDesc.NumStaticSamplers = 1;
+        rootDesc.pStaticSamplers = &sampler;
 
         ID3DBlob* serialized = nullptr;
 

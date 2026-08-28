@@ -5831,6 +5831,29 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\n\nTakes effect on restart: only one model may exist at a time, and swapping it"
                        "\nmid-session is not worth the crash it caused every time it was tried.");
 
+        ImGui::SeparatorText("Cost");
+
+        static const char* scaleNames[] = { "Full resolution", "75%", "50%", "33%" };
+        static const float scaleValues[] = { 1.0f, 0.75f, 0.5f, 0.3333f };
+        const float currentScale = config->DlssNrWorkingScale.value_or_default();
+        int scaleIndex = 0;
+        for (int i = 0; i < IM_ARRAYSIZE(scaleValues); ++i)
+        {
+            if (currentScale <= scaleValues[i] + 0.01f)
+                scaleIndex = i;
+        }
+        if (ImGui::Combo("Model resolution", &scaleIndex, scaleNames, IM_ARRAYSIZE(scaleNames)))
+            config->DlssNrWorkingScale = scaleValues[scaleIndex];
+
+        ShowHelpMarker("What fraction of the frame the model works at. Cost falls with the square of"
+                       "\nthis, so half resolution is roughly a quarter of the time."
+                       "\n\nThe frame is never reduced. Only the model's contribution is computed small"
+                       "\nand enlarged, so the picture underneath is untouched whatever this says."
+                       "\n\nWhat it trades: the shading the model adds is broad and survives enlargement;"
+                       "\nthe fine structure it synthesises does not, and softens. Worth having when the"
+                       "\npass costs more than you want to pay for the detail it returns."
+                       "\n\nFinished-frame inject point only.");
+
         ImGui::SeparatorText("How much of it lands");
 
         float transfer = config->DlssNrTransferStrength.value_or_default();

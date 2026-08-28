@@ -289,6 +289,11 @@ class Config
     // 0 off, 1 the picture the model was shown, 2 its raw answer, 3 what it changed, amplified.
     CustomOptional<uint32_t> DlssNrDebugView { 0 };
 
+    // The fraction of the frame's resolution the model works at. The frame itself is never reduced --
+    // only the model's contribution is computed small and enlarged, so the picture underneath is
+    // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before.
+    CustomOptional<float> DlssNrWorkingScale { 1.0f };
+
     // DLSS
     CustomOptional<bool> DLSSEnabled { true };
     CustomOptional<bool> RenderPresetOverride { false };

@@ -55,6 +55,11 @@ struct NrState
     // a string of coloured cells.
     ID3D12Resource* hdrCopy = nullptr;
 
+    // The frame shrunk for the model, when it is working below full resolution.
+    ID3D12Resource* colorSmall = nullptr;
+    unsigned int workWidth = 0;
+    unsigned int workHeight = 0;
+
     // Cloned unconditionally when running at present, and only for typeless formats otherwise.
     ID3D12Resource* depthClone = nullptr;
     ID3D12Resource* motionClone = nullptr;
@@ -664,7 +669,8 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
         g_nr.feature =
             g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                        device, cmdList, g_nr.capabilityParams, width, height, (int) cfg.DlssNrPreset.value_or_default(),
+                        device, cmdList, g_nr.capabilityParams, width, height,
+                        (int) cfg.DlssNrPreset.value_or_default(),
                         cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
                         cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
                         cfg.DlssNrSkinStructure.value_or_default(),
@@ -955,8 +961,18 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         return;
     }
 
-    if (g_nr.feature != nullptr && (g_nr.width != width || g_nr.height != height))
+    // What the model works at. The frame is never reduced; only this is.
+    float scale = cfg.DlssNrWorkingScale.value_or_default();
+    scale = scale < 0.25f ? 0.25f : (scale > 1.0f ? 1.0f : scale);
+    const auto workWidth = (unsigned int) (width * scale + 0.5f);
+    const auto workHeight = (unsigned int) (height * scale + 0.5f);
+    const bool reduced = workWidth != width || workHeight != height;
+
+    if (g_nr.feature != nullptr &&
+        (g_nr.width != width || g_nr.height != height || g_nr.workWidth != workWidth ||
+         g_nr.workHeight != workHeight))
     {
+        WaitForAllSubmitted();
         g_nr.release(g_nr.feature);
         g_nr.feature = nullptr;
 
@@ -977,15 +993,28 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
             g_nr.hdrCopy->Release();
             g_nr.hdrCopy = nullptr;
         }
+
+        if (g_nr.colorSmall != nullptr)
+        {
+            g_nr.colorSmall->Release();
+            g_nr.colorSmall = nullptr;
+        }
     }
 
     if (g_nr.output == nullptr)
     {
-        g_nr.output = CreateScratch(device, scratchFormat, width, height);
+        // The model's own images are the working size; the frame's copies stay full size.
+        g_nr.output = CreateScratch(device, scratchFormat, workWidth, workHeight);
         g_nr.colorCopy = CreateScratch(device, scratchFormat, width, height);
         // The resolve cannot write the back buffer directly: a swapchain buffer is not created for
         // unordered access. It writes here and this is copied over the frame.
         g_nr.hdrCopy = CreateScratch(device, scratchFormat, width, height);
+
+        if (reduced)
+            g_nr.colorSmall = CreateScratch(device, scratchFormat, workWidth, workHeight);
+
+        g_nr.workWidth = workWidth;
+        g_nr.workHeight = workHeight;
     }
 
     if (g_nr.output == nullptr || g_nr.colorCopy == nullptr || g_nr.hdrCopy == nullptr)
@@ -1057,7 +1086,8 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
 
         g_nr.feature =
             g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                        device, cmdList, g_nr.capabilityParams, width, height, (int) cfg.DlssNrPreset.value_or_default(),
+                        device, cmdList, g_nr.capabilityParams, workWidth, workHeight,
+                        (int) cfg.DlssNrPreset.value_or_default(),
                         cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
                         cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
                         cfg.DlssNrSkinStructure.value_or_default(),
@@ -1110,14 +1140,31 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
     Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
+    // Shrink the frame for the model, when it is working below full resolution. The copy above stays at
+    // full size and is what the edit is finally added to.
+    ID3D12Resource* modelInput = g_nr.colorCopy;
+
+    if (reduced && g_nr.colorSmall != nullptr)
+    {
+        codec::Params down {};
+        down.mode = codec::MODE_DOWNSAMPLE;
+        down.width = workWidth;
+        down.height = workHeight;
+        g_codec.dispatch(cmdList, down, g_nr.colorCopy, nullptr, nullptr, g_nr.colorSmall, nullptr);
+        Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        modelInput = g_nr.colorSmall;
+    }
+
     Barrier(cmdList, g_nr.depthClone, D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     Barrier(cmdList, g_nr.motionClone, D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
     const int result = g_nr.evaluate(
-        cmdList, g_nr.feature, g_nr.capabilityParams, g_nr.colorCopy, g_nr.depthClone, g_nr.motionClone,
-        g_nr.output, width, height, g_nr.guideWidth, g_nr.guideHeight, g_nr.guideDepthInverted ? 1 : 0,
+        cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, g_nr.depthClone, g_nr.motionClone,
+        g_nr.output, workWidth, workHeight, g_nr.guideWidth, g_nr.guideHeight,
+        g_nr.guideDepthInverted ? 1 : 0,
         g_nr.reset ? 1 : 0,
         cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
         cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
@@ -1149,8 +1196,8 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
 
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        g_codec.dispatch(cmdList, resolveParams, g_nr.colorCopy, g_nr.output, g_nr.colorCopy,
-                         g_nr.hdrCopy, nullptr);
+        g_codec.dispatch(cmdList, resolveParams, modelInput, g_nr.output, g_nr.colorCopy, g_nr.hdrCopy,
+                         nullptr);
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
@@ -1173,6 +1220,10 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
 
     Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    if (reduced && g_nr.colorSmall != nullptr)
+        Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     if (g_gpuTime != nullptr)
         g_gpuTime->End(cmdList);
@@ -1231,6 +1282,12 @@ void Shutdown()
     {
         g_nr.hdrCopy->Release();
         g_nr.hdrCopy = nullptr;
+    }
+
+    if (g_nr.colorSmall != nullptr)
+    {
+        g_nr.colorSmall->Release();
+        g_nr.colorSmall = nullptr;
     }
 
     if (g_nr.depthClone != nullptr)
