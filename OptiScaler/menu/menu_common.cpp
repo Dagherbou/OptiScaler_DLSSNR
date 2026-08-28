@@ -5900,6 +5900,39 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                            "\nconventional Output Scaling look with the model in the chain -- and RR's"
                            "\ncost rises with the square of the ratio, which is the price."
                            "\n\nApplies live; the feature is re-created in place.");
+
+            {
+                static const int srPresetValues[] = { 0, 5, 6, 10, 11 };
+                static const char* srPresetNames =
+                    "Driver default\0Preset E (classic, stable)\0Preset F (classic)\0"
+                    "Preset J (transformer)\0Preset K (transformer, latest)\0";
+                const int srPresetNow = (int) config->DlssNrSplitSrPreset.value_or_default();
+                int srPresetIndex = 0;
+
+                for (int i = 0; i < 5; ++i)
+                {
+                    if (srPresetValues[i] == srPresetNow)
+                        srPresetIndex = i;
+                }
+
+                if (ImGui::Combo("Enlargement preset", &srPresetIndex, srPresetNames))
+                    config->DlssNrSplitSrPreset = (uint32_t) srPresetValues[srPresetIndex];
+
+                ShowHelpMarker("The model preset of the split's internal Super Resolution feature."
+                               "\nThe transformer presets (J, K) hallucinate detail best from an"
+                               "\nalready-resolved image, which is exactly what the enlargement is fed."
+                               "\n\nApplies live; the enlargement is re-created in place. If the global"
+                               "\nRender Presets Override is on, it wins over this.");
+
+                float srSharp = config->DlssNrSplitSrSharpness.value_or_default();
+
+                if (ImGui::SliderFloat("Enlargement sharpening", &srSharp, 0.0f, 1.0f, "%.2f"))
+                    config->DlssNrSplitSrSharpness = srSharp;
+
+                ShowHelpMarker("Sharpening applied by the enlargement (via RCAS -- needs RCAS enabled"
+                               "\nabove). 0 is off, and the default: the supersample downscale already"
+                               "\nrestores some crispness on its own.");
+            }
         }
 
         ImGui::SeparatorText("Cost");

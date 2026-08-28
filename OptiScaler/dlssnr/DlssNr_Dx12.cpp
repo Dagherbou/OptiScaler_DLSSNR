@@ -822,6 +822,12 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         RecordBuiltTuning(cfg);
         LOG_INFO("DLSS-NR running at {}x{}, guides {}x{} (preset {}, intensity {}, style {})", width,
                  height, guideWidth, guideHeight, g_nr.builtPreset, g_nr.builtIntensity, g_nr.builtStyle);
+
+        // Creating and evaluating a feature in the same command list is the dice-roll that hung the
+        // GPU (every crash died on a creation frame). The creation goes through the game's own submit
+        // first; the first evaluate happens next frame. One frame without the model is invisible.
+        device->Release();
+        return;
     }
 
     if (g_nr.feature == nullptr)
@@ -1341,6 +1347,21 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
                  width, height, g_nr.guideWidth, g_nr.guideHeight, g_nr.builtPreset, g_nr.builtIntensity,
                  g_nr.builtStyle, g_nr.builtLocalStructure, g_nr.builtLocalTone, g_nr.builtSkinStructure,
                  cfg.DlssNrUiCorrection.value_or_default() ? 1 : 0);
+
+        // Same dice-roll as the render-path creation: the creation commands are submitted and fenced
+        // on their own, and the first evaluate happens on the next pass.
+        if (SUCCEEDED(cmdList->Close()))
+        {
+            ID3D12CommandList* lists[] = { cmdList };
+            queue->ExecuteCommandLists(1, lists);
+            ++g_nr.presentFenceNext;
+
+            if (SUCCEEDED(queue->Signal(g_nr.presentFence, g_nr.presentFenceNext)))
+                g_nr.presentFenceValues[slot] = g_nr.presentFenceNext;
+        }
+
+        device->Release();
+        return;
     }
 
     // Timed across the whole pass: the staging copies and the resolve are part of what this costs, and

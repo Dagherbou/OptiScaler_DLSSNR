@@ -674,6 +674,7 @@ struct SplitState
     // recreation counter does.
     bool srJustCreated = false;
     unsigned int srTargetWidth = 0;         // what the enlargement was built to produce
+    int srBuiltPreset = -1;                 // the render preset it was built with
     bool failed = false;
 
 
@@ -1329,9 +1330,13 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
     targetW = targetW > renderW * 4 ? renderW * 4 : targetW;
     targetH = targetH > renderH * 4 ? renderH * 4 : targetH;
 
-    if (SplitDx12.sr != nullptr && SplitDx12.srTargetWidth != targetW)
+    const int srPresetWanted = (int) Config::Instance()->DlssNrSplitSrPreset.value_or_default();
+
+    if (SplitDx12.sr != nullptr &&
+        (SplitDx12.srTargetWidth != targetW || SplitDx12.srBuiltPreset != srPresetWanted))
     {
-        LOG_INFO("DLSS-NR split: rebuilding the enlargement for {}x{}", targetW, targetH);
+        LOG_INFO("DLSS-NR split: rebuilding the enlargement for {}x{} (preset {})", targetW, targetH,
+                 srPresetWanted);
         SplitParkEnlargement();
     }
 
@@ -1344,8 +1349,37 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
         // Built supersampled, it must declare what it actually is or the driver refuses it at evaluate.
         params->Set(NVSDK_NGX_Parameter_PerfQualityValue, SplitPerfQuality(renderW, targetW));
 
+        // The chosen render preset for the enlargement, written across every mode slot so the one the
+        // declared quality maps to is covered; the game's own hints are restored right after creation.
+        // (OptiScaler's global Render Presets Override, when on, wins inside the feature's init.)
+        unsigned int origHintQ = 0, origHintB = 0, origHintP = 0, origHintUP = 0, origHintDLAA = 0;
+
+        if (srPresetWanted != 0)
+        {
+            params->Get(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, &origHintQ);
+            params->Get(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, &origHintB);
+            params->Get(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, &origHintP);
+            params->Get(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance, &origHintUP);
+            params->Get(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, &origHintDLAA);
+            params->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, (unsigned int) srPresetWanted);
+            params->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, (unsigned int) srPresetWanted);
+            params->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, (unsigned int) srPresetWanted);
+            params->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance,
+                        (unsigned int) srPresetWanted);
+            params->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, (unsigned int) srPresetWanted);
+        }
+
         auto sr = std::make_unique<DLSSFeatureDx12>(IFeature::GetNextHandleId(), params);
         const bool srInited = sr->Init(D3D12Device, cmdList, params) && sr->IsInited();
+
+        if (srPresetWanted != 0)
+        {
+            params->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, origHintQ);
+            params->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, origHintB);
+            params->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, origHintP);
+            params->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance, origHintUP);
+            params->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, origHintDLAA);
+        }
 
         if (SplitDx12.origPerfQuality != 0xffffffff)
             params->Set(NVSDK_NGX_Parameter_PerfQualityValue, SplitDx12.origPerfQuality);
@@ -1378,6 +1412,7 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
 
         SplitDx12.sr = std::move(sr);
         SplitDx12.srTargetWidth = targetW;
+        SplitDx12.srBuiltPreset = srPresetWanted;
         SplitDx12.srJustCreated = true;
         LOG_INFO("DLSS-NR split: internal Super Resolution running {}x{} -> {}x{}{}", renderW, renderH,
                  targetW, targetH, supersample ? " (supersampled)" : "");
@@ -1419,11 +1454,12 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
     if (rrExposure != nullptr)
         params->Set("ExposureTexture", rrExposure);
 
-    // And the game's sharpness would switch on RCAS inside our SR, against motion vectors it does not
-    // understand at this geometry. The enlargement is an enlargement, nothing more.
+    // The game's sharpness must not leak into our SR -- it belongs to the game's own arrangement. The
+    // enlargement sharpens only by the user's explicit amount (0 = off, the default; runs via RCAS).
     float gameSharpness = 0.0f;
     params->Get(NVSDK_NGX_Parameter_Sharpness, &gameSharpness);
-    params->Set(NVSDK_NGX_Parameter_Sharpness, 0.0f);
+    params->Set(NVSDK_NGX_Parameter_Sharpness,
+                Config::Instance()->DlssNrSplitSrSharpness.value_or_default());
 
     bool srOk = SplitDx12.sr->Evaluate(cmdList, params);
 

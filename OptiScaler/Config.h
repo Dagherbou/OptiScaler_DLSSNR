@@ -314,6 +314,11 @@ class Config
     // the oversized size and the model works on that image, with RR's cost rising as the ratio squared.
     CustomOptional<bool> DlssNrSplitIncludeRR { false };
 
+    // The internal enlargement's model preset (0 = driver default; otherwise the NGX render-preset
+    // number: 5 = E, 6 = F, 10 = J, 11 = K) and its sharpening (0 = off; needs RCAS enabled).
+    CustomOptional<uint32_t> DlssNrSplitSrPreset { 0 };
+    CustomOptional<float> DlssNrSplitSrSharpness { 0.0f };
+
     // DLSS
     CustomOptional<bool> DLSSEnabled { true };
     CustomOptional<bool> RenderPresetOverride { false };
