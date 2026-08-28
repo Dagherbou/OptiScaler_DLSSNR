@@ -601,6 +601,19 @@ void SetSplitStatus(const char* status)
 
 const char* SplitStatus() { return g_splitStatus; }
 
+// The split's own latch lives at the seam; it registers a hook here so one button clears everything.
+void (*g_splitRetryHook)() = nullptr;
+
+void RetryAfterFailure()
+{
+    g_nr.failed = false;
+    g_nr.reason = "";
+    g_nr.reset = true;
+
+    if (g_splitRetryHook != nullptr)
+        g_splitRetryHook();
+}
+
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
                           bool forceInPlace)
 {

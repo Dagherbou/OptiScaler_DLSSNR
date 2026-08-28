@@ -680,9 +680,31 @@ struct SplitState
     // "wrong" forever, and the restore fought it in an endless recreation loop that shredded the frame.
     bool geometryOwned = false;
     bool restorePending = false;
+
+    // Rapid toggling must not thrash recreations: the wanted-state has to hold still briefly before the
+    // machinery moves. Steering of in-flight transitions is unaffected.
+    bool lastWant = false;
+    int stableFrames = 0;
 };
 
 static SplitState SplitDx12;
+
+namespace DlssNr
+{
+extern void (*g_splitRetryHook)();
+}
+
+static void SplitClearFailure()
+{
+    SplitDx12.failed = false;
+    SplitDx12.armTries = 0;
+    DlssNr::SetSplitStatus("");
+}
+
+static const bool g_splitRetryRegistered = [] {
+    DlssNr::g_splitRetryHook = &SplitClearFailure;
+    return true;
+}();
 
 // Retired on a live change: still referenced by command lists submitted over the last frames, so each
 // entry is released a number of evaluates later. A list, so rapid changes queue rather than forcing an
@@ -861,6 +883,20 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
     // A completed transition ends any pending restore, whatever geometry resulted -- one attempt only.
     SplitDx12.restorePending = false;
 
+    // Debounce: act on a changed wanted-state only once it has held still. A fast enable/disable run
+    // otherwise burns the whole retry budget on transitions that were each individually succeeding.
+    if (want != SplitDx12.lastWant)
+    {
+        SplitDx12.lastWant = want;
+        SplitDx12.stableFrames = 0;
+        return;
+    }
+
+    if (++SplitDx12.stableFrames < 20 && SplitDx12.stableFrames > 0)
+    {
+        // Not yet settled; unless nothing would change anyway, wait.
+    }
+
     IFeature_Dx12* f = it->second.feature.get();
 
     unsigned int w = 0, h = 0, ow = 0, oh = 0;
@@ -891,7 +927,14 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
         SplitDx12.armTries = 0;
     }
 
-    if (want && !matches)
+    // The feature is where the settings want it: the retry budget is refunded, so only consecutive
+    // failures ever exhaust it.
+    if (want && matches)
+        SplitDx12.armTries = 0;
+
+    const bool settled = SplitDx12.stableFrames >= 20;
+
+    if (want && !matches && settled)
     {
         // If recreations complete and the feature still does not match, something else owns its
         // geometry. Give up loudly rather than re-creating every frame, which is a device-killing storm.
@@ -937,7 +980,7 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
         return;
     }
 
-    if (!want && SplitDx12.geometryOwned && SplitDx12.displayWidth != 0 &&
+    if (!want && settled && SplitDx12.geometryOwned && SplitDx12.displayWidth != 0 &&
         (f->TargetWidth() != SplitDx12.displayWidth || f->TargetHeight() != SplitDx12.displayHeight))
     {
         params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);

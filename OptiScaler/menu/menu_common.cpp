@@ -5784,7 +5784,13 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
             const char* reason = DlssNr::FailureReason();
 
             if (reason[0] != 0)
+            {
                 ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f), "Off for this session: %s.", reason);
+                ImGui::SameLine();
+
+                if (ImGui::SmallButton("Retry"))
+                    DlssNr::RetryAfterFailure();
+            }
             else if (enabled)
                 ImGui::TextUnformatted("Waiting for the upscaler to run.");
         }
@@ -5846,7 +5852,13 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
             else if (splitStatus[0] == 'r' && splitStatus[1] == 'u')
                 ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "%s", splitStatus);
             else if (splitStatus[0] == 'f')
+            {
                 ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f), "%s", splitStatus);
+                ImGui::SameLine();
+
+                if (ImGui::SmallButton("Retry##split"))
+                    DlssNr::RetryAfterFailure();
+            }
             else
                 ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.4f, 1.0f), "%s", splitStatus);
         }

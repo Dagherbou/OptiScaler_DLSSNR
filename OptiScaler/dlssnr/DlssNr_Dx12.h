@@ -36,6 +36,10 @@ void SetSplitActive(bool active);
 void SetSplitStatus(const char* status);
 const char* SplitStatus();
 
+// Clears the session failure latches -- the model's and the split's -- so a failure caused by transient
+// thrash does not cost a restart.
+void RetryAfterFailure();
+
 // Runs the model over the finished frame, on a command list of its own, and submits it. Called every
 // present; does nothing unless that inject point is selected.
 void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, unsigned int backBufferIndex);
