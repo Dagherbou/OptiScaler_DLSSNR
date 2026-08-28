@@ -676,8 +676,10 @@ struct SplitState
     std::unique_ptr<OS_Dx12> parkedDownscaler;
     int parkedCountdown = 0;
 
-    // Geometry-change control, so nothing can ever loop recreations.
+    // Geometry-change control, so nothing can ever loop recreations. The pair doubles as the steering
+    // target while a recreation is mid-flight and the feature does not exist to ask.
     unsigned int lastDesiredWidth = 0;
+    unsigned int lastDesiredHeight = 0;
     int armTries = 0;
 };
 
@@ -788,12 +790,33 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
 
     auto it = Dx12Contexts.find(handleId);
 
-    if (it == Dx12Contexts.end() || it->second.feature == nullptr)
+    if (it == Dx12Contexts.end())
         return;
 
-    IFeature_Dx12* f = it->second.feature.get();
     const bool want = SplitWanted();
     State& state = State::Instance();
+
+    // A recreation is mid-flight -- the old feature may already be destroyed, and ChangeFeature's first
+    // phase stamps the block's output size back to the old feature's. Keep the block aimed at the
+    // destination every frame until the new feature exists, or the parse reads the stamped size and the
+    // recreation reproduces exactly what it was meant to replace.
+    if (it->second.changeBackendCounter != 0 || it->second.feature == nullptr)
+    {
+        if (want && SplitDx12.lastDesiredWidth != 0)
+        {
+            params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.lastDesiredWidth);
+            params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.lastDesiredHeight);
+        }
+        else if (!want && SplitDx12.displayWidth != 0)
+        {
+            params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
+            params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
+        }
+
+        return;
+    }
+
+    IFeature_Dx12* f = it->second.feature.get();
 
     if (!want && Config::Instance()->DlssNrSplitPipeline.value_or_default() &&
         Config::Instance()->OutputScalingEnabled.value_or_default())
@@ -820,28 +843,11 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
     const bool matches = f->TargetWidth() == desiredW && f->TargetHeight() == desiredH;
 
     // A different geometry is now desired: the retry budget starts over.
-    if (desiredW != SplitDx12.lastDesiredWidth)
+    if (desiredW != SplitDx12.lastDesiredWidth || desiredH != SplitDx12.lastDesiredHeight)
     {
         SplitDx12.lastDesiredWidth = desiredW;
+        SplitDx12.lastDesiredHeight = desiredH;
         SplitDx12.armTries = 0;
-    }
-
-    // A recreation is mid-flight: keep the block's output size aimed where it is going, in case the
-    // game rewrites it every frame, and otherwise stay out of the way.
-    if (it->second.changeBackendCounter != 0)
-    {
-        if (want && desiredW != 0)
-        {
-            params->Set(NVSDK_NGX_Parameter_OutWidth, desiredW);
-            params->Set(NVSDK_NGX_Parameter_OutHeight, desiredH);
-        }
-        else if (!want && SplitDx12.displayWidth != 0)
-        {
-            params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
-            params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
-        }
-
-        return;
     }
 
     if (want && !matches)
