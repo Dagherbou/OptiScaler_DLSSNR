@@ -697,6 +697,10 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
     const bool want = SplitWanted();
     State& state = State::Instance();
 
+    if (!want && Config::Instance()->DlssNrSplitPipeline.value_or_default() &&
+        Config::Instance()->OutputScalingEnabled.value_or_default())
+        DlssNr::SetSplitStatus("waiting: turn Output Scaling off -- the two cannot run together");
+
     // A recreation is mid-flight: keep the block's output size aimed at where it is going, in case the
     // game rewrites it every frame, and otherwise stay out of the way.
     if (it->second.changeBackendCounter != 0)
@@ -724,6 +728,25 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
 
     if (want && !oneToOne)
     {
+        // If recreations complete and the feature still is not 1:1, something else owns its geometry.
+        // Give up loudly rather than re-creating it every frame, which is a device-killing storm.
+        static int armTries = 0;
+
+        if (armTries >= 3)
+        {
+            if (!SplitDx12.failed)
+            {
+                SplitDx12.failed = true;
+                DlssNr::SetSplitStatus("failed: the feature will not stay 1:1 (see the log)");
+                LOG_ERROR("DLSS-NR split: three recreations did not produce a 1:1 feature; giving up. "
+                          "Something else controls its geometry.");
+            }
+
+            return;
+        }
+
+        ++armTries;
+
         unsigned int w = 0, h = 0, ow = 0, oh = 0;
         params->Get(NVSDK_NGX_Parameter_Width, &w);
         params->Get(NVSDK_NGX_Parameter_Height, &h);
@@ -787,6 +810,13 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
 static bool SplitWanted()
 {
     const Config& cfg = *Config::Instance();
+
+    // Output Scaling multiplies the feature's target size, so a split feature can never be 1:1 while it
+    // is on -- and asking for both put the transition manager into a recreate-every-frame storm, which
+    // is a crash. They occupy the same seam; one at a time.
+    if (cfg.OutputScalingEnabled.value_or_default())
+        return false;
+
     return cfg.DlssNrEnabled.value_or_default() && cfg.DlssNrSplitPipeline.value_or_default() &&
            !SplitDx12.failed;
 }
