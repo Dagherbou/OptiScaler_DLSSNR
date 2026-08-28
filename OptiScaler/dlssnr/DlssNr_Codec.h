@@ -160,10 +160,15 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 colourEdit = edit - lumaEdit;
     float3 applied = lumaEdit * gTransferStrength + colourEdit * gColourStrength;
 
-    // Near white the proxy has lost the information the model would need, and anything it invents there
-    // is guesswork on a light source. Fade it out rather than trust it.
-    float proxyLuma = dot(proxy, kLuma);
-    applied *= 1.0 - smoothstep(0.85, 1.0, proxyLuma);
+    // Near white a compressed proxy has lost the information the model would need, and scaling its
+    // answer back up amplifies whatever it invents there. That only applies where a curve was used: with
+    // nothing compressed there is nothing to amplify, and rolling off would just discard detail in every
+    // bright part of an ordinary frame.
+    if (gPassthrough == 0)
+    {
+        float proxyLuma = dot(proxy, kLuma);
+        applied *= 1.0 - smoothstep(0.85, 1.0, proxyLuma);
+    }
 
     float3 result = original + applied * slope;
 

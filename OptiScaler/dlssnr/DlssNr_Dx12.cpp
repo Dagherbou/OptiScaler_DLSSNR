@@ -405,6 +405,8 @@ void WaitForAllSubmitted()
         WaitForSingleObject(g_nr.presentFenceEvent, 1000);
 }
 
+void WaitForAllSubmitted();
+
 bool EnsurePresentList(ID3D12Device* device)
 {
     if (g_nr.presentList != nullptr)
@@ -819,7 +821,8 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
     // the bits are the same and the model wants them exactly as they are.
     const DXGI_FORMAT scratchFormat = codec::TypedFormat(desc.Format);
 
-    if (!EnsureForwarder() || !EnsureCapabilityParams(device) || !EnsurePresentList(device))
+    if (!EnsureForwarder() || !EnsureCapabilityParams(device) || !EnsurePresentList(device) ||
+        !g_codec.ensure(device))
     {
         g_nr.failed = true;
         LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
@@ -843,15 +846,24 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
             g_nr.colorCopy->Release();
             g_nr.colorCopy = nullptr;
         }
+
+        if (g_nr.hdrCopy != nullptr)
+        {
+            g_nr.hdrCopy->Release();
+            g_nr.hdrCopy = nullptr;
+        }
     }
 
     if (g_nr.output == nullptr)
     {
         g_nr.output = CreateScratch(device, scratchFormat, width, height);
         g_nr.colorCopy = CreateScratch(device, scratchFormat, width, height);
+        // The resolve cannot write the back buffer directly: a swapchain buffer is not created for
+        // unordered access. It writes here and this is copied over the frame.
+        g_nr.hdrCopy = CreateScratch(device, scratchFormat, width, height);
     }
 
-    if (g_nr.output == nullptr || g_nr.colorCopy == nullptr)
+    if (g_nr.output == nullptr || g_nr.colorCopy == nullptr || g_nr.hdrCopy == nullptr)
     {
         g_nr.failed = true;
         g_nr.reason = "the staging textures could not be created";
@@ -884,7 +896,11 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
     const unsigned int slot = backBufferIndex % kPresentAllocators;
     ID3D12CommandAllocator* allocator = g_nr.presentAllocators[slot];
 
-    WaitForAllocator(slot);
+    // Waits for the previous run of this pass, not merely for this allocator's own last use. One set of
+    // scratch textures and one model feature are shared across every frame, so letting three run at once
+    // meant one frame's evaluate could still be reading the staging copy while the next overwrote it --
+    // and the feature carries temporal history, which is not something to run three copies of.
+    WaitForAllSubmitted();
 
     if (FAILED(allocator->Reset()) || FAILED(g_nr.presentList->Reset(allocator, nullptr)))
     {
@@ -973,11 +989,32 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
 
     if (result == NVSDK_NGX_Result_Success)
     {
+        // The frame the model was shown and the frame as it was are the same thing here, because nothing
+        // was converted on the way in. So the resolve adds the model's edit to the frame rather than
+        // replacing it: at strength zero the result is the original, bit for bit.
+        codec::Params resolveParams {};
+        resolveParams.mode = codec::MODE_RESOLVE;
+        resolveParams.passthrough = 1;
+        resolveParams.whitePoint = 1.0f;
+        resolveParams.width = width;
+        resolveParams.height = height;
+        resolveParams.transferStrength = cfg.DlssNrTransferStrength.value_or_default();
+        resolveParams.colourStrength = cfg.DlssNrColourStrength.value_or_default();
+        resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
+        resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
+
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        g_codec.dispatch(cmdList, resolveParams, g_nr.colorCopy, g_nr.output, g_nr.colorCopy,
+                         g_nr.hdrCopy, nullptr);
+        Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_COPY_SOURCE);
         Barrier(cmdList, backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
-        cmdList->CopyResource(backBuffer, g_nr.output);
-        Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_COPY_SOURCE,
+        cmdList->CopyResource(backBuffer, g_nr.hdrCopy);
+        Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_COPY_SOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Barrier(cmdList, backBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
     }
