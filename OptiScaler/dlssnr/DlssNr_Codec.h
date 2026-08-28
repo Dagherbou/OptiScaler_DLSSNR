@@ -217,15 +217,9 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 colourEdit = edit - lumaEdit;
     float3 applied = lumaEdit * gTransferStrength + colourEdit * gColourStrength;
 
-    // Near white a compressed proxy has lost the information the model would need, and scaling its
-    // answer back up amplifies whatever it invents there. That only applies where a curve was used: with
-    // nothing compressed there is nothing to amplify, and rolling off would just discard detail in every
-    // bright part of an ordinary frame.
-    if (gPassthrough == 0)
-    {
-        float proxyLuma = dot(proxy, kLuma);
-        applied *= 1.0 - smoothstep(0.85, 1.0, proxyLuma);
-    }
+    // No highlight rolloff. It was a second belt after the clamp below, and it discarded the model's
+    // contribution exactly where a lit scene carries its punch -- the two inject points now apply the
+    // edit identically, with the clamp as the one safety in both.
 
     float3 result = original + applied * slope;
 
