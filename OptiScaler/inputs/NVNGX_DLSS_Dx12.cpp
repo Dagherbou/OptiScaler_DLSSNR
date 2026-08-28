@@ -673,6 +673,18 @@ struct SplitState
     // crashes died on exactly the creation frame). Skip one frame instead, like OptiScaler's own
     // recreation counter does.
     bool srJustCreated = false;
+
+    // The enlargement is created on this private queue, executed and fenced to completion before
+    // anything else happens. Recording NGX's creation into the game's already-loaded command list --
+    // even without evaluating -- was the remaining dice-roll: three sessions died on exactly that
+    // frame. A few milliseconds of synchronous wait, once per creation, inside a hitch that exists
+    // anyway.
+    ID3D12CommandQueue* createQueue = nullptr;
+    ID3D12CommandAllocator* createAlloc = nullptr;
+    ID3D12GraphicsCommandList* createList = nullptr;
+    ID3D12Fence* createFence = nullptr;
+    UINT64 createFenceValue = 0;
+    HANDLE createEvent = nullptr;
     unsigned int srTargetWidth = 0;         // what the enlargement was built to produce
     int srBuiltPreset = -1;                 // the render preset it was built with
     bool failed = false;
@@ -1188,6 +1200,35 @@ static bool SplitDownscale(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* f
     return ok;
 }
 
+// The private creation kit, built once. Failure leaves it absent and the caller falls back.
+static bool SplitEnsureCreationKit()
+{
+    if (SplitDx12.createQueue != nullptr)
+        return true;
+
+    D3D12_COMMAND_QUEUE_DESC qd {};
+    qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+
+    if (FAILED(D3D12Device->CreateCommandQueue(&qd, IID_PPV_ARGS(&SplitDx12.createQueue))))
+        return false;
+
+    if (FAILED(D3D12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                   IID_PPV_ARGS(&SplitDx12.createAlloc))) ||
+        FAILED(D3D12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, SplitDx12.createAlloc,
+                                              nullptr, IID_PPV_ARGS(&SplitDx12.createList))) ||
+        FAILED(SplitDx12.createList->Close()) ||
+        FAILED(D3D12Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&SplitDx12.createFence))))
+    {
+        if (SplitDx12.createQueue != nullptr) { SplitDx12.createQueue->Release(); SplitDx12.createQueue = nullptr; }
+        if (SplitDx12.createAlloc != nullptr) { SplitDx12.createAlloc->Release(); SplitDx12.createAlloc = nullptr; }
+        if (SplitDx12.createList != nullptr) { SplitDx12.createList->Release(); SplitDx12.createList = nullptr; }
+        return false;
+    }
+
+    SplitDx12.createEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    return SplitDx12.createEvent != nullptr;
+}
+
 // The per-frame orchestration. Returns true when it handled the evaluate, with the result in outResult.
 static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_Handle* handle,
                             NVSDK_NGX_Parameter* params, PFN_NVSDK_NGX_ProgressCallback callback,
@@ -1374,7 +1415,35 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
         }
 
         auto sr = std::make_unique<DLSSFeatureDx12>(IFeature::GetNextHandleId(), params);
-        const bool srInited = sr->Init(D3D12Device, cmdList, params) && sr->IsInited();
+        bool srInited = false;
+
+        // The creation is recorded on the private list, executed on the private queue and waited to
+        // completion here -- never mixed into the game's list, which is where three sessions died.
+        if (SplitEnsureCreationKit() && SUCCEEDED(SplitDx12.createAlloc->Reset()) &&
+            SUCCEEDED(SplitDx12.createList->Reset(SplitDx12.createAlloc, nullptr)))
+        {
+            srInited = sr->Init(D3D12Device, SplitDx12.createList, params) && sr->IsInited();
+
+            if (SUCCEEDED(SplitDx12.createList->Close()))
+            {
+                ID3D12CommandList* createLists[] = { SplitDx12.createList };
+                SplitDx12.createQueue->ExecuteCommandLists(1, createLists);
+                ++SplitDx12.createFenceValue;
+
+                if (SUCCEEDED(SplitDx12.createQueue->Signal(SplitDx12.createFence,
+                                                            SplitDx12.createFenceValue)) &&
+                    SplitDx12.createFence->GetCompletedValue() < SplitDx12.createFenceValue)
+                {
+                    SplitDx12.createFence->SetEventOnCompletion(SplitDx12.createFenceValue,
+                                                                SplitDx12.createEvent);
+                    WaitForSingleObject(SplitDx12.createEvent, 2000);
+                }
+            }
+            else
+            {
+                srInited = false;
+            }
+        }
 
         if (srPresetWanted != 0)
         {
