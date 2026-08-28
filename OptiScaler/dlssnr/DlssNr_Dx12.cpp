@@ -1067,8 +1067,12 @@ void EvaluateBeforeUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramet
         g_nr.output = CreateScratch(device, scratchFormat, width, height);     // the model's answer
         g_nr.colorCopy = CreateScratch(device, scratchFormat, width, height);  // the proxy it is shown
         g_nr.hdrCopy = CreateScratch(device, scratchFormat, width, height);    // the input, untouched
-        g_nr.colorSmall = CreateScratch(device, scratchFormat, width, height); // the resolve's output
     }
+
+    // Allocated separately: a live switch from another inject point at the same resolution arrives with
+    // the shared textures already existing and only this one missing.
+    if (g_nr.colorSmall == nullptr)
+        g_nr.colorSmall = CreateScratch(device, scratchFormat, width, height); // the resolve's output
 
     if (g_nr.output == nullptr || g_nr.colorCopy == nullptr || g_nr.hdrCopy == nullptr ||
         g_nr.colorSmall == nullptr)
