@@ -1784,9 +1784,9 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             {
                 fgText = formatFg("Combo", Nvngx_FG::getMaxFakeFramesCount());
             }
-            else if (state.activeFgOutput == FGOutput::DLSSG)
+            else if (state.activeFgOutput == FGOutput::DLSSG && fg)
             {
-                fgText = formatFg("DLSSG", state.dlssgMaxInterpolationCount);
+                fgText = formatFg("DLSSG", fg->GetMaxInterpolationCount());
             }
 
             const auto overlayType = config->FpsOverlayType.value_or_default();
@@ -3516,6 +3516,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
     auto& currentFeature = ctx.currentFeature;
     auto& menuResScale = ctx.menuResScale;
     auto& primaryGpu = *ctx.primaryGpu;
+    auto fgOutput = state.currentFG;
 
     // FSR FG controls
     if (state.activeFgOutput == FGOutput::FSRFG && state.activeFgInput != FGInput::NoFG &&
@@ -3771,7 +3772,8 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
 
     // XeFG controls
     if (state.activeFgOutput == FGOutput::XeFG && state.activeFgInput != FGInput::NoFG &&
-        state.activeFgInput != FGInput::ForceXeLL && state.currentFGSwapchain != nullptr && XeFGProxy::InitXeFG())
+        state.activeFgInput != FGInput::ForceXeLL && state.currentFGSwapchain != nullptr && XeFGProxy::InitXeFG() &&
+        fgOutput)
     {
         ImGui::SeparatorText("Frame Generation (XeFG)");
 
@@ -3781,8 +3783,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         if (state.activeFgInput == FGInput::Upscaler && currentFeature != nullptr)
             nativeAA = currentFeature->RenderWidth() == currentFeature->DisplayWidth();
 
-        auto fgOutput = reinterpret_cast<IFGFeature_Dx12*>(state.currentFG);
-        const bool correctMVs = fgOutput && fgOutput->IsLowResMV() || nativeAA ||
+        const bool correctMVs = fgOutput->IsLowResMV() || nativeAA ||
                                 (State::Instance().gameQuirks & GameQuirk::ForceFGRenderSizeMVs) || ignoreChecks;
 
         if (!correctMVs || state.realExclusiveFullscreen)
@@ -3791,10 +3792,9 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             config->FGXeFGDebugView.reset();
         }
 
-        const bool restartNeeded =
-            fgOutput && (config->FGXeFGDepthInverted.value_or_default() != fgOutput->IsInvertedDepth() ||
-                         config->FGXeFGJitteredMV.value_or_default() != fgOutput->IsJitteredMVs() ||
-                         config->FGXeFGHighResMV.value_or_default() == fgOutput->IsLowResMV());
+        const bool restartNeeded = config->FGXeFGDepthInverted.value_or_default() != fgOutput->IsInvertedDepth() ||
+                                   config->FGXeFGJitteredMV.value_or_default() != fgOutput->IsJitteredMVs() ||
+                                   config->FGXeFGHighResMV.value_or_default() == fgOutput->IsLowResMV();
 
         bool cantActivate = false;
         if (restartNeeded)
@@ -3849,14 +3849,14 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
 
         ShowHelpMarker("Enable Frame Generation");
 
-        auto maxInterpolationCount = state.xefgMaxInterpolationCount;
+        auto maxInterpolationCount = fgOutput->GetMaxInterpolationCount();
 
         if (maxInterpolationCount > 1)
         {
             ImGui::SameLine(0.0f, 16.0f);
 
             const char* intModes[] = { "2X", "3X", "4X", "5X", "6X" };
-            auto currentSet = config->FGXeFGInterpolationCount.value_or_default() - 1;
+            auto currentSet = fgOutput->GetInterpolatedFrameCount() - 1;
             auto currentIntCount = intModes[currentSet];
 
             ImGui::PushItemWidth(95.0f * menuResScale);
@@ -3975,7 +3975,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
 
     // DLSSG controls
     if (state.activeFgOutput == FGOutput::DLSSG && state.activeFgInput != FGInput::NoFG &&
-        state.currentFGSwapchain != nullptr && StreamlineProxy::LoadStreamline())
+        state.currentFGSwapchain != nullptr && StreamlineProxy::LoadStreamline() && fgOutput)
     {
         ImGui::SeparatorText("Frame Generation (DLSSG)");
 
@@ -4011,7 +4011,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
 
         ShowHelpMarker("Enable Frame Generation");
 
-        auto maxInterpolationCount = state.dlssgMaxInterpolationCount;
+        auto maxInterpolationCount = fgOutput->GetMaxInterpolationCount();
 
         if (maxInterpolationCount > 1)
         {
@@ -4020,7 +4020,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             ImGui::BeginDisabled(config->FGDLSSGForceDMFG.value_or_default());
 
             const char* intModes[] = { "2X", "3X", "4X", "5X", "6X" };
-            auto currentSet = config->FGDLSSGInterpolationCount.value_or_default() - 1;
+            auto currentSet = fgOutput->GetInterpolatedFrameCount() - 1;
             auto currentIntCount = intModes[currentSet];
 
             ImGui::PushItemWidth(95.0f * menuResScale);
@@ -4045,7 +4045,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
 
             ImGui::EndDisabled();
 
-            if (state.dlssgOptiDMFGSupported)
+            if (fgOutput->GetDMFGSupport())
             {
                 ImGui::SameLine(0.0f, 16.0f);
 
@@ -4981,12 +4981,14 @@ void MenuCommon::RenderFakenvapiSettings(RenderMenuContext& ctx)
     auto config = ctx.config;
 
     // FAKENVAPI ---------------------------
-    if (fakenvapi::isUsingAsMainNvapi() || (state.activeFgOutput == FGOutput::XeFG && state.reflexLimitsFps))
+    ImGui::SeparatorText("fakenvapi");
+
+    // Using state.reflexLimitsFps as a detection for Reflex being used on Nvidia
+    bool showLatencyFlex =
+        fakenvapi::isUsingAsMainNvapi() || (state.activeFgOutput == FGOutput::XeFG && state.reflexLimitsFps);
+
+    if (showLatencyFlex)
     {
-        // Using state.reflexLimitsFps as a detection for Reflex being used on Nvidia
-
-        ImGui::SeparatorText("fakenvapi");
-
         ImGui::BeginDisabled(state.activeFgOutput == FGOutput::XeFG || state.activeFgInput == FGInput::ForceXeLL);
         if (bool forceLFX = config->FN_ForceLatencyFlex.value_or_default();
             ImGui::Checkbox("Force LatencyFlex", &forceLFX))
@@ -4997,28 +4999,30 @@ void MenuCommon::RenderFakenvapiSettings(RenderMenuContext& ctx)
                        "This setting lets you force LatencyFlex instead");
         ImGui::EndDisabled();
 
-        bool forceXell = config->ForceXeLL.value_or_default();
-        static bool activeForceXeLL = forceXell;
+        // Keep Force XeLL on the same line if LatencyFlex is visible
+        ImGui::SameLine(0.0f, 16.0f);
+    }
 
-        if (fakenvapi::isUsingAsMainNvapi())
-        {
-            ImGui::SameLine(0.0f, 16.0f);
+    // Force XeLL is always visible
+    bool forceXell = config->ForceXeLL.value_or_default();
+    static bool activeForceXeLL = forceXell;
 
-            if (ImGui::Checkbox("Force XeLL", &forceXell))
-            {
-                config->ForceXeLL = forceXell;
-            }
-            ShowHelpMarker("Allows XeLL to work without FG on non-Intel cards.\n\nDisables FG "
-                           "options\n\nRequires a restart");
-        }
+    if (ImGui::Checkbox("Force XeLL", &forceXell))
+    {
+        config->ForceXeLL = forceXell;
+    }
+    ShowHelpMarker("Allows XeLL to work without FG on non-Intel cards.\n\nDisables FG "
+                   "options\n\nRequires a restart");
 
-        if (activeForceXeLL != forceXell)
-        {
-            ImGui::Spacing();
-            ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.0f, 1.f)), "Save INI and restart to apply the changes");
-            ImGui::Spacing();
-        }
+    if (activeForceXeLL != forceXell)
+    {
+        ImGui::Spacing();
+        ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.0f, 1.f)), "Save INI and restart to apply the changes");
+        ImGui::Spacing();
+    }
 
+    if (showLatencyFlex)
+    {
         // clang-format off
         static const std::vector<MenuOption<LFXMode>> lfx_modes = {
             { LFXMode::Conservative, "Conservative",
