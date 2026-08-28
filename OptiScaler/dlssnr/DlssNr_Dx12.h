@@ -42,5 +42,8 @@ const char* FailureReason();
 // overlay, so the number in use is visible rather than inferred.
 float CurrentWhitePoint();
 
+// What the pass last cost on the GPU, in milliseconds, or nothing if it has not been measured yet.
+std::optional<double> LastGpuTime();
+
 void Shutdown();
 } // namespace DlssNr

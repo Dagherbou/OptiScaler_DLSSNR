@@ -7184,7 +7184,8 @@ void MenuCommon::RenderMainMenuGraphs(RenderMenuContext& ctx)
                         ImGui::Text(formattedTime.c_str());
                     }
 
-                    if (hasExtra)
+                    const auto nrTime = DlssNr::LastGpuTime();
+                    if (hasExtra || nrTime.has_value())
                     {
                         ImGui::TableNextRow();
                         ImGui::TableNextRow();
@@ -7204,6 +7205,14 @@ void MenuCommon::RenderMainMenuGraphs(RenderMenuContext& ctx)
 
                             ImGui::TableNextColumn();
                             ImGui::Text(formattedTime.c_str());
+                        }
+
+                        if (nrTime.has_value())
+                        {
+                            ImGui::TableNextColumn();
+                            ImGui::Text("Neural Rendering");
+                            ImGui::TableNextColumn();
+                            ImGui::Text(StrFmt("%.2f ms", nrTime.value()).c_str());
                         }
                     }
 

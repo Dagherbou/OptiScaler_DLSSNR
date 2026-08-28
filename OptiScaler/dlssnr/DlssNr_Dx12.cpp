@@ -10,6 +10,7 @@
 #include <Util.h>
 
 #include <proxies/NVNGX_Proxy.h>
+#include <gpu_time/GpuTime_Dx12.h>
 
 namespace
 {
@@ -95,6 +96,10 @@ struct NrState
 
 NrState g_nr;
 codec::Codec g_codec;
+
+// What the pass costs on the GPU, for the breakdown in the overlay.
+std::unique_ptr<GpuTime_Dx12> g_gpuTime;
+std::optional<double> g_lastGpuTime;
 
 // Exposure measurement, and the white point derived from it.
 probe::FrameReducer g_reducer;
@@ -665,6 +670,12 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
                                  ? g_autoWhitePoint
                                  : cfg.DlssNrWhitePoint.value_or_default();
 
+    if (g_gpuTime == nullptr)
+        g_gpuTime = std::make_unique<GpuTime_Dx12>(device);
+
+    if (g_gpuTime != nullptr)
+        g_gpuTime->Start(cmdList);
+
     codec::Params encodeParams {};
     encodeParams.mode = codec::MODE_ENCODE;
     // A frame that is already display-referred is handed over untouched: the encode becomes a copy and
@@ -776,6 +787,20 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    if (g_gpuTime != nullptr)
+    {
+        g_gpuTime->End(cmdList);
+
+        // This path records into the game's own list, so there is no queue of ours to read from. The
+        // one the upscaler was invoked on serves.
+        if (State::Instance().currentCommandQueue != nullptr)
+        {
+            if (auto ms = g_gpuTime->ReadGpuTime((ID3D12CommandQueue*) State::Instance().currentCommandQueue);
+                ms.has_value())
+                g_lastGpuTime = ms;
+        }
+    }
 
     // Put any guide clones back where the next frame's copy expects to find them.
     if (g_nr.depthClone != nullptr)
@@ -910,6 +935,9 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
 
     ID3D12GraphicsCommandList* cmdList = g_nr.presentList;
 
+    if (g_gpuTime == nullptr)
+        g_gpuTime = std::make_unique<GpuTime_Dx12>(device);
+
     if (g_nr.feature == nullptr)
     {
         auto snippet = Util::FindFilePath(g_dllDir, "nvngx_dlssnr.dll");
@@ -958,6 +986,11 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
                  g_nr.builtStyle, g_nr.builtLocalStructure, g_nr.builtLocalTone, g_nr.builtSkinStructure,
                  cfg.DlssNrUiCorrection.value_or_default() ? 1 : 0);
     }
+
+    // Timed across the whole pass: the staging copies and the resolve are part of what this costs, and
+    // timing only the model would flatter the number.
+    if (g_gpuTime != nullptr)
+        g_gpuTime->Start(cmdList);
 
     // The frame is already display-referred here -- it has been through the game's own tonemapper --
     // so it goes to the model exactly as it is. No encode, no white point, nothing to invert.
@@ -1030,10 +1063,21 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
     Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
+    if (g_gpuTime != nullptr)
+        g_gpuTime->End(cmdList);
+
     if (SUCCEEDED(cmdList->Close()))
     {
         ID3D12CommandList* lists[] = { cmdList };
         queue->ExecuteCommandLists(1, lists);
+
+        // Read after submitting: the result is from an earlier frame, which is what the upscaler's own
+        // timings do too.
+        if (g_gpuTime != nullptr)
+        {
+            if (auto ms = g_gpuTime->ReadGpuTime(queue); ms.has_value())
+                g_lastGpuTime = ms;
+        }
 
         // Recorded against this allocator, so the next pass round the ring knows what to wait for.
         ++g_nr.presentFenceNext;
@@ -1050,6 +1094,8 @@ bool IsRunning() { return g_nr.feature != nullptr && !g_nr.failed; }
 const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
 
 float CurrentWhitePoint() { return g_autoWhitePointSettled ? g_autoWhitePoint : 0.0f; }
+
+std::optional<double> LastGpuTime() { return g_lastGpuTime; }
 
 void Shutdown()
 {
@@ -1114,6 +1160,9 @@ void Shutdown()
             g_nr.presentAllocators[i] = nullptr;
         }
     }
+
+    g_gpuTime.reset();
+    g_lastGpuTime.reset();
 
     g_codec.destroy();
     g_reducer.destroy();
