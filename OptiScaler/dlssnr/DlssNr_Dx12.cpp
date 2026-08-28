@@ -23,7 +23,7 @@ using PFN_NrCreate = void*(__cdecl*) (const wchar_t*, const wchar_t*, ID3D12Devi
 using PFN_NrEvaluate = int(__cdecl*) (ID3D12GraphicsCommandList*, void*, void*, ID3D12Resource*,
                                       ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, unsigned int,
                                       unsigned int, unsigned int, unsigned int, int, int, float, int,
-                                      float, float, float, int);
+                                      float, float, float, int, float, float);
 using PFN_NrRelease = void(__cdecl*) (void*);
 
 // One per back buffer, so an allocator is never reset while its frame is still in flight.
@@ -76,6 +76,12 @@ struct NrState
     unsigned int guideWidth = 0;
     unsigned int guideHeight = 0;
     bool guidesReady = false;
+
+    // How the game encodes its guides, as the game itself reports it. Captured with the guides, since
+    // the finished-frame path runs long after the upscaler's call has returned.
+    bool guideDepthInverted = false;
+    float guideMvScaleX = 1.0f;
+    float guideMvScaleY = 1.0f;
 
     // The values the live feature was created with, and when a difference from them was first seen.
     unsigned int builtPreset = 0;
@@ -496,6 +502,36 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         guideHeight = height;
     }
 
+    // The game states its depth convention in the flags it created its own feature with, so there is no
+    // reason to assume one.
+    unsigned int createFlags = 0;
+    params->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &createFlags);
+    g_nr.guideDepthInverted = (createFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
+
+    // And it states how its motion vectors are encoded. Inventing a resolution ratio here meant handing
+    // the model vectors it could not interpret.
+    float mvScaleX = 1.0f;
+    float mvScaleY = 1.0f;
+
+    if (params->Get(NVSDK_NGX_Parameter_MV_Scale_X, &mvScaleX) != NVSDK_NGX_Result_Success)
+        mvScaleX = 1.0f;
+
+    if (params->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &mvScaleY) != NVSDK_NGX_Result_Success)
+        mvScaleY = 1.0f;
+
+    g_nr.guideMvScaleX = mvScaleX;
+    g_nr.guideMvScaleY = mvScaleY;
+
+    static bool reportedGuides = false;
+
+    if (!reportedGuides)
+    {
+        reportedGuides = true;
+        LOG_INFO("DLSS-NR guides: depth {}, motion vector scale {} x {} (the game's own values, not "
+                 "assumed)",
+                 g_nr.guideDepthInverted ? "inverted" : "not inverted", mvScaleX, mvScaleY);
+    }
+
     // When the model runs on the finished frame instead, this call exists only to take a copy of the
     // guides while they are still valid and still describe this frame.
     if (cfg.DlssNrInjectPoint.value_or_default() == INJECT_PRESENT)
@@ -719,10 +755,11 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     const int result = g_nr.evaluate(
         cmdList, g_nr.feature, g_nr.capabilityParams, g_nr.colorCopy, depthIn, motionIn, g_nr.output, width,
-        height, guideWidth, guideHeight, 1, g_nr.reset ? 1 : 0, cfg.DlssNrIntensity.value_or_default(),
+        height, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0, g_nr.reset ? 1 : 0,
+        cfg.DlssNrIntensity.value_or_default(),
         (int) cfg.DlssNrStyle.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
         cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
-        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0);
+        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, g_nr.guideMvScaleX, g_nr.guideMvScaleY);
 
     g_nr.reset = false;
 
@@ -1008,10 +1045,12 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
 
     const int result = g_nr.evaluate(
         cmdList, g_nr.feature, g_nr.capabilityParams, g_nr.colorCopy, g_nr.depthClone, g_nr.motionClone,
-        g_nr.output, width, height, g_nr.guideWidth, g_nr.guideHeight, 1, g_nr.reset ? 1 : 0,
+        g_nr.output, width, height, g_nr.guideWidth, g_nr.guideHeight, g_nr.guideDepthInverted ? 1 : 0,
+        g_nr.reset ? 1 : 0,
         cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
         cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
-        cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0);
+        cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0,
+        g_nr.guideMvScaleX, g_nr.guideMvScaleY);
 
     g_nr.reset = false;
 

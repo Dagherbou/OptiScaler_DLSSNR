@@ -137,7 +137,8 @@ __declspec(dllexport) int dlssnr_call_evaluate(ID3D12GraphicsCommandList *cmd, v
                                                unsigned int height, unsigned int guideWidth,
                                                unsigned int guideHeight, int depthInverted, int reset,
                                                float intensity, int style, float localStructure,
-                                               float localTone, float skinStructure, int useAutoMask) {
+                                               float localTone, float skinStructure, int useAutoMask,
+                                               float mvScaleX, float mvScaleY) {
     if (!feature || !capabilityParams || !g_snip.evaluate) {
         return 0;
     }
@@ -171,10 +172,11 @@ __declspec(dllexport) int dlssnr_call_evaluate(ID3D12GraphicsCommandList *cmd, v
     setUInt(capabilityParams, "DLSSNR.MVecSubrectWidth", guideWidth);
     setUInt(capabilityParams, "DLSSNR.MVecSubrectHeight", guideHeight);
 
-    setFloat(capabilityParams, "DLSSNR.MVecScaleX",
-             guideWidth ? (float) width / (float) guideWidth : 1.0f);
-    setFloat(capabilityParams, "DLSSNR.MVecScaleY",
-             guideHeight ? (float) height / (float) guideHeight : 1.0f);
+    // The game's own encoding, passed through. Deriving this from the resolutions was a guess, and at
+    // native resolution it came out as exactly 1.0 -- so a game using normalised vectors was telling
+    // the model almost nothing had moved.
+    setFloat(capabilityParams, "DLSSNR.MVecScaleX", mvScaleX);
+    setFloat(capabilityParams, "DLSSNR.MVecScaleY", mvScaleY);
 
     setFloat(capabilityParams, "DLSSNR.Intensity", intensity);
     setUInt(capabilityParams, "DLSSNR.Style", (unsigned int) style);
