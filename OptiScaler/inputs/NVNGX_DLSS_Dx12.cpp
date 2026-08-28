@@ -665,6 +665,7 @@ struct SplitState
     ID3D12Resource* oversized = nullptr;    // above display size: the supersampled working image
     std::unique_ptr<IFeature_Dx12> sr;      // the enlargement (RR 1:1 mode only)
     std::unique_ptr<OS_Dx12> downscaler;    // oversized -> display, OptiScaler's own filtering
+    int downscalerKind = -1;                // the Downscaler choice it was built with
     unsigned int srTargetWidth = 0;         // what the enlargement was built to produce
     bool failed = false;
 
@@ -725,7 +726,7 @@ struct SplitRetired
     ID3D12Resource* resource = nullptr;
     std::unique_ptr<IFeature_Dx12> feature;
     std::unique_ptr<OS_Dx12> shader;
-    int framesLeft = 16;
+    int framesLeft = 32;
 };
 
 static std::vector<SplitRetired> SplitParkedList;
@@ -934,10 +935,7 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
         return;
     }
 
-    if (++SplitDx12.stableFrames < 20 && SplitDx12.stableFrames > 0)
-    {
-        // Not yet settled; unless nothing would change anyway, wait.
-    }
+    ++SplitDx12.stableFrames;
 
     IFeature_Dx12* f = it->second.feature.get();
 
@@ -975,7 +973,7 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
     if (want && matches)
         SplitDx12.armTries = 0;
 
-    const bool settled = SplitDx12.stableFrames >= 20;
+    const bool settled = SplitDx12.stableFrames >= 30;
 
     if (want && !matches && settled)
     {
@@ -1142,8 +1140,23 @@ static void SplitBarrier(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* res
 // The final downscale, through OptiScaler's own filter so the look matches Output Scaling's.
 static bool SplitDownscale(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* from, ID3D12Resource* to)
 {
+    // The downscaler's pipeline is baked at construction, but its dispatch reads the Downscaler
+    // dropdown live -- a stale instance runs one scaler's shader on another's constants. Rebuild when
+    // the user's choice changes; the old instance is parked, since its last dispatch may be in flight.
+    const int downscalerKind = (int) Config::Instance()->OutputScalingDownscaler.value_or_default();
+
+    if (SplitDx12.downscaler != nullptr && downscalerKind != SplitDx12.downscalerKind)
+    {
+        SplitRetired r;
+        r.shader = std::move(SplitDx12.downscaler);
+        SplitParkedList.push_back(std::move(r));
+    }
+
     if (SplitDx12.downscaler == nullptr)
+    {
         SplitDx12.downscaler = std::make_unique<OS_Dx12>("DLSS-NR Split Downscale", D3D12Device, false);
+        SplitDx12.downscalerKind = downscalerKind;
+    }
 
     D3D12_RESOURCE_BARRIER b {};
     b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
