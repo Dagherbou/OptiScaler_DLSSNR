@@ -567,17 +567,24 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     if (params->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &mvScaleY) != NVSDK_NGX_Result_Success)
         mvScaleY = 1.0f;
 
-    g_nr.guideMvScaleX = mvScaleX;
-    g_nr.guideMvScaleY = mvScaleY;
+    // Two factors, and both are needed. The game's own scale turns its vectors into render pixels --
+    // Cyberpunk reports 1920 x 1080, so its vectors are normalised. The upscale ratio then carries
+    // render pixels onto a display-resolution image. They coincide only at native resolution, which is
+    // exactly where this was first tested.
+    const float upscaleX = guideWidth != 0 ? (float) width / (float) guideWidth : 1.0f;
+    const float upscaleY = guideHeight != 0 ? (float) height / (float) guideHeight : 1.0f;
+    g_nr.guideMvScaleX = mvScaleX * upscaleX;
+    g_nr.guideMvScaleY = mvScaleY * upscaleY;
 
     static bool reportedGuides = false;
 
     if (!reportedGuides)
     {
         reportedGuides = true;
-        LOG_INFO("DLSS-NR guides: depth {}, motion vector scale {} x {} (the game's own values, not "
-                 "assumed)",
-                 g_nr.guideDepthInverted ? "inverted" : "not inverted", mvScaleX, mvScaleY);
+        LOG_INFO("DLSS-NR guides: depth {}, motion vector scale {} x {} (the game says {} x {}, times "
+                 "the {}x{} upscale ratio)",
+                 g_nr.guideDepthInverted ? "inverted" : "not inverted", g_nr.guideMvScaleX,
+                 g_nr.guideMvScaleY, mvScaleX, mvScaleY, upscaleX, upscaleY);
     }
 
     // When the model runs on the finished frame instead, this call exists only to take a copy of the
@@ -834,6 +841,14 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         const NVSDK_NGX_Result styleResult = g_nr.capabilityParams->Get("DLSSNR.Style", &style);
         LOG_INFO("DLSS-NR readback DLSSNR.Style -> {} (result 0x{:X})", style, (uint32_t) styleResult);
 
+        // The preset is the last control whose arrival has never been checked, and three of them look
+        // identical in play. Either it is not landing or the presets really are alike.
+        unsigned int preset = 0;
+        const NVSDK_NGX_Result presetResult =
+            g_nr.capabilityParams->Get("DLSSNR.Hint.Render.Preset", &preset);
+        LOG_INFO("DLSS-NR readback DLSSNR.Hint.Render.Preset -> {} (result 0x{:X}, we wrote {})", preset,
+                 (uint32_t) presetResult, cfg.DlssNrPreset.value_or_default());
+
         LOG_INFO("DLSS-NR wrote intensity {}, local structure {}, local tone {}, skin {}, style {}",
                  cfg.DlssNrIntensity.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
                  cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
@@ -1065,6 +1080,15 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         g_nr.height = height;
         g_nr.reset = true;
         RecordBuiltTuning(cfg);
+
+        {
+            unsigned int presetBack = 0;
+            const NVSDK_NGX_Result r =
+                g_nr.capabilityParams->Get("DLSSNR.Hint.Render.Preset", &presetBack);
+            LOG_INFO("DLSS-NR readback DLSSNR.Hint.Render.Preset -> {} (result 0x{:X}, we wrote {})",
+                     presetBack, (uint32_t) r, cfg.DlssNrPreset.value_or_default());
+        }
+
         LOG_INFO("DLSS-NR running on the finished frame at {}x{}, guides {}x{} (preset {}, intensity {}, "
                  "style {}, local structure {}, local tone {}, skin {}, ui correction {})",
                  width, height, g_nr.guideWidth, g_nr.guideHeight, g_nr.builtPreset, g_nr.builtIntensity,
