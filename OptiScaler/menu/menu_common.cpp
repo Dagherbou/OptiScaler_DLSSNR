@@ -5988,6 +5988,23 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
 
         ImGui::SeparatorText("Inspect");
 
+        if (DlssNr::CaptureInProgress())
+        {
+            ImGui::TextDisabled("Capturing...");
+        }
+        else if (ImGui::Button("Capture 8 frames"))
+        {
+            DlssNr::RequestCapture(8);
+        }
+
+        ShowHelpMarker("Writes eight consecutive frames twice: as the upscaler produced them, and again"
+                       "\nonce the model's edit was applied."
+                       "\n\nSame frames, same run, one variable -- which is what comparing two video"
+                       "\ncaptures can never be, since they have different camera paths and a codec in"
+                       "\nbetween that discards exactly the fine temporal detail in question."
+                       "\n\nRaw, into a dlssnr-capture folder beside OptiScaler. Bounded to eight frames,"
+                       "\nand each run overwrites the last.");
+
         static const char* debugNames[] = { "Off", "Proxy (what the model sees)", "Model output (raw)",
                                             "Difference (amplified)" };
         int debugView = (int) config->DlssNrDebugView.value_or_default();

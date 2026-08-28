@@ -45,5 +45,10 @@ float CurrentWhitePoint();
 // What the pass last cost on the GPU, in milliseconds, or nothing if it has not been measured yet.
 std::optional<double> LastGpuTime();
 
+// Writes a run of consecutive frames, each as the upscaler produced it and again after the model's edit.
+// The pair is a control: same frames, same run, one variable.
+void RequestCapture(unsigned int frames);
+bool CaptureInProgress();
+
 void Shutdown();
 } // namespace DlssNr

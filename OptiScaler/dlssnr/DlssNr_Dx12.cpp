@@ -4,6 +4,7 @@
 
 #include "DlssNr_Codec.h"
 #include "DlssNr_Probe.h"
+#include "DlssNr_Capture.h"
 
 #include <Config.h>
 #include <State.h>
@@ -120,6 +121,9 @@ std::optional<double> g_lastGpuTime;
 // Exposure measurement, and the white point derived from it.
 probe::FrameReducer g_reducer;
 probe::BlockReader g_reader;
+
+// Writes matched before/after frames on request, so comparisons stop depending on video.
+capture::FrameCapture g_capture;
 float g_autoWhitePoint = 2.0f;
 bool g_autoWhitePointSettled = false;
 unsigned long long g_frames = 0;
@@ -1203,6 +1207,14 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
 
         Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+        // The frame as the upscaler produced it, and the same frame after the edit. Both are here, this
+        // instant, for the same frame -- which is the whole point.
+        if (g_capture.isActive())
+            g_capture.record(cmdList, device, g_nr.colorCopy,
+                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, g_nr.hdrCopy,
+                             D3D12_RESOURCE_STATE_COPY_SOURCE);
+
         Barrier(cmdList, backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
         cmdList->CopyResource(backBuffer, g_nr.hdrCopy);
         Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_COPY_SOURCE,
@@ -1246,6 +1258,16 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
 
         if (SUCCEEDED(queue->Signal(g_nr.presentFence, g_nr.presentFenceNext)))
             g_nr.presentFenceValues[slot] = g_nr.presentFenceNext;
+
+        if (g_capture.readyToWrite())
+        {
+            WaitForAllSubmitted();
+            const auto dir = Util::DllPath().remove_filename() / "dlssnr-capture";
+            const auto written = g_capture.write(dir);
+
+            if (!written.empty())
+                LOG_INFO("DLSS-NR wrote matched before/after frames to {}", written);
+        }
     }
 
     device->Release();
@@ -1258,6 +1280,10 @@ const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
 float CurrentWhitePoint() { return g_autoWhitePointSettled ? g_autoWhitePoint : 0.0f; }
 
 std::optional<double> LastGpuTime() { return g_lastGpuTime; }
+
+void RequestCapture(unsigned int frames) { g_capture.request(frames); }
+
+bool CaptureInProgress() { return g_capture.isActive(); }
 
 void Shutdown()
 {
@@ -1329,6 +1355,7 @@ void Shutdown()
         }
     }
 
+    g_capture.release();
     g_gpuTime.reset();
     g_lastGpuTime.reset();
 
