@@ -309,9 +309,10 @@ class Config
     // anything.
     CustomOptional<bool> DlssNrSplitPipeline { false };
 
-    // The split's enlargement renders above display resolution and is downscaled back, using the
-    // Output Scaling Ratio. The Output Scaling look, composed with the split.
-    CustomOptional<bool> DlssNrSplitSupersample { false };
+    // Supersampling in the split is automatic, from the Output Scaling Ratio. This chooses who does it:
+    // off, the internal SR renders oversized while RR stays 1:1 (cheapest); on, RR itself upscales to
+    // the oversized size and the model works on that image, with RR's cost rising as the ratio squared.
+    CustomOptional<bool> DlssNrSplitIncludeRR { false };
 
     // DLSS
     CustomOptional<bool> DLSSEnabled { true };

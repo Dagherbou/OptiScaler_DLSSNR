@@ -5866,18 +5866,31 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
 
         if (split)
         {
-            bool splitSs = config->DlssNrSplitSupersample.value_or_default();
-            if (ImGui::Checkbox("Supersample the enlargement (Output Scaling look)", &splitSs))
-                config->DlssNrSplitSupersample = splitSs;
+            // Supersampling is automatic, from the Output Scaling Ratio; the text says what is in force.
+            const float ratio = config->OutputScalingMultiplier.value_or_default();
 
-            ShowHelpMarker("The internal Super Resolution renders above display size -- by the Output"
-                           "\nScaling Ratio -- and OptiScaler's own downscaler carries it back. Quality"
-                           "\nrendering with DLAA-like sharpness, and Ray Reconstruction still 1:1 in"
-                           "\nfront."
-                           "\n\nA bonus falls out for free: the model's edit is averaged in the downscale,"
-                           "\nwhich attenuates its per-frame grain spatially with no ghosting."
-                           "\n\nCosts the enlargement times the ratio squared. Applies live -- the"
-                           "\nenlargement is swapped in place.");
+            if (config->OutputScalingEnabled.value_or_default())
+                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.4f, 1.0f),
+                                   "Turn Output Scaling's Enable off -- the split reads its Ratio "
+                                   "(x%.2f) and supersamples itself.",
+                                   ratio);
+            else if (ratio > 1.05f)
+                ImGui::TextDisabled("Supersampling x%.2f, from the Output Scaling Ratio.", ratio);
+            else
+                ImGui::TextDisabled("No supersampling: raise the Output Scaling Ratio above 1.0 to "
+                                    "enable it.");
+
+            bool includeRR = config->DlssNrSplitIncludeRR.value_or_default();
+            if (ImGui::Checkbox("Include Ray Reconstruction in the supersample", &includeRR))
+                config->DlssNrSplitIncludeRR = includeRR;
+
+            ShowHelpMarker("Off: RR denoises 1:1 at render size and the internal SR renders the"
+                           "\nsupersampled image -- cheapest, since the expensive models stay small."
+                           "\n\nOn: RR itself upscales to the supersampled size and the model works on"
+                           "\nthat image, its cost governed by the Model resolution dropdown. The"
+                           "\nconventional Output Scaling look with the model in the chain -- and RR's"
+                           "\ncost rises with the square of the ratio, which is the price."
+                           "\n\nApplies live; the feature is re-created in place.");
         }
 
         ImGui::SeparatorText("Cost");

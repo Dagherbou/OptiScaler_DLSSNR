@@ -327,7 +327,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrAutoCapture.set_from_config(readBool("DlssNr", "AutoCapture"));
             DlssNrEditStability.set_from_config(readFloat("DlssNr", "EditStability"));
             DlssNrSplitPipeline.set_from_config(readBool("DlssNr", "SplitPipeline"));
-            DlssNrSplitSupersample.set_from_config(readBool("DlssNr", "SplitSupersample"));
+            DlssNrSplitIncludeRR.set_from_config(readBool("DlssNr", "SplitIncludeRR"));
             DlssNrPreset.set_from_config(readUInt("DlssNr", "Preset"));
             DlssNrIntensity.set_from_config(readFloat("DlssNr", "Intensity"));
             DlssNrStyle.set_from_config(readUInt("DlssNr", "Style"));
@@ -1179,7 +1179,7 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "AutoCapture", GetBoolValue(Instance()->DlssNrAutoCapture.value_for_config()).c_str());
     ini.SetValue("DlssNr", "EditStability", GetFloatValue(Instance()->DlssNrEditStability.value_for_config()).c_str());
     ini.SetValue("DlssNr", "SplitPipeline", GetBoolValue(Instance()->DlssNrSplitPipeline.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "SplitSupersample", GetBoolValue(Instance()->DlssNrSplitSupersample.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "SplitIncludeRR", GetBoolValue(Instance()->DlssNrSplitIncludeRR.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Preset", GetIntValue(Instance()->DlssNrPreset.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Intensity", GetFloatValue(Instance()->DlssNrIntensity.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Style", GetIntValue(Instance()->DlssNrStyle.value_for_config()).c_str());

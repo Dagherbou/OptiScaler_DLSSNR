@@ -589,9 +589,15 @@ bool g_splitActive = false;
 
 void SetSplitActive(bool active) { g_splitActive = active; }
 
-const char* g_splitStatus = "";
+char g_splitStatus[192] = "";
 
-void SetSplitStatus(const char* status) { g_splitStatus = status != nullptr ? status : ""; }
+void SetSplitStatus(const char* status)
+{
+    if (status == nullptr)
+        status = "";
+
+    strncpy_s(g_splitStatus, status, _TRUNCATE);
+}
 
 const char* SplitStatus() { return g_splitStatus; }
 
