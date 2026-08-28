@@ -8,6 +8,7 @@
 #include "dlssnr/DlssNr_Dx12.h"
 #include <upscalers/dlss/DLSSFeature_Dx12.h>
 #include <dlssnr/DlssNr_Codec.h>
+#include <shaders/output_scaling/OS_Dx12.h>
 
 #include <upscalers/FeatureProvider_Dx12.h>
 #include "upscalers/dlss/DLSSFeature_Dx12.h"
@@ -649,10 +650,18 @@ struct SplitState
     bool armed = false;                     // the create-time clamp happened
     bool failed = false;
 
+    // The supersampled enlargement: the internal SR renders here, above display size, and OptiScaler's
+    // own downscaler carries it to the game's output.
+    ID3D12Resource* oversized = nullptr;
+    std::unique_ptr<OS_Dx12> downscaler;
+    bool srSupersampled = false;
+
     // Retired on a live switch-off: still referenced by command lists submitted over the last frames,
     // so they are released a number of evaluates later rather than on the spot.
     ID3D12Resource* parkedIntermediate = nullptr;
+    ID3D12Resource* parkedOversized = nullptr;
     std::unique_ptr<IFeature_Dx12> parkedSr;
+    std::unique_ptr<OS_Dx12> parkedDownscaler;
     int parkedCountdown = 0;
 };
 
@@ -676,7 +685,32 @@ static void SplitTickParked()
         SplitDx12.parkedIntermediate = nullptr;
     }
 
+    if (SplitDx12.parkedOversized != nullptr)
+    {
+        SplitDx12.parkedOversized->Release();
+        SplitDx12.parkedOversized = nullptr;
+    }
+
     SplitDx12.parkedSr.reset();
+    SplitDx12.parkedDownscaler.reset();
+}
+
+// Parks the enlargement stage for deferred release, keeping whatever was already parked ticking.
+static void SplitParkEnlargement()
+{
+    if (SplitDx12.sr != nullptr)
+        SplitDx12.parkedSr = std::move(SplitDx12.sr);
+
+    if (SplitDx12.oversized != nullptr)
+    {
+        SplitDx12.parkedOversized = SplitDx12.oversized;
+        SplitDx12.oversized = nullptr;
+    }
+
+    if (SplitDx12.downscaler != nullptr)
+        SplitDx12.parkedDownscaler = std::move(SplitDx12.downscaler);
+
+    SplitDx12.parkedCountdown = 16;
 }
 
 // Applies the toggle while the game runs. OptiScaler recreates features in place for backend switching;
@@ -790,13 +824,13 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
 
         // Ours go to the parking lot, not the floor: lists submitted over the last frames still
         // reference them.
-        if (SplitDx12.intermediate != nullptr || SplitDx12.sr != nullptr)
+        if (SplitDx12.intermediate != nullptr)
         {
             SplitDx12.parkedIntermediate = SplitDx12.intermediate;
             SplitDx12.intermediate = nullptr;
-            SplitDx12.parkedSr = std::move(SplitDx12.sr);
-            SplitDx12.parkedCountdown = 16;
         }
+
+        SplitParkEnlargement();
 
         DlssNr::SetSplitActive(false);
 
@@ -942,11 +976,31 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
     DlssNr::EvaluateAfterUpscale(cmdList, params, true);
 
     // 3. The one enlargement: an internal Super Resolution feature, created with the game's own flags
-    //    -- IsHDR included, since the stream never left linear HDR.
+    //    -- IsHDR included, since the stream never left linear HDR. Supersampled when asked: it renders
+    //    above display size and OptiScaler's own downscaler carries it to the game's output, which is
+    //    the Output Scaling look with Ray Reconstruction still 1:1 in front.
+    const Config& splitCfg = *Config::Instance();
+    const bool supersample = splitCfg.DlssNrSplitSupersample.value_or_default();
+
+    float ssMult = splitCfg.OutputScalingMultiplier.value_or_default();
+    ssMult = ssMult < 1.1f ? 1.5f : (ssMult > 3.0f ? 3.0f : ssMult);
+
+    const unsigned int targetW =
+        supersample ? (unsigned int) (SplitDx12.displayWidth * ssMult + 0.5f) : SplitDx12.displayWidth;
+    const unsigned int targetH =
+        supersample ? (unsigned int) (SplitDx12.displayHeight * ssMult + 0.5f) : SplitDx12.displayHeight;
+
+    // The choice is baked into the feature; changing it swaps the enlargement in place.
+    if (SplitDx12.sr != nullptr && SplitDx12.srSupersampled != supersample)
+    {
+        LOG_INFO("DLSS-NR split: rebuilding the enlargement ({}supersampled)", supersample ? "" : "not ");
+        SplitParkEnlargement();
+    }
+
     if (SplitDx12.sr == nullptr)
     {
-        params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
-        params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
+        params->Set(NVSDK_NGX_Parameter_OutWidth, targetW);
+        params->Set(NVSDK_NGX_Parameter_OutHeight, targetH);
 
         auto sr = std::make_unique<DLSSFeatureDx12>(IFeature::GetNextHandleId(), params);
 
@@ -965,16 +1019,53 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
         }
 
         SplitDx12.sr = std::move(sr);
-        LOG_INFO("DLSS-NR split: internal Super Resolution running {}x{} -> {}x{}", w, h,
-                 SplitDx12.displayWidth, SplitDx12.displayHeight);
+        SplitDx12.srSupersampled = supersample;
+        LOG_INFO("DLSS-NR split: internal Super Resolution running {}x{} -> {}x{}{}", w, h, targetW,
+                 targetH, supersample ? " (supersampled)" : "");
     }
 
-    params->Set(NVSDK_NGX_Parameter_Color, SplitDx12.intermediate);
-    params->Set(NVSDK_NGX_Parameter_Output, gameOutput);
-    params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
-    params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
+    if (supersample && SplitDx12.oversized == nullptr)
+    {
+        SplitDx12.oversized =
+            SplitScratch(D3D12Device, codec::TypedFormat(gameOutput->GetDesc().Format), targetW, targetH);
 
-    const bool srOk = SplitDx12.sr->Evaluate(cmdList, params);
+        if (SplitDx12.oversized == nullptr)
+        {
+            LOG_ERROR("DLSS-NR split: the supersample target could not be created; falling back to the "
+                      "plain enlargement");
+            Config::Instance()->DlssNrSplitSupersample.set_volatile_value(false);
+        }
+    }
+
+    const bool useOversized = supersample && SplitDx12.oversized != nullptr;
+
+    params->Set(NVSDK_NGX_Parameter_Color, SplitDx12.intermediate);
+    params->Set(NVSDK_NGX_Parameter_Output, useOversized ? SplitDx12.oversized : gameOutput);
+    params->Set(NVSDK_NGX_Parameter_OutWidth, targetW);
+    params->Set(NVSDK_NGX_Parameter_OutHeight, targetH);
+
+    bool srOk = SplitDx12.sr->Evaluate(cmdList, params);
+
+    if (srOk && useOversized)
+    {
+        // OptiScaler's own downscaler, so the filtering matches the Output Scaling look it imitates.
+        if (SplitDx12.downscaler == nullptr)
+            SplitDx12.downscaler = std::make_unique<OS_Dx12>("DLSS-NR Split Downscale", D3D12Device, false);
+
+        D3D12_RESOURCE_BARRIER b {};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = SplitDx12.oversized;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        cmdList->ResourceBarrier(1, &b);
+
+        srOk = SplitDx12.downscaler->Dispatch(cmdList, SplitDx12.oversized, gameOutput);
+
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        cmdList->ResourceBarrier(1, &b);
+    }
 
     // The block goes back the way the game filled it.
     if (gameColor != nullptr)
@@ -991,7 +1082,8 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
     }
 
     if (srOk)
-        DlssNr::SetSplitStatus("running: RR 1:1 -> NR -> internal SR");
+        DlssNr::SetSplitStatus(useOversized ? "running: RR 1:1 -> NR -> SR supersampled -> downscale"
+                                            : "running: RR 1:1 -> NR -> internal SR");
 
     *outResult = srOk ? NVSDK_NGX_Result_Success : NVSDK_NGX_Result_Fail;
     return true;

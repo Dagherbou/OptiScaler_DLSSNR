@@ -5864,6 +5864,22 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\nfeature is re-created in place, which costs a brief hitch. Falls back to the"
                        "\nconventional path, with a line in the log, if any stage refuses.");
 
+        if (split)
+        {
+            bool splitSs = config->DlssNrSplitSupersample.value_or_default();
+            if (ImGui::Checkbox("Supersample the enlargement (Output Scaling look)", &splitSs))
+                config->DlssNrSplitSupersample = splitSs;
+
+            ShowHelpMarker("The internal Super Resolution renders above display size -- by the Output"
+                           "\nScaling Ratio -- and OptiScaler's own downscaler carries it back. Quality"
+                           "\nrendering with DLAA-like sharpness, and Ray Reconstruction still 1:1 in"
+                           "\nfront."
+                           "\n\nA bonus falls out for free: the model's edit is averaged in the downscale,"
+                           "\nwhich attenuates its per-frame grain spatially with no ghosting."
+                           "\n\nCosts the enlargement times the ratio squared. Applies live -- the"
+                           "\nenlargement is swapped in place.");
+        }
+
         ImGui::SeparatorText("Cost");
 
         static const char* scaleNames[] = { "Full resolution", "75%", "50%", "33%" };

@@ -309,6 +309,10 @@ class Config
     // anything.
     CustomOptional<bool> DlssNrSplitPipeline { false };
 
+    // The split's enlargement renders above display resolution and is downscaled back, using the
+    // Output Scaling Ratio. The Output Scaling look, composed with the split.
+    CustomOptional<bool> DlssNrSplitSupersample { false };
+
     // DLSS
     CustomOptional<bool> DLSSEnabled { true };
     CustomOptional<bool> RenderPresetOverride { false };
