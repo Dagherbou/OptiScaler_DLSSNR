@@ -648,9 +648,138 @@ struct SplitState
     std::unique_ptr<IFeature_Dx12> sr;      // the one enlargement
     bool armed = false;                     // the create-time clamp happened
     bool failed = false;
+
+    // Retired on a live switch-off: still referenced by command lists submitted over the last frames,
+    // so they are released a number of evaluates later rather than on the spot.
+    ID3D12Resource* parkedIntermediate = nullptr;
+    std::unique_ptr<IFeature_Dx12> parkedSr;
+    int parkedCountdown = 0;
 };
 
 static SplitState SplitDx12;
+
+// Frees what a live switch-off parked, once enough evaluates have passed that nothing in flight can
+// still reference it.
+static bool SplitWanted();
+
+static void SplitTickParked()
+{
+    if (SplitDx12.parkedCountdown <= 0)
+        return;
+
+    if (--SplitDx12.parkedCountdown > 0)
+        return;
+
+    if (SplitDx12.parkedIntermediate != nullptr)
+    {
+        SplitDx12.parkedIntermediate->Release();
+        SplitDx12.parkedIntermediate = nullptr;
+    }
+
+    SplitDx12.parkedSr.reset();
+}
+
+// Applies the toggle while the game runs. OptiScaler recreates features in place for backend switching;
+// the same machinery re-creates Ray Reconstruction at the other geometry. The split itself never trusts
+// this function: it operates only when the feature is observably 1:1, so every transition frame simply
+// falls through to the conventional path.
+static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params)
+{
+    SplitTickParked();
+
+    auto it = Dx12Contexts.find(handleId);
+
+    if (it == Dx12Contexts.end() || it->second.feature == nullptr)
+        return;
+
+    IFeature_Dx12* f = it->second.feature.get();
+    const bool oneToOne = f->TargetWidth() == f->RenderWidth() && f->TargetHeight() == f->RenderHeight();
+    const bool want = SplitWanted();
+    State& state = State::Instance();
+
+    // A recreation is mid-flight: keep the block's output size aimed at where it is going, in case the
+    // game rewrites it every frame, and otherwise stay out of the way.
+    if (it->second.changeBackendCounter != 0)
+    {
+        if (want && SplitDx12.displayWidth != 0)
+        {
+            unsigned int w = 0, h = 0;
+            params->Get(NVSDK_NGX_Parameter_Width, &w);
+            params->Get(NVSDK_NGX_Parameter_Height, &h);
+
+            if (w != 0)
+            {
+                params->Set(NVSDK_NGX_Parameter_OutWidth, w);
+                params->Set(NVSDK_NGX_Parameter_OutHeight, h);
+            }
+        }
+        else if (!want && SplitDx12.displayWidth != 0)
+        {
+            params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
+            params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
+        }
+
+        return;
+    }
+
+    if (want && !oneToOne)
+    {
+        unsigned int w = 0, h = 0, ow = 0, oh = 0;
+        params->Get(NVSDK_NGX_Parameter_Width, &w);
+        params->Get(NVSDK_NGX_Parameter_Height, &h);
+        params->Get(NVSDK_NGX_Parameter_OutWidth, &ow);
+        params->Get(NVSDK_NGX_Parameter_OutHeight, &oh);
+
+        if (w == 0 || ow <= w)
+        {
+            static bool saidNothing = false;
+
+            if (!saidNothing)
+            {
+                saidNothing = true;
+                LOG_INFO("DLSS-NR split: nothing to split at {}x{} -> {}x{}; needs a render scale below "
+                         "native",
+                         w, h, ow, oh);
+            }
+
+            return;
+        }
+
+        SplitDx12.displayWidth = ow;
+        SplitDx12.displayHeight = oh;
+        params->Set(NVSDK_NGX_Parameter_OutWidth, w);
+        params->Set(NVSDK_NGX_Parameter_OutHeight, h);
+        state.newBackend = Upscaler::DLSSD;
+        state.changeBackend[handleId] = true;
+
+        LOG_INFO("DLSS-NR split: re-creating Ray Reconstruction 1:1 at {}x{} in place", w, h);
+        return;
+    }
+
+    if (!want && oneToOne && SplitDx12.displayWidth != 0)
+    {
+        params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
+        params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
+        state.newBackend = Upscaler::DLSSD;
+        state.changeBackend[handleId] = true;
+
+        // Ours go to the parking lot, not the floor: lists submitted over the last frames still
+        // reference them.
+        if (SplitDx12.intermediate != nullptr || SplitDx12.sr != nullptr)
+        {
+            SplitDx12.parkedIntermediate = SplitDx12.intermediate;
+            SplitDx12.intermediate = nullptr;
+            SplitDx12.parkedSr = std::move(SplitDx12.sr);
+            SplitDx12.parkedCountdown = 16;
+        }
+
+        DlssNr::SetSplitActive(false);
+
+        LOG_INFO("DLSS-NR split: returning Ray Reconstruction to {}x{} -> {}x{} in place",
+                 f->RenderWidth(), f->RenderHeight(), SplitDx12.displayWidth, SplitDx12.displayHeight);
+        return;
+    }
+}
 
 static bool SplitWanted()
 {
@@ -717,8 +846,23 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
                             NVSDK_NGX_Parameter* params, PFN_NVSDK_NGX_ProgressCallback callback,
                             NVSDK_NGX_Result* outResult)
 {
-    if (!SplitDx12.armed || !SplitWanted())
+    if (!SplitWanted() || SplitDx12.displayWidth == 0)
         return false;
+
+    // Observable state only: operate when the feature really is 1:1 and no recreation is in flight.
+    // Every transition frame falls through to the conventional path by construction.
+    {
+        auto it = Dx12Contexts.find(handle->Id);
+
+        if (it == Dx12Contexts.end() || it->second.feature == nullptr ||
+            it->second.changeBackendCounter != 0)
+            return false;
+
+        IFeature_Dx12* f = it->second.feature.get();
+
+        if (f->TargetWidth() != f->RenderWidth() || f->TargetHeight() != f->RenderHeight())
+            return false;
+    }
 
     ID3D12Resource* gameOutput = nullptr;
     ID3D12Resource* gameColor = nullptr;
@@ -1364,9 +1508,12 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     if (lastDlssgCameraFar.has_value())
         InParameters->Set("DLSSG.CameraFar", lastDlssgCameraFar.value());
 
-    // The split pipeline: denoise 1:1, enhance at render resolution, enlarge once.
+    // The split pipeline: denoise 1:1, enhance at render resolution, enlarge once. The toggle applies
+    // live -- the feature is re-created in place at the other geometry.
     if (feature == NVSDK_NGX_Feature_RayReconstruction)
     {
+        SplitManageTransition(handleId, InParameters);
+
         NVSDK_NGX_Result splitResult = NVSDK_NGX_Result_Success;
 
         if (SplitEvaluateRR(InCmdList, InFeatureHandle, InParameters, InCallback, &splitResult))

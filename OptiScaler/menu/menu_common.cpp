@@ -5834,7 +5834,7 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\nmid-session is not worth the crash it caused every time it was tried.");
 
         bool split = config->DlssNrSplitPipeline.value_or_default();
-        if (ImGui::Checkbox("Split pipeline: RR 1:1 + NR + internal SR (restart)", &split))
+        if (ImGui::Checkbox("Split pipeline: RR 1:1 + NR + internal SR", &split))
             config->DlssNrSplitPipeline = split;
 
         ShowHelpMarker("Ray Reconstruction runs 1:1 as a pure denoiser, the model runs at render"
@@ -5845,9 +5845,9 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\n\nDenoise gets cheaper, the model runs on fewer pixels, and its detail rides"
                        "\nthrough the upscaler's accumulation. The published measurements at a 66%"
                        "\nrender scale: about 4.5 + 6 + 3.5 ms against roughly 17 conventionally."
-                       "\n\nRay Reconstruction titles only, needs a render scale below native (Quality or"
-                       "\nlower -- at DLAA there is nothing to enlarge), and takes effect on restart:"
-                       "\nthe 1:1 clamp happens when the game creates its feature. Falls back to the"
+                       "\n\nRay Reconstruction titles only, and needs a render scale below native (Quality"
+                       "\nor lower -- at DLAA there is nothing to enlarge). Applies live, both ways: the"
+                       "\nfeature is re-created in place, which costs a brief hitch. Falls back to the"
                        "\nconventional path, with a line in the log, if any stage refuses.");
 
         ImGui::SeparatorText("Cost");

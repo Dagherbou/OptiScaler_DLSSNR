@@ -304,9 +304,9 @@ class Config
     CustomOptional<float> DlssNrEditStability { 0.0f };
 
     // The split pipeline: Ray Reconstruction runs 1:1 as a pure denoiser, the model runs at render
-    // resolution, and an internal second Super Resolution feature does the one enlargement. Needs a
-    // restart (the clamp happens when the game creates its feature) and a render scale below native to
-    // gain anything.
+    // resolution, and an internal second Super Resolution feature does the one enlargement. Applies
+    // live -- the feature is re-created in place -- and needs a render scale below native to gain
+    // anything.
     CustomOptional<bool> DlssNrSplitPipeline { false };
 
     // DLSS
