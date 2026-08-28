@@ -1000,6 +1000,17 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
 
     const bool settled = SplitDx12.stableFrames >= 30;
 
+    // A Ray Reconstruction feature that does not upscale (RE Engine runs RR 1:1 and upscales in a
+    // separate Super Resolution feature) already IS the split arrangement -- rearranging it built a
+    // pointless 1:1 enlargement against the game's real output and crashed. Nothing to do here.
+    if (want && f->TargetWidth() <= f->RenderWidth() + f->RenderWidth() / 20 && !SplitDx12.geometryOwned)
+    {
+        DlssNr::SetSplitStatus(
+            "not needed here: this game already runs Ray Reconstruction 1:1 -- the split arrangement "
+            "is native; the model runs at render resolution via the Before-frame-generation inject point");
+        return;
+    }
+
     if (want && !matches && settled)
     {
         // If recreations complete and the feature still does not match, something else owns its
@@ -1256,6 +1267,11 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
         SplitDesiredTarget(renderW, renderH, &desiredW, &desiredH);
 
         if (f->TargetWidth() != desiredW || f->TargetHeight() != desiredH)
+            return false;
+
+        // Only a feature the split itself rearranged is served. A game whose RR is natively 1:1
+        // (upscaling elsewhere) matches the 1:1 desired shape by coincidence, not ownership.
+        if (!SplitDx12.geometryOwned)
             return false;
     }
 
