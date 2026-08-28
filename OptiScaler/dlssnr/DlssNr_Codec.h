@@ -58,6 +58,8 @@ cbuffer Params : register(b0)
     float gColourStrength;
     uint  gDebugView;
     float gMaxRatio;
+    uint  gPassthrough;
+    uint  gPad;
 };
 
 Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
@@ -96,6 +98,15 @@ void main(uint3 id : SV_DispatchThreadID)
         // Kept so the resolve has the frame as it was, rather than having to reconstruct it.
         gKeep[id.xy] = float4(frame, source.a);
 
+        // Some games hand DLSS a frame that has already been through their tonemapper. The game says
+        // which in its own DLSS creation flags, and converting one that needs no conversion is pure
+        // damage, so it goes through untouched.
+        if (gPassthrough != 0)
+        {
+            gTarget[id.xy] = float4(frame, source.a);
+            return;
+        }
+
         // Reinhard on luminance alone, with chroma carried along untouched. Compressing each channel
         // separately is what shifted the hue of every saturated highlight.
         float luma = dot(frame, kLuma);
@@ -107,8 +118,11 @@ void main(uint3 id : SV_DispatchThreadID)
     }
 
     float4 proxySample = gSource.Load(int3(id.xy, 0));
-    float3 proxy = SrgbToLinear(proxySample.rgb);
-    float3 model = SrgbToLinear(gModel.Load(int3(id.xy, 0)).rgb);
+    float4 modelSample = gModel.Load(int3(id.xy, 0));
+
+    // Nothing was encoded on the way in, so nothing is decoded here either.
+    float3 proxy = gPassthrough != 0 ? proxySample.rgb : SrgbToLinear(proxySample.rgb);
+    float3 model = gPassthrough != 0 ? modelSample.rgb : SrgbToLinear(modelSample.rgb);
     float4 originalSample = gOriginal.Load(int3(id.xy, 0));
     float3 original = originalSample.rgb;
 
@@ -116,7 +130,8 @@ void main(uint3 id : SV_DispatchThreadID)
     // equivalent edit in the original. For Reinhard against a white point this is exactly
     // whitePoint + luminance -- bounded everywhere, unlike the inverse of the curve.
     float originalLuma = dot(original, kLuma);
-    float slope = gWhitePoint + originalLuma;
+    // With no curve applied there is no slope to undo: the edit lands as it is.
+    float slope = gPassthrough != 0 ? 1.0 : gWhitePoint + originalLuma;
 
     if (gDebugView == 1)
     {
@@ -171,6 +186,9 @@ struct Params
     float colourStrength;
     unsigned int debugView;
     float maxRatio;
+    // Set when the game's own buffer is already tone-mapped, in which case there is nothing to convert.
+    unsigned int passthrough;
+    unsigned int pad;
 };
 
 // A typeless resource cannot be viewed, and the buffer the upscaler writes is occasionally declared that

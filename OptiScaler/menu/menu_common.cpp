@@ -5834,21 +5834,22 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
 
         ImGui::TextUnformatted("Read when the model is built, so a change rebuilds it after a moment.");
 
+        static const char* nrPresetNames[] = { "Default", "Preset 1", "Preset 2", "Preset 3" };
         int preset = (int) config->DlssNrPreset.value_or_default();
-        if (ImGui::SliderInt("Model preset", &preset, 0, 8))
+        if (ImGui::Combo("Model preset", &preset, nrPresetNames, IM_ARRAYSIZE(nrPresetNames)))
             config->DlssNrPreset = (uint32_t) preset;
 
-        ShowHelpMarker("0 leaves the choice to the model."
-                       "\n\nUndocumented, and not the same scale as the super resolution or ray"
-                       "\nreconstruction presets -- the same number means something different here.");
+        ShowHelpMarker("Default leaves the choice to the model."
+                       "\n\nNot the same scale as the super resolution or ray reconstruction presets --"
+                       "\nthe same number means something different here.");
 
+        static const char* nrStyleNames[] = { "Natural", "Cinematic" };
         int style = (int) config->DlssNrStyle.value_or_default();
-        if (ImGui::SliderInt("Style", &style, 0, 8))
+        if (ImGui::Combo("Style", &style, nrStyleNames, IM_ARRAYSIZE(nrStyleNames)))
             config->DlssNrStyle = (uint32_t) style;
 
-        ShowHelpMarker("Also undocumented. Not every value appears to be a distinct model -- several"
-                       "\nlook identical in practice. The range is what the parameter accepts, not a"
-                       "\npromise that all nine differ.");
+        ShowHelpMarker("The model has two, and only two. A slider offering more was a guess, and it"
+                       "\nmatched the observation that most of its positions did nothing.");
 
         float intensity = config->DlssNrIntensity.value_or_default();
         if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 1.0f, "%.2f"))
@@ -5877,6 +5878,16 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
             config->DlssNrAutoMask = autoMask;
 
         ShowHelpMarker("Lets the model find skin itself rather than treating the frame uniformly.");
+
+        bool uiCorrection = config->DlssNrUiCorrection.value_or_default();
+        if (ImGui::Checkbox("UI correction", &uiCorrection))
+            config->DlssNrUiCorrection = uiCorrection;
+
+        ShowHelpMarker("Keeps the model off the interface."
+                       "\n\nIt matters most on the finished frame, where the HUD is part of the picture"
+                       "\nthe model is handed and it will otherwise synthesise detail into text and"
+                       "\nicons. Before frame generation the UI has not been drawn yet, so there is"
+                       "\nnothing there to protect.");
 
         ImGui::SeparatorText("Colour");
 

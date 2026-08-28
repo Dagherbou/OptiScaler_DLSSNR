@@ -267,6 +267,9 @@ class Config
     // -1 means follow local structure, which is the model's own default. It is not a strength of zero.
     CustomOptional<float> DlssNrSkinStructure { -1.0f };
     CustomOptional<bool> DlssNrAutoMask { true };
+    // Keeps the model off the interface. It matters most on the finished frame, where the HUD is part
+    // of the picture the model is handed.
+    CustomOptional<bool> DlssNrUiCorrection { true };
 
     // How much of the model's edit reaches the frame. Separated because detail synthesis is a luminance
     // edit and any colour shift is usually the part you do not want, and allowed past 1.0 because

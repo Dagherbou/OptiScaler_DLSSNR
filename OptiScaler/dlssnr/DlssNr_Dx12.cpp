@@ -18,7 +18,7 @@ namespace
 // shipped beside OptiScaler; see nvngx.dll_dlssnr.dll.
 using PFN_NrCreate = void*(__cdecl*) (const wchar_t*, const wchar_t*, ID3D12Device*,
                                       ID3D12GraphicsCommandList*, void*, unsigned int, unsigned int, int,
-                                      float, int, float, float, float, int);
+                                      float, int, float, float, float, int, int);
 using PFN_NrEvaluate = int(__cdecl*) (ID3D12GraphicsCommandList*, void*, void*, ID3D12Resource*,
                                       ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, unsigned int,
                                       unsigned int, unsigned int, unsigned int, int, int, float, int,
@@ -567,7 +567,8 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
                         cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
                         cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
                         cfg.DlssNrSkinStructure.value_or_default(),
-                        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0);
+                        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0,
+                        cfg.DlssNrUiCorrection.value_or_default() ? 1 : 0);
 
         if (g_nr.feature == nullptr)
         {
@@ -594,6 +595,24 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     }
 
     // The upscaler has just written this, so it is a UAV. The model needs it readable.
+    // Whether the buffer the upscaler just wrote is linear HDR or an already tone-mapped picture is not
+    // something to assume: the game says so, in the flags it created its own DLSS feature with. Running
+    // the colour transform over a frame that has already been through a tonemapper is pure damage, and
+    // skipping it on one that has not leaves the model reading ordinary values as enormously bright.
+    unsigned int dlssFlags = 0;
+    params->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &dlssFlags);
+    const bool isHdrBuffer = (dlssFlags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0;
+
+    static bool reportedHdr = false;
+
+    if (!reportedHdr)
+    {
+        reportedHdr = true;
+        LOG_INFO("DLSS-NR: the game's DLSS buffer is {} (create flags 0x{:X}), so the colour transform is {}",
+                 isHdrBuffer ? "linear HDR" : "already tone-mapped", dlssFlags,
+                 isHdrBuffer ? "on" : "off");
+    }
+
     const bool haveCodec = g_codec.ensure(device);
 
     if (!haveCodec)
@@ -642,6 +661,9 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     codec::Params encodeParams {};
     encodeParams.mode = codec::MODE_ENCODE;
+    // A frame that is already display-referred is handed over untouched: the encode becomes a copy and
+    // the resolve adds the model's edit back at full scale.
+    encodeParams.passthrough = isHdrBuffer ? 0u : 1u;
     encodeParams.whitePoint = whitePoint;
     encodeParams.width = width;
     encodeParams.height = height;
@@ -730,6 +752,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         resolveParams.colourStrength = cfg.DlssNrColourStrength.value_or_default();
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
+        resolveParams.passthrough = isHdrBuffer ? 0u : 1u;
 
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -890,7 +913,8 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
                         cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
                         cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
                         cfg.DlssNrSkinStructure.value_or_default(),
-                        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0);
+                        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0,
+                        cfg.DlssNrUiCorrection.value_or_default() ? 1 : 0);
 
         if (g_nr.feature == nullptr)
         {

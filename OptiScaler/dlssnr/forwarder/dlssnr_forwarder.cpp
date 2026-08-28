@@ -91,7 +91,8 @@ __declspec(dllexport) void *dlssnr_call_create(const wchar_t *snippetPath, const
                                                void *capabilityParams, unsigned int width,
                                                unsigned int height, int preset, float intensity,
                                                int style, float localStructure, float localTone,
-                                               float skinStructure, int useAutoMask) {
+                                               float skinStructure, int useAutoMask,
+                                               int uiCorrection) {
     if (!loadSnippet(snippetPath) || !capabilityParams) {
         return nullptr;
     }
@@ -120,6 +121,7 @@ __declspec(dllexport) void *dlssnr_call_create(const wchar_t *snippetPath, const
     setFloat(capabilityParams, "DLSSNR.LocalToneStrength", localTone);
     setFloat(capabilityParams, "DLSSNR.SkinStructureStrength", skinStructure);
     setUInt(capabilityParams, "DLSSNR.UseAutoMask", (unsigned int) useAutoMask);
+    setUInt(capabilityParams, "DLSSNR.UICorrection", (unsigned int) uiCorrection);
     void *handle = nullptr;
     dlssnr_call_last_create = g_snip.create(cmd, 18, capabilityParams, &handle);
     return handle;
