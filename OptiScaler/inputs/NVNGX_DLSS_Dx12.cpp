@@ -666,6 +666,13 @@ struct SplitState
     std::unique_ptr<IFeature_Dx12> sr;      // the enlargement (RR 1:1 mode only)
     std::unique_ptr<OS_Dx12> downscaler;    // oversized -> display, OptiScaler's own filtering
     int downscalerKind = -1;                // the Downscaler choice it was built with
+
+    // The enlargement was created this frame: its NGX creation commands are recorded in the game's
+    // command list but not yet executed, and NGX requires them executed before the first evaluate.
+    // Evaluating in the same list is a dice-roll that sometimes deadlocks the GPU (both session
+    // crashes died on exactly the creation frame). Skip one frame instead, like OptiScaler's own
+    // recreation counter does.
+    bool srJustCreated = false;
     unsigned int srTargetWidth = 0;         // what the enlargement was built to produce
     bool failed = false;
 
@@ -1371,8 +1378,23 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
 
         SplitDx12.sr = std::move(sr);
         SplitDx12.srTargetWidth = targetW;
+        SplitDx12.srJustCreated = true;
         LOG_INFO("DLSS-NR split: internal Super Resolution running {}x{} -> {}x{}{}", renderW, renderH,
                  targetW, targetH, supersample ? " (supersampled)" : "");
+    }
+
+    if (SplitDx12.srJustCreated)
+    {
+        // The creation commands go through the game's own submit first; the first evaluate happens
+        // next frame. One frame keeps the previous image -- invisible inside a toggle's hitch.
+        SplitDx12.srJustCreated = false;
+
+        params->Set(NVSDK_NGX_Parameter_Output, gameOutput);
+        params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
+        params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
+        DlssNr::SetSplitStatus("arming the enlargement...");
+        *outResult = NVSDK_NGX_Result_Success;
+        return true;
     }
 
     const bool useOversized = supersample && SplitEnsureOversized(targetW, targetH, workFormat);
