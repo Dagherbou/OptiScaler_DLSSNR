@@ -62,14 +62,22 @@ cbuffer Params : register(b0)
     uint  gDebugView;
     float gMaxRatio;
     uint  gPassthrough;
+    uint  gAccumulate;   // 0 off, 1 blend with the reprojected history, 2 restart the history
+    float gMvScaleX;     // motion vector units -> pixels of this dispatch
+    float gMvScaleY;
+    uint  gGuideWidth;   // the motion texture's valid region
+    uint  gGuideHeight;
+    float gStability;    // how much of the history survives each frame; 0 is off
     uint  gPad;
 };
 
 Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
 Texture2D<float4>   gModel    : register(t1);  // resolve: what the model returned.
 Texture2D<float4>   gOriginal : register(t2);  // resolve: the untouched frame.
+Texture2D<float4>   gMotion   : register(t3);  // resolve, accumulating: the game's motion vectors.
+Texture2D<float4>   gPrevEdit : register(t4);  // resolve, accumulating: last frame's accumulated edit.
 RWTexture2D<float4> gTarget   : register(u0);  // encode: the proxy. resolve: the frame.
-RWTexture2D<float4> gKeep     : register(u1);  // encode: the untouched copy.
+RWTexture2D<float4> gKeep     : register(u1);  // encode: the untouched copy. resolve: the edit history.
 SamplerState        gLinear   : register(s0);  // so the edit can be read at a different size
 
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
@@ -170,6 +178,31 @@ void main(uint3 id : SV_DispatchThreadID)
 
     float3 edit = model - proxy;
 
+    // The edit, averaged over time. The model re-decides a measurable fraction of its answer every
+    // frame even on a static scene; blending each frame's edit with its own reprojected history keeps
+    // the consistent part -- the detail -- and cancels the part that re-randomises. NVIDIA's own
+    // motion vectors carry the history to where the surface is now.
+    if (gAccumulate != 0)
+    {
+        float3 accumulated = edit;
+
+        if (gAccumulate == 1)
+        {
+            float2 mv = gMotion.Load(int3(uv * float2(gGuideWidth, gGuideHeight), 0)).xy *
+                        float2(gMvScaleX, gMvScaleY);
+            float2 uvPrev = uv + mv / float2(gWidth, gHeight);
+
+            if (all(uvPrev >= 0.0) && all(uvPrev <= 1.0))
+            {
+                float3 prev = gPrevEdit.SampleLevel(gLinear, uvPrev, 0).rgb;
+                accumulated = lerp(edit, prev, gStability);
+            }
+        }
+
+        gKeep[id.xy] = float4(accumulated, 1.0);
+        edit = accumulated;
+    }
+
     // Split so the detail the model synthesised and any colour it shifted can be dialled apart.
     float lumaEdit = dot(edit, kLuma);
     float3 colourEdit = edit - lumaEdit;
@@ -208,6 +241,13 @@ struct Params
     float maxRatio;
     // Set when the game's own buffer is already tone-mapped, in which case there is nothing to convert.
     unsigned int passthrough;
+    // 0 off, 1 blend with the reprojected history, 2 restart the history.
+    unsigned int accumulate;
+    float mvScaleX;
+    float mvScaleY;
+    unsigned int guideWidth;
+    unsigned int guideHeight;
+    float stability;
     unsigned int pad;
 };
 
@@ -262,7 +302,7 @@ class Codec
 
         D3D12_DESCRIPTOR_RANGE ranges[2] = {};
         ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        ranges[0].NumDescriptors = 3; // proxy, model, original
+        ranges[0].NumDescriptors = 5; // proxy, model, original, motion, previous edit
         ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
         ranges[1].NumDescriptors = 2; // result, kept copy
         ranges[1].OffsetInDescriptorsFromTableStart = 3;
@@ -335,7 +375,8 @@ class Codec
     // writable. Slots a pass does not read still have to be populated, or the descriptor is undefined.
     void dispatch(ID3D12GraphicsCommandList* cmd, const Params& constants, ID3D12Resource* source,
                   ID3D12Resource* model, ID3D12Resource* original, ID3D12Resource* target,
-                  ID3D12Resource* keep)
+                  ID3D12Resource* keep, ID3D12Resource* motion = nullptr,
+                  ID3D12Resource* prevEdit = nullptr)
     {
         if (pipeline_ == nullptr)
             return;
@@ -348,10 +389,12 @@ class Codec
         D3D12_GPU_DESCRIPTOR_HANDLE gpu = heap_->GetGPUDescriptorHandleForHeapStart();
         gpu.ptr += (UINT64) slot * kPerDispatch * stride_;
 
-        ID3D12Resource* srvs[3] = { source, model != nullptr ? model : source,
-                                    original != nullptr ? original : source };
+        ID3D12Resource* srvs[5] = { source, model != nullptr ? model : source,
+                                    original != nullptr ? original : source,
+                                    motion != nullptr ? motion : source,
+                                    prevEdit != nullptr ? prevEdit : source };
 
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < 5; ++i)
         {
             D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
             srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -373,7 +416,7 @@ class Codec
             uav.Format = TypedFormat(uavs[i]->GetDesc().Format);
 
             D3D12_CPU_DESCRIPTOR_HANDLE handle = cpu;
-            handle.ptr += (SIZE_T) (3 + i) * stride_;
+            handle.ptr += (SIZE_T) (5 + i) * stride_;
             device_->CreateUnorderedAccessView(uavs[i], nullptr, &uav, handle);
         }
 
@@ -411,7 +454,7 @@ class Codec
 
   private:
     static const unsigned int kRingSlots = 8;
-    static const unsigned int kPerDispatch = 5;
+    static const unsigned int kPerDispatch = 7;
 
     ID3D12Device* device_ = nullptr;
     ID3D12RootSignature* root_ = nullptr;

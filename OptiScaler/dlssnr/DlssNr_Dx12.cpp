@@ -56,6 +56,12 @@ struct NrState
     // a string of coloured cells.
     ID3D12Resource* hdrCopy = nullptr;
 
+    // The accumulated edit, double-buffered: one read while the other is written. Always float, since
+    // an edit is signed and the frame's own format generally is not.
+    ID3D12Resource* editHistory[2] = {};
+    unsigned int editIndex = 0;
+    bool editWarm = false;
+
     // The frame shrunk for the model, when it is working below full resolution.
     ID3D12Resource* colorSmall = nullptr;
     unsigned int workWidth = 0;
@@ -916,12 +922,55 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.passthrough = isHdrBuffer ? 0u : 1u;
 
+        // The accumulator: this frame's edit blended with its own reprojected history, carried to where
+        // each surface is now by the same motion vectors the model was given. The model re-decides a
+        // measured fraction of its edit every frame even on a static scene; the consistent part -- the
+        // detail -- survives this average and the re-randomised part cancels.
+        const float stability = cfg.DlssNrEditStability.value_or_default();
+        ID3D12Resource* historyIn = nullptr;
+        ID3D12Resource* historyOut = nullptr;
+
+        if (stability > 0.0f && motionIn != nullptr)
+        {
+            if (g_nr.editHistory[0] == nullptr)
+            {
+                g_nr.editHistory[0] = CreateScratch(device, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height);
+                g_nr.editHistory[1] = CreateScratch(device, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height);
+                g_nr.editWarm = false;
+            }
+
+            if (g_nr.editHistory[0] != nullptr && g_nr.editHistory[1] != nullptr)
+            {
+                historyIn = g_nr.editHistory[g_nr.editIndex];
+                historyOut = g_nr.editHistory[1 - g_nr.editIndex];
+
+                // 2 restarts the history: the first frame after a build or reset has nothing behind it.
+                resolveParams.accumulate = g_nr.editWarm ? 1u : 2u;
+                resolveParams.stability = stability > 0.95f ? 0.95f : stability;
+                resolveParams.mvScaleX = g_nr.guideMvScaleX;
+                resolveParams.mvScaleY = g_nr.guideMvScaleY;
+                resolveParams.guideWidth = guideWidth;
+                resolveParams.guideHeight = guideHeight;
+
+                Barrier(cmdList, historyIn, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            }
+        }
+
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         g_codec.dispatch(cmdList, resolveParams, g_nr.colorCopy, g_nr.output, g_nr.hdrCopy, target,
-                         nullptr);
+                         historyOut, motionIn, historyIn);
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        if (historyIn != nullptr)
+        {
+            Barrier(cmdList, historyIn, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            g_nr.editIndex = 1 - g_nr.editIndex;
+            g_nr.editWarm = true;
+        }
     }
     else
     {
@@ -1696,6 +1745,15 @@ void Shutdown()
     {
         g_nr.colorSmall->Release();
         g_nr.colorSmall = nullptr;
+    }
+
+    for (auto& h : g_nr.editHistory)
+    {
+        if (h != nullptr)
+        {
+            h->Release();
+            h = nullptr;
+        }
     }
 
     if (g_nr.depthClone != nullptr)

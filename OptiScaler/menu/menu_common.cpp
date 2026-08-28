@@ -5874,6 +5874,20 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\n\nAbove 1 exaggerates the edit. If nothing here seems to do anything, push this"
                        "\nto 4 and watch: that answers whether the model is contributing at all.");
 
+        float editStability = config->DlssNrEditStability.value_or_default();
+        if (ImGui::SliderFloat("Temporal stability", &editStability, 0.0f, 0.95f, "%.2f"))
+            config->DlssNrEditStability = editStability;
+
+        ShowHelpMarker("Averages the model's edit across frames, carried to where each surface is now by"
+                       "\nthe game's own motion vectors. The model re-decides about a fifth of its edit"
+                       "\nevery frame even on a static scene -- measured directly -- and that is the"
+                       "\nwobble. Averaging keeps the consistent detail and cancels the noise."
+                       "\n\n0 is off and bit-identical. 0.6 to 0.8 is the useful range. Too high and the"
+                       "\ndetail lags a step behind fast motion, which reads as softness rather than"
+                       "\nsmearing -- the edit is small, so its ghosts are small too."
+                       "\n\nWorks at the before-frame-generation inject point, so it composes with Ray"
+                       "\nReconstruction. Before the upscaler, DLSS's own accumulator already does this.");
+
         float colour = config->DlssNrColourStrength.value_or_default();
         if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 4.0f, "%.2f"))
             config->DlssNrColourStrength = colour;
