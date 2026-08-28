@@ -5885,8 +5885,9 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\n\n0 is off and bit-identical. 0.6 to 0.8 is the useful range. Too high and the"
                        "\ndetail lags a step behind fast motion, which reads as softness rather than"
                        "\nsmearing -- the edit is small, so its ghosts are small too."
-                       "\n\nWorks at the before-frame-generation inject point, so it composes with Ray"
-                       "\nReconstruction. Before the upscaler, DLSS's own accumulator already does this.");
+                       "\n\nWorks at the before-frame-generation and finished-frame inject points, so it"
+                       "\ncomposes with Ray Reconstruction. Before the upscaler, DLSS's own accumulator"
+                       "\nalready does this.");
 
         float colour = config->DlssNrColourStrength.value_or_default();
         if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 4.0f, "%.2f"))

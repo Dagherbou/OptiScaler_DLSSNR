@@ -932,6 +932,19 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
         if (stability > 0.0f && motionIn != nullptr)
         {
+            if (g_nr.editHistory[0] != nullptr &&
+                ((unsigned int) g_nr.editHistory[0]->GetDesc().Width != width ||
+                 g_nr.editHistory[0]->GetDesc().Height != height))
+            {
+                for (auto& h : g_nr.editHistory)
+                {
+                    h->Release();
+                    h = nullptr;
+                }
+
+                g_nr.editWarm = false;
+            }
+
             if (g_nr.editHistory[0] == nullptr)
             {
                 g_nr.editHistory[0] = CreateScratch(device, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height);
@@ -1596,9 +1609,9 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
 
     g_nr.reset = false;
 
+    // The motion clone stays readable through the resolve: the accumulator reprojects the edit's
+    // history with it, in the same dispatch that applies the edit.
     Barrier(cmdList, g_nr.depthClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_COPY_DEST);
-    Barrier(cmdList, g_nr.motionClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_DEST);
 
     if (result == NVSDK_NGX_Result_Success)
@@ -1617,12 +1630,66 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
 
+        // The same accumulator the before-frame-generation path has: the edit blended with its own
+        // reprojected history. With frame generation, generated frames share a rendered frame's motion
+        // vectors, which is close enough for an edit this small.
+        const float stability = cfg.DlssNrEditStability.value_or_default();
+        ID3D12Resource* historyIn = nullptr;
+        ID3D12Resource* historyOut = nullptr;
+
+        if (stability > 0.0f && g_nr.motionClone != nullptr)
+        {
+            if (g_nr.editHistory[0] != nullptr &&
+                ((unsigned int) g_nr.editHistory[0]->GetDesc().Width != width ||
+                 g_nr.editHistory[0]->GetDesc().Height != height))
+            {
+                for (auto& h : g_nr.editHistory)
+                {
+                    h->Release();
+                    h = nullptr;
+                }
+
+                g_nr.editWarm = false;
+            }
+
+            if (g_nr.editHistory[0] == nullptr)
+            {
+                g_nr.editHistory[0] = CreateScratch(device, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height);
+                g_nr.editHistory[1] = CreateScratch(device, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height);
+                g_nr.editWarm = false;
+            }
+
+            if (g_nr.editHistory[0] != nullptr && g_nr.editHistory[1] != nullptr)
+            {
+                historyIn = g_nr.editHistory[g_nr.editIndex];
+                historyOut = g_nr.editHistory[1 - g_nr.editIndex];
+
+                resolveParams.accumulate = g_nr.editWarm ? 1u : 2u;
+                resolveParams.stability = stability > 0.95f ? 0.95f : stability;
+                resolveParams.mvScaleX = g_nr.guideMvScaleX;
+                resolveParams.mvScaleY = g_nr.guideMvScaleY;
+                resolveParams.guideWidth = g_nr.guideWidth;
+                resolveParams.guideHeight = g_nr.guideHeight;
+
+                Barrier(cmdList, historyIn, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            }
+        }
+
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         g_codec.dispatch(cmdList, resolveParams, modelInput, g_nr.output, g_nr.colorCopy, g_nr.hdrCopy,
-                         nullptr);
+                         historyOut, g_nr.motionClone, historyIn);
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        if (historyIn != nullptr)
+        {
+            Barrier(cmdList, historyIn, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            g_nr.editIndex = 1 - g_nr.editIndex;
+            g_nr.editWarm = true;
+        }
 
         Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -1656,6 +1723,9 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         LOG_ERROR("DLSS-NR evaluate at present returned 0x{:X}, disabling for this session",
                   (uint32_t) result);
     }
+
+    Barrier(cmdList, g_nr.motionClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_COPY_DEST);
 
     Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
