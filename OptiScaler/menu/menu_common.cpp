@@ -5866,19 +5866,16 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
 
         if (split)
         {
-            // Supersampling is automatic, from the Output Scaling Ratio; the text says what is in force.
+            // Output Scaling's Enable is the supersampling intent; the split absorbs it while running.
             const float ratio = config->OutputScalingMultiplier.value_or_default();
+            const bool osIntent = config->OutputScalingEnabled.value_for_config().value_or(false);
 
-            if (config->OutputScalingEnabled.value_or_default())
-                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.4f, 1.0f),
-                                   "Turn Output Scaling's Enable off -- the split reads its Ratio "
-                                   "(x%.2f) and supersamples itself.",
-                                   ratio);
-            else if (ratio > 1.05f)
-                ImGui::TextDisabled("Supersampling x%.2f, from the Output Scaling Ratio.", ratio);
+            if (osIntent && ratio > 1.05f)
+                ImGui::TextDisabled("Output Scaling absorbed: the split supersamples x%.2f itself.", ratio);
+            else if (osIntent)
+                ImGui::TextDisabled("Output Scaling absorbed, but its Ratio is 1.0 -- nothing to supersample.");
             else
-                ImGui::TextDisabled("No supersampling: raise the Output Scaling Ratio above 1.0 to "
-                                    "enable it.");
+                ImGui::TextDisabled("No supersampling: enable Output Scaling (and its Ratio) to add it.");
 
             bool includeRR = config->DlssNrSplitIncludeRR.value_or_default();
             if (ImGui::Checkbox("Include Ray Reconstruction in the supersample", &includeRR))

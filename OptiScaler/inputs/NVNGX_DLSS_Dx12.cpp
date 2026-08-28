@@ -668,13 +668,6 @@ struct SplitState
     unsigned int srTargetWidth = 0;         // what the enlargement was built to produce
     bool failed = false;
 
-    // Retired on a live change: still referenced by command lists submitted over the last frames, so
-    // they are released a number of evaluates later rather than on the spot.
-    ID3D12Resource* parkedIntermediate = nullptr;
-    ID3D12Resource* parkedOversized = nullptr;
-    std::unique_ptr<IFeature_Dx12> parkedSr;
-    std::unique_ptr<OS_Dx12> parkedDownscaler;
-    int parkedCountdown = 0;
 
     // Geometry-change control, so nothing can ever loop recreations. The pair doubles as the steering
     // target while a recreation is mid-flight and the feature does not exist to ask.
@@ -685,22 +678,71 @@ struct SplitState
 
 static SplitState SplitDx12;
 
+// Retired on a live change: still referenced by command lists submitted over the last frames, so each
+// entry is released a number of evaluates later. A list, so rapid changes queue rather than forcing an
+// early free -- releasing under the GPU is the mistake this project has paid for repeatedly.
+struct SplitRetired
+{
+    ID3D12Resource* resource = nullptr;
+    std::unique_ptr<IFeature_Dx12> feature;
+    std::unique_ptr<OS_Dx12> shader;
+    int framesLeft = 16;
+};
+
+static std::vector<SplitRetired> SplitParkedList;
+
+static void SplitParkResource(ID3D12Resource*& res)
+{
+    if (res == nullptr)
+        return;
+
+    SplitRetired r;
+    r.resource = res;
+    res = nullptr;
+    SplitParkedList.push_back(std::move(r));
+}
+
 static bool SplitWanted()
 {
     const Config& cfg = *Config::Instance();
-
-    // Output Scaling's Enable owns the same feature geometry; the split reads its Ratio instead and
-    // does the supersampling itself.
-    if (cfg.OutputScalingEnabled.value_or_default())
-        return false;
-
     return cfg.DlssNrEnabled.value_or_default() && cfg.DlssNrSplitPipeline.value_or_default() &&
            !SplitDx12.failed;
 }
 
-// The supersample ratio in force: the user's Output Scaling Ratio, when above one.
+// Whether the user wants supersampling: Output Scaling's own Enable, as saved -- the runtime value is
+// forced off while the split runs, because the split does the supersampling itself.
+static bool SplitOsIntent()
+{
+    return Config::Instance()->OutputScalingEnabled.value_for_config().value_or(false);
+}
+
+// The split absorbs Output Scaling while it runs: the runtime flag goes off, so no feature geometry can
+// be steered by two owners, and the split supersamples at the Ratio itself. Given back the moment the
+// split stands down, so conventional Output Scaling resumes.
+static void SplitAbsorbOs()
+{
+    if (SplitOsIntent() && Config::Instance()->OutputScalingEnabled.value_or_default())
+    {
+        Config::Instance()->OutputScalingEnabled.set_volatile_value(false);
+        LOG_INFO("DLSS-NR split: absorbing Output Scaling -- the split supersamples in its place");
+    }
+}
+
+static void SplitRestoreOs()
+{
+    if (SplitOsIntent() && !Config::Instance()->OutputScalingEnabled.value_or_default())
+    {
+        Config::Instance()->OutputScalingEnabled.set_volatile_value(true);
+        LOG_INFO("DLSS-NR split: returning Output Scaling to its own machinery");
+    }
+}
+
+// The supersample ratio in force: the Output Scaling Ratio, when the user has Output Scaling on.
 static float SplitRatio()
 {
+    if (!SplitOsIntent())
+        return 1.0f;
+
     float mult = Config::Instance()->OutputScalingMultiplier.value_or_default();
 
     if (mult > 3.0f)
@@ -727,57 +769,44 @@ static void SplitDesiredTarget(unsigned int renderW, unsigned int renderH, unsig
     *outH = renderH;
 }
 
-// Frees what a live change parked, once enough evaluates have passed that nothing in flight can still
-// reference it.
+// Frees what live changes parked, entry by entry, once enough evaluates have passed that nothing in
+// flight can still reference each one.
 static void SplitTickParked()
 {
-    if (SplitDx12.parkedCountdown <= 0)
-        return;
-
-    if (--SplitDx12.parkedCountdown > 0)
-        return;
-
-    if (SplitDx12.parkedIntermediate != nullptr)
+    for (size_t i = 0; i < SplitParkedList.size();)
     {
-        SplitDx12.parkedIntermediate->Release();
-        SplitDx12.parkedIntermediate = nullptr;
-    }
+        if (--SplitParkedList[i].framesLeft > 0)
+        {
+            ++i;
+            continue;
+        }
 
-    if (SplitDx12.parkedOversized != nullptr)
-    {
-        SplitDx12.parkedOversized->Release();
-        SplitDx12.parkedOversized = nullptr;
-    }
+        if (SplitParkedList[i].resource != nullptr)
+            SplitParkedList[i].resource->Release();
 
-    SplitDx12.parkedSr.reset();
-    SplitDx12.parkedDownscaler.reset();
+        SplitParkedList.erase(SplitParkedList.begin() + i);
+    }
 }
 
-// Parks the enlargement stage for deferred release. If the parking lot is still occupied from a very
-// recent change, the older tenants have had their frames and are let go now.
+// Parks the enlargement stage for deferred release.
 static void SplitParkEnlargement()
 {
-    if (SplitDx12.parkedOversized != nullptr)
-        SplitDx12.parkedOversized->Release();
-
-    SplitDx12.parkedSr.reset();
-    SplitDx12.parkedDownscaler.reset();
-    SplitDx12.parkedOversized = nullptr;
-
     if (SplitDx12.sr != nullptr)
-        SplitDx12.parkedSr = std::move(SplitDx12.sr);
-
-    if (SplitDx12.oversized != nullptr)
     {
-        SplitDx12.parkedOversized = SplitDx12.oversized;
-        SplitDx12.oversized = nullptr;
+        SplitRetired r;
+        r.feature = std::move(SplitDx12.sr);
+        SplitParkedList.push_back(std::move(r));
     }
 
     if (SplitDx12.downscaler != nullptr)
-        SplitDx12.parkedDownscaler = std::move(SplitDx12.downscaler);
+    {
+        SplitRetired r;
+        r.shader = std::move(SplitDx12.downscaler);
+        SplitParkedList.push_back(std::move(r));
+    }
 
+    SplitParkResource(SplitDx12.oversized);
     SplitDx12.srTargetWidth = 0;
-    SplitDx12.parkedCountdown = 16;
 }
 
 // Applies the toggles while the game runs, by re-creating the Ray Reconstruction feature at whatever
@@ -795,6 +824,11 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
 
     const bool want = SplitWanted();
     State& state = State::Instance();
+
+    if (want)
+        SplitAbsorbOs();
+    else
+        SplitRestoreOs();
 
     // A recreation is mid-flight -- the old feature may already be destroyed, and ChangeFeature's first
     // phase stamps the block's output size back to the old feature's. Keep the block aimed at the
@@ -818,20 +852,16 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
 
     IFeature_Dx12* f = it->second.feature.get();
 
-    if (!want && Config::Instance()->DlssNrSplitPipeline.value_or_default() &&
-        Config::Instance()->OutputScalingEnabled.value_or_default())
-        DlssNr::SetSplitStatus("waiting: turn Output Scaling's Enable off -- the split reads its Ratio "
-                               "and supersamples itself");
-
     unsigned int w = 0, h = 0, ow = 0, oh = 0;
     params->Get(NVSDK_NGX_Parameter_Width, &w);
     params->Get(NVSDK_NGX_Parameter_Height, &h);
     params->Get(NVSDK_NGX_Parameter_OutWidth, &ow);
     params->Get(NVSDK_NGX_Parameter_OutHeight, &oh);
 
-    // The display size the game originally asked for, captured whenever the block shows it.
-    if (w != 0 && ow > w && ow != SplitDx12.displayWidth &&
-        (SplitDx12.displayWidth == 0 || ow > SplitDx12.displayWidth))
+    // The display size the game originally asked for, captured exactly once. This block is also
+    // written by us -- the internal SR's oversized target goes through it -- and treating later, larger
+    // values as the game's own compounded the supersample every frame until the device hung.
+    if (SplitDx12.displayWidth == 0 && w != 0 && ow > w)
     {
         SplitDx12.displayWidth = ow;
         SplitDx12.displayHeight = oh;
@@ -903,12 +933,7 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
         state.newBackend = Upscaler::DLSSD;
         state.changeBackend[handleId] = true;
 
-        if (SplitDx12.intermediate != nullptr)
-        {
-            SplitDx12.parkedIntermediate = SplitDx12.intermediate;
-            SplitDx12.intermediate = nullptr;
-        }
-
+        SplitParkResource(SplitDx12.intermediate);
         SplitParkEnlargement();
         DlssNr::SetSplitActive(false);
         DlssNr::SetSplitStatus("");
@@ -1059,8 +1084,11 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
     {
         // RR itself upscales to the supersampled size; the model works on that image; only the
         // downscale remains. The conventional Output Scaling look with the model in the chain.
-        const auto targetW = (unsigned int) (SplitDx12.displayWidth * mult + 0.5f);
-        const auto targetH = (unsigned int) (SplitDx12.displayHeight * mult + 0.5f);
+        // DLSS refuses ratios beyond 4x its input, so the target is capped there.
+        auto targetW = (unsigned int) (SplitDx12.displayWidth * mult + 0.5f);
+        auto targetH = (unsigned int) (SplitDx12.displayHeight * mult + 0.5f);
+        targetW = targetW > renderW * 4 ? renderW * 4 : targetW;
+        targetH = targetH > renderH * 4 ? renderH * 4 : targetH;
 
         if (!SplitEnsureOversized(targetW, targetH, workFormat))
         {
@@ -1096,6 +1124,9 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
             *outResult = NVSDK_NGX_Result_Fail;
             return true;
         }
+
+        params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
+        params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
 
         std::snprintf(status, sizeof(status),
                       "running: RR supersampled x%.2f -> NR -> downscale (RR included)", mult);
@@ -1134,10 +1165,14 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
 
     // The enlargement: to the supersampled size when the ratio asks, straight to display otherwise.
     const bool supersample = mult > 1.0f;
-    const auto targetW =
+    auto targetW =
         supersample ? (unsigned int) (SplitDx12.displayWidth * mult + 0.5f) : SplitDx12.displayWidth;
-    const auto targetH =
+    auto targetH =
         supersample ? (unsigned int) (SplitDx12.displayHeight * mult + 0.5f) : SplitDx12.displayHeight;
+
+    // DLSS refuses ratios beyond 4x its input, so the target is capped there.
+    targetW = targetW > renderW * 4 ? renderW * 4 : targetW;
+    targetH = targetH > renderH * 4 ? renderH * 4 : targetH;
 
     if (SplitDx12.sr != nullptr && SplitDx12.srTargetWidth != targetW)
     {
@@ -1160,8 +1195,8 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
             DlssNr::SetSplitActive(false);
             DlssNr::SetSplitStatus("failed; conventional path running (see the log)");
             params->Set(NVSDK_NGX_Parameter_Output, gameOutput);
-            params->Set(NVSDK_NGX_Parameter_OutWidth, renderW);
-            params->Set(NVSDK_NGX_Parameter_OutHeight, renderH);
+            params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
+            params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
             *outResult = rrResult;
             return true;
         }
@@ -1184,10 +1219,14 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
     if (srOk && useOversized)
         srOk = SplitDownscale(cmdList, SplitDx12.oversized, gameOutput);
 
+    // The block goes back exactly as the game filled it -- including the output size, which we borrowed
+    // for the oversized target and whose pollution once compounded the supersample until the device hung.
     if (gameColor != nullptr)
         params->Set(NVSDK_NGX_Parameter_Color, gameColor);
 
     params->Set(NVSDK_NGX_Parameter_Output, gameOutput);
+    params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
+    params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
 
     if (!srOk)
     {
