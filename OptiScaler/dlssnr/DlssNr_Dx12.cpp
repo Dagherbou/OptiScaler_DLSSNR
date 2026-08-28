@@ -308,6 +308,37 @@ void DiscoverFloatSlot(NVSDK_NGX_Parameter* params)
               "structure will have no effect. The uint parameters still apply.");
 }
 
+// Switching inject points changes the surface format underneath the scratch set: the finished frame
+// works in the swapchain's format, the pre-frame-generation path in the upscaler's. A stale set either
+// clamps linear HDR into an 8-bit texture -- wrong brightness until something forces a rebuild -- or
+// hands CopyResource mismatched formats, which fails silently and makes the whole pass appear to do
+// nothing. So the set is torn down whenever the format it was built for is not the format needed now.
+void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
+{
+    if (g_nr.output == nullptr || g_nr.output->GetDesc().Format == needed)
+        return;
+
+    LOG_INFO("DLSS-NR rebuilding surfaces: format {} -> {} (inject point changed)",
+             (int) g_nr.output->GetDesc().Format, (int) needed);
+
+    if (g_nr.feature != nullptr && g_nr.release != nullptr)
+    {
+        g_nr.release(g_nr.feature);
+        g_nr.feature = nullptr;
+    }
+
+    for (ID3D12Resource** r : { &g_nr.output, &g_nr.colorCopy, &g_nr.hdrCopy, &g_nr.colorSmall })
+    {
+        if (*r != nullptr)
+        {
+            (*r)->Release();
+            *r = nullptr;
+        }
+    }
+
+    g_nr.reset = true;
+}
+
 ID3D12Resource* CreateScratch(ID3D12Device* device, DXGI_FORMAT format, unsigned int width,
                               unsigned int height)
 {
@@ -661,6 +692,13 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     const auto workWidth = (unsigned int) (width * workScale + 0.5f);
     const auto workHeight = (unsigned int) (height * workScale + 0.5f);
     const bool reduced = workWidth != width || workHeight != height;
+
+    // The surfaces being replaced may last have been used by the present path, whose command lists this
+    // pass did not record -- wait on its fence before touching them.
+    if (g_nr.output != nullptr && g_nr.output->GetDesc().Format != desc.Format)
+        WaitForAllSubmitted();
+
+    ReleaseSurfacesIfFormatChanged(desc.Format);
 
     if (g_nr.feature != nullptr &&
         (g_nr.width != width || g_nr.height != height || g_nr.workWidth != workWidth ||
@@ -1106,6 +1144,11 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
     const auto workWidth = (unsigned int) (width * scale + 0.5f);
     const auto workHeight = (unsigned int) (height * scale + 0.5f);
     const bool reduced = workWidth != width || workHeight != height;
+
+    if (g_nr.output != nullptr && g_nr.output->GetDesc().Format != scratchFormat)
+        WaitForAllSubmitted();
+
+    ReleaseSurfacesIfFormatChanged(scratchFormat);
 
     if (g_nr.feature != nullptr &&
         (g_nr.width != width || g_nr.height != height || g_nr.workWidth != workWidth ||
