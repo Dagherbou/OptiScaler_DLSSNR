@@ -1300,6 +1300,9 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
     Barrier(cmdList, g_nr.motionClone, D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
+    // The vectors were scaled to full-frame pixels; the image the model reprojects is the working size.
+    const float mvToWork = width != 0 ? (float) workWidth / (float) width : 1.0f;
+
     const int result = g_nr.evaluate(
         cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, g_nr.depthClone, g_nr.motionClone,
         g_nr.output, workWidth, workHeight, g_nr.guideWidth, g_nr.guideHeight,
@@ -1308,7 +1311,7 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
         cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
         cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0,
-        g_nr.guideMvScaleX, g_nr.guideMvScaleY);
+        g_nr.guideMvScaleX * mvToWork, g_nr.guideMvScaleY * mvToWork);
 
     g_nr.reset = false;
 
