@@ -314,7 +314,7 @@ class Codec
         ranges[0].NumDescriptors = 5; // proxy, model, original, motion, previous edit
         ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
         ranges[1].NumDescriptors = 2; // result, kept copy
-        ranges[1].OffsetInDescriptorsFromTableStart = 3;
+        ranges[1].OffsetInDescriptorsFromTableStart = 5;
 
         D3D12_ROOT_PARAMETER params[2] = {};
         params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
