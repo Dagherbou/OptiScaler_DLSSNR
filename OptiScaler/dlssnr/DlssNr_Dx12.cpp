@@ -589,6 +589,12 @@ bool g_splitActive = false;
 
 void SetSplitActive(bool active) { g_splitActive = active; }
 
+const char* g_splitStatus = "";
+
+void SetSplitStatus(const char* status) { g_splitStatus = status != nullptr ? status : ""; }
+
+const char* SplitStatus() { return g_splitStatus; }
+
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
                           bool forceInPlace)
 {

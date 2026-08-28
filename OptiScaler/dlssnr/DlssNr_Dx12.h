@@ -32,6 +32,10 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 // The split pipeline runs the model itself; the present-time pass stands down while it is active.
 void SetSplitActive(bool active);
 
+// One line of truth about the split pipeline, for the overlay. Set from the seam with string literals.
+void SetSplitStatus(const char* status);
+const char* SplitStatus();
+
 // Runs the model over the finished frame, on a command list of its own, and submits it. Called every
 // present; does nothing unless that inject point is selected.
 void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, unsigned int backBufferIndex);

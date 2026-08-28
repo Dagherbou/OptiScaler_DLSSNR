@@ -5837,6 +5837,20 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
         if (ImGui::Checkbox("Split pipeline: RR 1:1 + NR + internal SR", &split))
             config->DlssNrSplitPipeline = split;
 
+        if (split)
+        {
+            const char* splitStatus = DlssNr::SplitStatus();
+
+            if (splitStatus[0] == 0)
+                ImGui::TextDisabled("Waiting for a Ray Reconstruction evaluate.");
+            else if (splitStatus[0] == 'r' && splitStatus[1] == 'u')
+                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "%s", splitStatus);
+            else if (splitStatus[0] == 'f')
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f), "%s", splitStatus);
+            else
+                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.4f, 1.0f), "%s", splitStatus);
+        }
+
         ShowHelpMarker("Ray Reconstruction runs 1:1 as a pure denoiser, the model runs at render"
                        "\nresolution, and one enlargement at the end is done by an internal DLSS Super"
                        "\nResolution feature -- a temporal upscaler with the full G-buffer, not a"

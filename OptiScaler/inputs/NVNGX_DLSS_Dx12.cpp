@@ -742,6 +742,7 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
                          w, h, ow, oh);
             }
 
+            DlssNr::SetSplitStatus("waiting: needs a render scale below native (set DLSS Quality or lower)");
             return;
         }
 
@@ -753,6 +754,7 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
         state.changeBackend[handleId] = true;
 
         LOG_INFO("DLSS-NR split: re-creating Ray Reconstruction 1:1 at {}x{} in place", w, h);
+        DlssNr::SetSplitStatus("re-creating Ray Reconstruction 1:1...");
         return;
     }
 
@@ -777,6 +779,7 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
 
         LOG_INFO("DLSS-NR split: returning Ray Reconstruction to {}x{} -> {}x{} in place",
                  f->RenderWidth(), f->RenderHeight(), SplitDx12.displayWidth, SplitDx12.displayHeight);
+        DlssNr::SetSplitStatus("");
         return;
     }
 }
@@ -885,6 +888,7 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
         if (SplitDx12.intermediate == nullptr)
         {
             LOG_ERROR("DLSS-NR split: the intermediate could not be created; falling back");
+            DlssNr::SetSplitStatus("failed; conventional path running (see the log)");
             SplitDx12.failed = true;
             DlssNr::SetSplitActive(false);
             return false;
@@ -920,6 +924,7 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
         {
             LOG_ERROR("DLSS-NR split: the internal Super Resolution feature would not initialise; "
                       "falling back");
+            DlssNr::SetSplitStatus("failed; conventional path running (see the log)");
             SplitDx12.failed = true;
             DlssNr::SetSplitActive(false);
             params->Set(NVSDK_NGX_Parameter_Output, gameOutput);
@@ -950,9 +955,13 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
     if (!srOk)
     {
         LOG_ERROR("DLSS-NR split: the internal Super Resolution feature failed; falling back");
+        DlssNr::SetSplitStatus("failed; conventional path running (see the log)");
         SplitDx12.failed = true;
         DlssNr::SetSplitActive(false);
     }
+
+    if (srOk)
+        DlssNr::SetSplitStatus("running: RR 1:1 -> NR -> internal SR");
 
     *outResult = srOk ? NVSDK_NGX_Result_Success : NVSDK_NGX_Result_Fail;
     return true;
