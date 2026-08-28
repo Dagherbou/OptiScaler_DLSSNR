@@ -21,6 +21,10 @@ namespace DlssNr
 // was trained on, at a run per presented frame.
 constexpr unsigned int INJECT_BEFORE_FG = 0;
 constexpr unsigned int INJECT_PRESENT = 1;
+// The upscaler's input, before it runs: the model works at render resolution and DLSS temporally
+// reconstructs a frame that already carries its detail. Plain SR/DLAA only -- Ray Reconstruction's
+// input is pre-denoise noise, which is detected and refused.
+constexpr unsigned int INJECT_BEFORE_UPSCALE = 2;
 // Runs the model over Output on the same command list, immediately after the upscaler has written it.
 // Called only for upscaler evaluates -- never for frame generation, which is the whole point.
 //
@@ -31,6 +35,10 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 // Runs the model over the finished frame, on a command list of its own, and submits it. Called every
 // present; does nothing unless that inject point is selected.
 void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, unsigned int backBufferIndex);
+
+// Runs the model on the upscaler's input, before the upscaler does. Called ahead of the real evaluate;
+// a no-op unless that inject point is selected.
+void EvaluateBeforeUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params);
 
 // Whether the model is loaded and running, for the overlay.
 bool IsRunning();

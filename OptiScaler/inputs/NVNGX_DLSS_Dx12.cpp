@@ -1141,6 +1141,11 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
         if (cfg.DLSSEnabled.value_or_default() && NVNGXProxy::D3D12_EvaluateFeature() != nullptr)
         {
             LOG_DEBUG("Passthrough to native DLSS EvaluateFeature for handle {}", handleId);
+
+            // The before-upscaler inject point enhances the input this evaluate is about to consume.
+            if (feature != NVSDK_NGX_Feature_FrameGeneration)
+                DlssNr::EvaluateBeforeUpscale(InCmdList, InParameters);
+
             NVSDK_NGX_Result result =
                 NVNGXProxy::D3D12_EvaluateFeature()(InCmdList, InFeatureHandle, InParameters, InCallback);
             LOG_DEBUG("Native DLSS EvaluateFeature result: 0x{:X}", (uint32_t) result);
@@ -1172,6 +1177,10 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
 
     if (lastDlssgCameraFar.has_value())
         InParameters->Set("DLSSG.CameraFar", lastDlssgCameraFar.value());
+
+    // The before-upscaler inject point enhances the input this evaluate is about to consume.
+    if (feature != NVSDK_NGX_Feature_FrameGeneration)
+        DlssNr::EvaluateBeforeUpscale(InCmdList, InParameters);
 
     // OptiScaler internal handling
     const NVSDK_NGX_Result optiResult = TryEvaluateOptiFeature(InCmdList, InFeatureHandle, InParameters, InCallback);

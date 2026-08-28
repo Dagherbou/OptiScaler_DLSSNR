@@ -5815,7 +5815,8 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
 
         ImGui::SeparatorText("Where it runs");
 
-        static const char* injectNames[] = { "Before frame generation", "Finished frame (better image)" };
+        static const char* injectNames[] = { "Before frame generation", "Finished frame (better image)",
+                                             "Before upscaler (experimental)" };
         int injectPoint = (int) config->DlssNrInjectPoint.value_or_default();
         if (ImGui::Combo("Inject point", &injectPoint, injectNames, IM_ARRAYSIZE(injectNames)))
             config->DlssNrInjectPoint = (uint32_t) injectPoint;
@@ -5828,6 +5829,13 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\ninherit the result, but the tonemapper has not run yet, so the model works on"
                        "\nan approximation of it and the answer has to be applied carefully. Cheaper,"
                        "\nand less detail."
+                       "\n\nBefore upscaler: the model works at render resolution on the image DLSS is"
+                       "\nabout to consume, and its detail then passes through DLSS's own temporal"
+                       "\nreconstruction -- the one arrangement that could stabilise the detail rather"
+                       "\nthan merely reduce it. The guides describe exactly the image the model sees,"
+                       "\nwhich is true nowhere else. Costs the least at real render scales. Plain"
+                       "\nSR/DLAA only: Ray Reconstruction's input is pre-denoise noise, so it is"
+                       "\ndetected and refused with a line in the log."
                        "\n\nTakes effect on restart: only one model may exist at a time, and swapping it"
                        "\nmid-session is not worth the crash it caused every time it was tried.");
 
