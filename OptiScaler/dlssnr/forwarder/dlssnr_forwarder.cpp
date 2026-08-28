@@ -108,9 +108,10 @@ __declspec(dllexport) void *dlssnr_call_create(const wchar_t *snippetPath, const
     setUInt(capabilityParams, "DLSSNR.Height", height);
     setUInt(capabilityParams, "CreationNodeMask", 1);
     setUInt(capabilityParams, "VisibilityNodeMask", 1);
-    if (preset != 0) {
-        setUInt(capabilityParams, "DLSSNR.Hint.Render.Preset", (unsigned int) preset);
-    }
+    // Written unconditionally, including zero. This block belongs to the driver and outlives the
+    // feature, so skipping the write for "default" left whichever preset was chosen last still sitting
+    // in it -- and going back to default did nothing at all.
+    setUInt(capabilityParams, "DLSSNR.Hint.Render.Preset", (unsigned int) preset);
 
     // The tuning has to be here rather than at evaluate. Everything this sets before create takes
     // effect; everything set only at evaluate is ignored, which is why none of these controls did

@@ -84,6 +84,7 @@ struct NrState
     float builtLocalTone = 0.0f;
     float builtSkinStructure = 0.0f;
     bool builtAutoMask = false;
+    bool builtUiCorrection = false;
     unsigned long long settledAt = 0;
 
     // Once something fails there is no recovering it mid-session, and retrying every frame turns a
@@ -374,7 +375,8 @@ bool TuningMatchesFeature(const Config& cfg)
            g_nr.builtLocalStructure == cfg.DlssNrLocalStructure.value_or_default() &&
            g_nr.builtLocalTone == cfg.DlssNrLocalTone.value_or_default() &&
            g_nr.builtSkinStructure == cfg.DlssNrSkinStructure.value_or_default() &&
-           g_nr.builtAutoMask == cfg.DlssNrAutoMask.value_or_default();
+           g_nr.builtAutoMask == cfg.DlssNrAutoMask.value_or_default() &&
+           g_nr.builtUiCorrection == cfg.DlssNrUiCorrection.value_or_default();
 }
 
 void RecordBuiltTuning(const Config& cfg)
@@ -386,6 +388,7 @@ void RecordBuiltTuning(const Config& cfg)
     g_nr.builtLocalTone = cfg.DlssNrLocalTone.value_or_default();
     g_nr.builtSkinStructure = cfg.DlssNrSkinStructure.value_or_default();
     g_nr.builtAutoMask = cfg.DlssNrAutoMask.value_or_default();
+    g_nr.builtUiCorrection = cfg.DlssNrUiCorrection.value_or_default();
 }
 
 // Waits for every list this has submitted. Releasing the feature before that is what took the game down
@@ -585,7 +588,8 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         g_nr.height = height;
         g_nr.reset = true;
         RecordBuiltTuning(cfg);
-        LOG_INFO("DLSS-NR running at {}x{}, guides {}x{}", width, height, guideWidth, guideHeight);
+        LOG_INFO("DLSS-NR running at {}x{}, guides {}x{} (preset {}, intensity {}, style {})", width,
+                 height, guideWidth, guideHeight, g_nr.builtPreset, g_nr.builtIntensity, g_nr.builtStyle);
     }
 
     if (g_nr.feature == nullptr)
@@ -932,10 +936,11 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         g_nr.height = height;
         g_nr.reset = true;
         RecordBuiltTuning(cfg);
-        LOG_INFO("DLSS-NR running on the finished frame at {}x{}, guides {}x{} (intensity {}, style {}, "
-                 "local structure {}, local tone {}, skin {})",
-                 width, height, g_nr.guideWidth, g_nr.guideHeight, g_nr.builtIntensity, g_nr.builtStyle,
-                 g_nr.builtLocalStructure, g_nr.builtLocalTone, g_nr.builtSkinStructure);
+        LOG_INFO("DLSS-NR running on the finished frame at {}x{}, guides {}x{} (preset {}, intensity {}, "
+                 "style {}, local structure {}, local tone {}, skin {}, ui correction {})",
+                 width, height, g_nr.guideWidth, g_nr.guideHeight, g_nr.builtPreset, g_nr.builtIntensity,
+                 g_nr.builtStyle, g_nr.builtLocalStructure, g_nr.builtLocalTone, g_nr.builtSkinStructure,
+                 cfg.DlssNrUiCorrection.value_or_default() ? 1 : 0);
     }
 
     // The frame is already display-referred here -- it has been through the game's own tonemapper --
