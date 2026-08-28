@@ -685,6 +685,16 @@ struct SplitState
     // machinery moves. Steering of in-flight transitions is unaffected.
     bool lastWant = false;
     int stableFrames = 0;
+
+    // The game's own quality-mode declaration, captured with the display size. A feature built at a
+    // ratio that contradicts the block's declared quality mode is created fine and then refused at
+    // evaluate (0xbad00000) -- so every geometry the split asks for carries a matching declaration,
+    // and the game's own is restored with its geometry.
+    unsigned int origPerfQuality = 0xffffffff;
+
+    // The driver refused the supersampled enlargement once this session: run at display size instead
+    // of latching the whole split off. Cleared on a toggle edge or Retry.
+    bool supersampleRefused = false;
 };
 
 static SplitState SplitDx12;
@@ -698,6 +708,7 @@ static void SplitClearFailure()
 {
     SplitDx12.failed = false;
     SplitDx12.armTries = 0;
+    SplitDx12.supersampleRefused = false;
     DlssNr::SetSplitStatus("");
 }
 
@@ -768,7 +779,7 @@ static void SplitRestoreOs()
 // The supersample ratio in force: the Output Scaling Ratio, when the user has Output Scaling on.
 static float SplitRatio()
 {
-    if (!SplitOsIntent())
+    if (!SplitOsIntent() || SplitDx12.supersampleRefused)
         return 1.0f;
 
     float mult = Config::Instance()->OutputScalingMultiplier.value_or_default();
@@ -777,6 +788,25 @@ static float SplitRatio()
         mult = 3.0f;
 
     return mult > 1.05f ? mult : 1.0f;
+}
+
+// The quality mode that honestly describes an upscale from renderW to targetW. The thresholds sit
+// between the modes' nominal ratios (Quality 1.5x, Balanced 1.72x, Performance 2x, Ultra
+// Performance 3x).
+static unsigned int SplitPerfQuality(unsigned int renderW, unsigned int targetW)
+{
+    const float r = renderW == 0 ? 1.0f : (float) targetW / (float) renderW;
+
+    if (r >= 2.5f)
+        return NVSDK_NGX_PerfQuality_Value_UltraPerformance;
+
+    if (r >= 1.85f)
+        return NVSDK_NGX_PerfQuality_Value_MaxPerf;
+
+    if (r >= 1.6f)
+        return NVSDK_NGX_PerfQuality_Value_Balanced;
+
+    return NVSDK_NGX_PerfQuality_Value_MaxQuality;
 }
 
 // What the Ray Reconstruction feature's output size should be under the current settings.
@@ -870,11 +900,22 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
         {
             params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.lastDesiredWidth);
             params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.lastDesiredHeight);
+
+            unsigned int rw = 0;
+            params->Get(NVSDK_NGX_Parameter_Width, &rw);
+
+            if (rw != 0 && SplitDx12.displayWidth != 0 &&
+                SplitDx12.lastDesiredWidth > SplitDx12.displayWidth)
+                params->Set(NVSDK_NGX_Parameter_PerfQualityValue,
+                            SplitPerfQuality(rw, SplitDx12.lastDesiredWidth));
         }
         else if (SplitDx12.restorePending && SplitDx12.displayWidth != 0)
         {
             params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
             params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
+
+            if (SplitDx12.origPerfQuality != 0xffffffff)
+                params->Set(NVSDK_NGX_Parameter_PerfQualityValue, SplitDx12.origPerfQuality);
         }
 
         return;
@@ -889,6 +930,7 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
     {
         SplitDx12.lastWant = want;
         SplitDx12.stableFrames = 0;
+        SplitDx12.supersampleRefused = false;
         return;
     }
 
@@ -912,6 +954,7 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
     {
         SplitDx12.displayWidth = ow;
         SplitDx12.displayHeight = oh;
+        params->Get(NVSDK_NGX_Parameter_PerfQualityValue, &SplitDx12.origPerfQuality);
     }
 
     unsigned int desiredW = 0, desiredH = 0;
@@ -970,6 +1013,14 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
         ++SplitDx12.armTries;
         params->Set(NVSDK_NGX_Parameter_OutWidth, desiredW);
         params->Set(NVSDK_NGX_Parameter_OutHeight, desiredH);
+
+        // A feature built oversized must declare the quality mode it actually is, or the driver
+        // creates it and then refuses every evaluate. The 1:1 arrangement keeps the game's own value.
+        if (desiredW > SplitDx12.displayWidth && SplitDx12.displayWidth != 0)
+            params->Set(NVSDK_NGX_Parameter_PerfQualityValue,
+                        SplitPerfQuality(f->RenderWidth(), desiredW));
+        else if (SplitDx12.origPerfQuality != 0xffffffff)
+            params->Set(NVSDK_NGX_Parameter_PerfQualityValue, SplitDx12.origPerfQuality);
         state.newBackend = Upscaler::DLSSD;
         state.changeBackend[handleId] = true;
         SplitDx12.geometryOwned = true;
@@ -985,6 +1036,10 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
     {
         params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
         params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
+
+        if (SplitDx12.origPerfQuality != 0xffffffff)
+            params->Set(NVSDK_NGX_Parameter_PerfQualityValue, SplitDx12.origPerfQuality);
+
         state.newBackend = Upscaler::DLSSD;
         state.changeBackend[handleId] = true;
         SplitDx12.geometryOwned = false;
@@ -1176,7 +1231,15 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
 
         if (rrResult != NVSDK_NGX_Result_Success)
         {
+            // The feature matched and was stable, so this is a genuine refusal of the supersampled
+            // arrangement. Drop Include RR (runtime only -- the saved checkbox survives) and let the
+            // manager re-arm the plain split, rather than failing every frame from here on.
             params->Set(NVSDK_NGX_Parameter_Output, gameOutput);
+            LOG_ERROR("DLSS-NR split: Ray Reconstruction refused to run at {}x{} -> {}x{}; dropping "
+                      "Include RR",
+                      renderW, renderH, targetW, targetH);
+            Config::Instance()->DlssNrSplitIncludeRR.set_volatile_value(false);
+            DlssNr::SetSplitStatus("include-RR refused at this ratio; running the split without it");
             *outResult = rrResult;
             return true;
         }
@@ -1257,18 +1320,38 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
         params->Set(NVSDK_NGX_Parameter_OutWidth, targetW);
         params->Set(NVSDK_NGX_Parameter_OutHeight, targetH);
 
-        auto sr = std::make_unique<DLSSFeatureDx12>(IFeature::GetNextHandleId(), params);
+        // The enlargement parses the game's block, whose quality mode describes the game's own ratio.
+        // Built supersampled, it must declare what it actually is or the driver refuses it at evaluate.
+        params->Set(NVSDK_NGX_Parameter_PerfQualityValue, SplitPerfQuality(renderW, targetW));
 
-        if (!sr->Init(D3D12Device, cmdList, params) || !sr->IsInited())
+        auto sr = std::make_unique<DLSSFeatureDx12>(IFeature::GetNextHandleId(), params);
+        const bool srInited = sr->Init(D3D12Device, cmdList, params) && sr->IsInited();
+
+        if (SplitDx12.origPerfQuality != 0xffffffff)
+            params->Set(NVSDK_NGX_Parameter_PerfQualityValue, SplitDx12.origPerfQuality);
+
+        if (!srInited)
         {
+            params->Set(NVSDK_NGX_Parameter_Output, gameOutput);
+            params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
+            params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
+
+            if (supersample && !SplitDx12.supersampleRefused)
+            {
+                // The supersampled enlargement was refused; run at display size instead of dying.
+                SplitDx12.supersampleRefused = true;
+                LOG_ERROR("DLSS-NR split: the supersampled enlargement would not initialise; dropping "
+                          "to display size");
+                DlssNr::SetSplitStatus("supersample refused here; enlargement at display size");
+                *outResult = rrResult;
+                return true;
+            }
+
             LOG_ERROR("DLSS-NR split: the internal Super Resolution feature would not initialise; "
                       "falling back");
             SplitDx12.failed = true;
             DlssNr::SetSplitActive(false);
             DlssNr::SetSplitStatus("failed; conventional path running (see the log)");
-            params->Set(NVSDK_NGX_Parameter_Output, gameOutput);
-            params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
-            params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
             *outResult = rrResult;
             return true;
         }
@@ -1325,7 +1408,17 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
     params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
     params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
 
-    if (!srOk)
+    if (!srOk && supersample && !SplitDx12.supersampleRefused)
+    {
+        // The driver refused the supersampled enlargement at evaluate. Run at display size from the
+        // next frame instead of latching the whole split off; the enlargement is rebuilt for the new
+        // target by the srTargetWidth check above.
+        SplitDx12.supersampleRefused = true;
+        LOG_ERROR("DLSS-NR split: the supersampled enlargement refused to run; dropping to display "
+                  "size");
+        DlssNr::SetSplitStatus("supersample refused here; enlargement at display size");
+    }
+    else if (!srOk)
     {
         LOG_ERROR("DLSS-NR split: the enlargement failed; falling back");
         SplitDx12.failed = true;
