@@ -5901,6 +5901,30 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                            "\ncost rises with the square of the ratio, which is the price."
                            "\n\nApplies live; the feature is re-created in place.");
 
+            if (includeRR)
+            {
+                const float rrRatioSet = config->DlssNrSplitIncludeRRRatio.value_or_default();
+                const bool followsOs = rrRatioSet <= 1.05f;
+                float rrRatioShown = followsOs ? ratio : rrRatioSet;
+
+                if (ImGui::SliderFloat("Include-RR ratio", &rrRatioShown, 1.0f, 3.0f,
+                                       followsOs ? "%.2f (following OS Ratio)" : "%.2f"))
+                    config->DlssNrSplitIncludeRRRatio = rrRatioShown;
+
+                ShowHelpMarker("The ratio RR itself upscales to when included in the supersample. By"
+                               "\ndefault it follows Output Scaling's Ratio -- but RR's cost rises with"
+                               "\nthe square of this, and most of the reconstruction sharpness arrives"
+                               "\nwell below the full ratio. 1.25 buys most of the sharpness for about"
+                               "\n1.5x RR's normal cost instead of 4x at ratio 2."
+                               "\n\nApplies live; the feature is re-created in place.");
+
+                if (!followsOs)
+                {
+                    if (ImGui::SmallButton("Follow OS Ratio"))
+                        config->DlssNrSplitIncludeRRRatio = 0.0f;
+                }
+            }
+
             {
                 static const int srPresetValues[] = { 0, 5, 6, 10, 11 };
                 static const char* srPresetNames =
@@ -5918,9 +5942,14 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                 if (ImGui::Combo("Enlargement preset", &srPresetIndex, srPresetNames))
                     config->DlssNrSplitSrPreset = (uint32_t) srPresetValues[srPresetIndex];
 
-                ShowHelpMarker("The model preset of the split's internal Super Resolution feature."
-                               "\nThe transformer presets (J, K) hallucinate detail best from an"
-                               "\nalready-resolved image, which is exactly what the enlargement is fed."
+                ShowHelpMarker("The split's chain: Ray Reconstruction denoises 1:1 at render size, the"
+                               "\nmodel draws its detail there, and an internal Super Resolution feature"
+                               "\nenlarges that finished image to the output. This preset picks the SR"
+                               "\nmodel for that last step -- everything the model drew passes through"
+                               "\nit, so it decides how sharp that detail lands."
+                               "\n\nSR presets are their own scale: E here is unrelated to RR's presets"
+                               "\nor the model's. E is the proven classic; J and K (transformer) are"
+                               "\nstrongest at extracting detail from an already-resolved image."
                                "\n\nApplies live; the enlargement is re-created in place. If the global"
                                "\nRender Presets Override is on, it wins over this.");
 
@@ -5971,6 +6000,18 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\nexact inverses, so this is a true bypass, not an approximation of one."
                        "\n\nAbove 1 exaggerates the edit. If nothing here seems to do anything, push this"
                        "\nto 4 and watch: that answers whether the model is contributing at all.");
+
+        float noiseFloor = config->DlssNrNoiseFloor.value_or_default();
+        if (ImGui::SliderFloat("Noise floor (coring)", &noiseFloor, 0.0f, 0.05f, "%.3f"))
+            config->DlssNrNoiseFloor = noiseFloor;
+
+        ShowHelpMarker("Squashes edits smaller than this toward zero before they land. The wobble is"
+                       "\nthe model re-deciding a small, unstructured fraction of its edit every frame;"
+                       "\nreal detail -- occlusion, contact shadows, synthesised texture -- is larger"
+                       "\nand passes untouched. The cheapest stabiliser: no history, no ghosting."
+                       "\n\n0 is off and bit-identical. Raise it until the shimmer stops -- around"
+                       "\n0.01 to 0.02 -- and stop there: higher starts to eat the faintest real"
+                       "\ndetail, gentle ambient occlusion first.");
 
         float editStability = config->DlssNrEditStability.value_or_default();
         if (ImGui::SliderFloat("Temporal stability", &editStability, 0.0f, 0.95f, "%.2f"))

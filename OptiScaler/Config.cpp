@@ -330,6 +330,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrSplitIncludeRR.set_from_config(readBool("DlssNr", "SplitIncludeRR"));
             DlssNrSplitSrPreset.set_from_config(readUInt("DlssNr", "SplitSrPreset"));
             DlssNrSplitSrSharpness.set_from_config(readFloat("DlssNr", "SplitSrSharpness"));
+            DlssNrNoiseFloor.set_from_config(readFloat("DlssNr", "NoiseFloor"));
+            DlssNrSplitIncludeRRRatio.set_from_config(readFloat("DlssNr", "SplitIncludeRRRatio"));
             DlssNrPreset.set_from_config(readUInt("DlssNr", "Preset"));
             DlssNrIntensity.set_from_config(readFloat("DlssNr", "Intensity"));
             DlssNrStyle.set_from_config(readUInt("DlssNr", "Style"));
@@ -1185,6 +1187,9 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "SplitSrPreset", GetIntValue(Instance()->DlssNrSplitSrPreset.value_for_config()).c_str());
     ini.SetValue("DlssNr", "SplitSrSharpness",
                  GetFloatValue(Instance()->DlssNrSplitSrSharpness.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "NoiseFloor", GetFloatValue(Instance()->DlssNrNoiseFloor.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "SplitIncludeRRRatio",
+                 GetFloatValue(Instance()->DlssNrSplitIncludeRRRatio.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Preset", GetIntValue(Instance()->DlssNrPreset.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Intensity", GetFloatValue(Instance()->DlssNrIntensity.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Style", GetIntValue(Instance()->DlssNrStyle.value_for_config()).c_str());

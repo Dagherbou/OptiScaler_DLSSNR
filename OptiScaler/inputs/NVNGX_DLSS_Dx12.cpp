@@ -827,8 +827,13 @@ static void SplitDesiredTarget(unsigned int renderW, unsigned int renderH, unsig
     if (Config::Instance()->DlssNrSplitIncludeRR.value_or_default() && mult > 1.0f &&
         SplitDx12.displayWidth != 0)
     {
-        *outW = (unsigned int) (SplitDx12.displayWidth * mult + 0.5f);
-        *outH = (unsigned int) (SplitDx12.displayHeight * mult + 0.5f);
+        // Include-RR can run at its own ratio: most of the reconstruction sharpness arrives well
+        // below the full Output Scaling ratio, and RR's cost rises with the ratio squared.
+        float rrMult = Config::Instance()->DlssNrSplitIncludeRRRatio.value_or_default();
+        rrMult = rrMult > 1.05f ? (rrMult > 3.0f ? 3.0f : rrMult) : mult;
+
+        *outW = (unsigned int) (SplitDx12.displayWidth * rrMult + 0.5f);
+        *outH = (unsigned int) (SplitDx12.displayHeight * rrMult + 0.5f);
         return;
     }
 
@@ -1231,12 +1236,10 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
     if (includeRR)
     {
         // RR itself upscales to the supersampled size; the model works on that image; only the
-        // downscale remains. The conventional Output Scaling look with the model in the chain.
-        // DLSS refuses ratios beyond 4x its input, so the target is capped there.
-        auto targetW = (unsigned int) (SplitDx12.displayWidth * mult + 0.5f);
-        auto targetH = (unsigned int) (SplitDx12.displayHeight * mult + 0.5f);
-        targetW = targetW > renderW * 4 ? renderW * 4 : targetW;
-        targetH = targetH > renderH * 4 ? renderH * 4 : targetH;
+        // downscale remains. The conventional Output Scaling look with the model in the chain. The
+        // target comes from the same computation the manager armed with, so the two stay in lockstep.
+        unsigned int targetW = 0, targetH = 0;
+        SplitDesiredTarget(renderW, renderH, &targetW, &targetH);
 
         if (!SplitEnsureOversized(targetW, targetH, workFormat))
         {
@@ -1285,7 +1288,8 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
         params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
 
         std::snprintf(status, sizeof(status),
-                      "running: RR supersampled x%.2f -> NR -> downscale (RR included)", mult);
+                      "running: RR supersampled x%.2f -> NR -> downscale (RR included)",
+                      (float) targetW / (float) SplitDx12.displayWidth);
         DlssNr::SetSplitStatus(status);
         *outResult = NVSDK_NGX_Result_Success;
         return true;

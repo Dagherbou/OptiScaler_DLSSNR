@@ -68,7 +68,7 @@ cbuffer Params : register(b0)
     uint  gGuideWidth;   // the motion texture's valid region
     uint  gGuideHeight;
     float gStability;    // how much of the history survives each frame; 0 is off
-    uint  gPad;
+    float gNoiseFloor;   // edits below this are squashed toward zero; 0 is off
 };
 
 Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
@@ -178,6 +178,16 @@ void main(uint3 id : SV_DispatchThreadID)
 
     float3 edit = model - proxy;
 
+    // Coring. The churn the model re-decides every frame is small-amplitude and unstructured, while
+    // the detail worth keeping -- occlusion, contact shadows, synthesised texture -- is larger and
+    // structured. Edits below the floor are squashed toward zero, edits above it pass untouched, and
+    // the ramp between the two keeps the transition invisible. At 0 this does nothing at all.
+    if (gNoiseFloor > 0.0)
+    {
+        float editSize = max(abs(edit.r), max(abs(edit.g), abs(edit.b)));
+        edit *= smoothstep(gNoiseFloor * 0.5, gNoiseFloor * 1.5, editSize);
+    }
+
     // The edit, averaged over time. The model re-decides a measurable fraction of its answer every
     // frame even on a static scene; blending each frame's edit with its own reprojected history keeps
     // the consistent part -- the detail -- and cancels the part that re-randomises. NVIDIA's own
@@ -251,7 +261,7 @@ struct Params
     unsigned int guideWidth;
     unsigned int guideHeight;
     float stability;
-    unsigned int pad;
+    float noiseFloor;
 };
 
 // A typeless resource cannot be viewed, and the buffer the upscaler writes is occasionally declared that
