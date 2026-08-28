@@ -674,6 +674,12 @@ struct SplitState
     unsigned int lastDesiredWidth = 0;
     unsigned int lastDesiredHeight = 0;
     int armTries = 0;
+
+    // The split only ever restores geometry it changed itself, exactly once. Without this, a feature
+    // legitimately resized by something else -- conventional Output Scaling above all -- read as
+    // "wrong" forever, and the restore fought it in an endless recreation loop that shredded the frame.
+    bool geometryOwned = false;
+    bool restorePending = false;
 };
 
 static SplitState SplitDx12;
@@ -836,12 +842,14 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
     // recreation reproduces exactly what it was meant to replace.
     if (it->second.changeBackendCounter != 0 || it->second.feature == nullptr)
     {
-        if (want && SplitDx12.lastDesiredWidth != 0)
+        // Steer only transitions that are ours: the split's own arm, or its one restore. Anything else
+        // in flight -- Output Scaling's recreations included -- is none of our business.
+        if (want && SplitDx12.geometryOwned && SplitDx12.lastDesiredWidth != 0)
         {
             params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.lastDesiredWidth);
             params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.lastDesiredHeight);
         }
-        else if (!want && SplitDx12.displayWidth != 0)
+        else if (SplitDx12.restorePending && SplitDx12.displayWidth != 0)
         {
             params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
             params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
@@ -849,6 +857,9 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
 
         return;
     }
+
+    // A completed transition ends any pending restore, whatever geometry resulted -- one attempt only.
+    SplitDx12.restorePending = false;
 
     IFeature_Dx12* f = it->second.feature.get();
 
@@ -918,6 +929,7 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
         params->Set(NVSDK_NGX_Parameter_OutHeight, desiredH);
         state.newBackend = Upscaler::DLSSD;
         state.changeBackend[handleId] = true;
+        SplitDx12.geometryOwned = true;
 
         LOG_INFO("DLSS-NR split: re-creating Ray Reconstruction {}x{} -> {}x{} in place",
                  f->RenderWidth(), f->RenderHeight(), desiredW, desiredH);
@@ -925,13 +937,15 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
         return;
     }
 
-    if (!want && SplitDx12.displayWidth != 0 &&
+    if (!want && SplitDx12.geometryOwned && SplitDx12.displayWidth != 0 &&
         (f->TargetWidth() != SplitDx12.displayWidth || f->TargetHeight() != SplitDx12.displayHeight))
     {
         params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
         params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
         state.newBackend = Upscaler::DLSSD;
         state.changeBackend[handleId] = true;
+        SplitDx12.geometryOwned = false;
+        SplitDx12.restorePending = true;
 
         SplitParkResource(SplitDx12.intermediate);
         SplitParkEnlargement();
@@ -969,6 +983,9 @@ static void SplitOnCreate(NVSDK_NGX_Feature featureId, NVSDK_NGX_Parameter* para
     SplitDesiredTarget(w, h, &desiredW, &desiredH);
     params->Set(NVSDK_NGX_Parameter_OutWidth, desiredW);
     params->Set(NVSDK_NGX_Parameter_OutHeight, desiredH);
+    SplitDx12.lastDesiredWidth = desiredW;
+    SplitDx12.lastDesiredHeight = desiredH;
+    SplitDx12.geometryOwned = true;
 
     LOG_INFO("DLSS-NR split: Ray Reconstruction created {}x{} -> {}x{}; display {}x{} will be reached "
              "at the end of the chain",
