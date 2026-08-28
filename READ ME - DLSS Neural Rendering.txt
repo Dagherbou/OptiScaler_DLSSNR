@@ -1,0 +1,84 @@
+DLSS 5 Neural Rendering for OptiScaler
+======================================
+
+This is OptiScaler with an extra pass: NVIDIA's Neural Rendering model, run over the finished frame to
+synthesise detail. NVIDIA ships no public integration for it, so it is driven directly. Nothing here is
+officially supported and none of it is documented by NVIDIA.
+
+
+Installing
+----------
+
+1. Extract every file in this archive into the game folder -- the one holding the game's .exe. For most
+   games that is where the executable sits; for Cyberpunk 2077 it is bin\x64.
+
+2. Run setup_windows.bat and answer its questions. It renames OptiScaler.dll to whatever the game will
+   load (dxgi.dll suits most DirectX 12 games) and writes an uninstaller next to it.
+
+3. Put nvngx_dlssnr.dll in that same folder.
+
+   This is the model itself. It comes from an NVIDIA driver package and cannot be shipped here, so you
+   have to supply it. One copy per game -- there is no shared or system-wide location, and no way to
+   install it once for everything.
+
+   The installer looks for it and tells you whether it is there.
+
+4. Launch the game, open the OptiScaler overlay, and turn on "Enable Neural Rendering" under DLSS Neural
+   Rendering. It is off by default.
+
+
+What it needs
+-------------
+
+- An RTX 50 series card. The model does not run on anything older.
+- A driver new enough to ship nvngx_dlssnr.dll.
+- A game that already uses DLSS, on DirectX 12.
+
+That last one is not a limitation of the model so much as of how it gets its inputs. Neural Rendering
+needs depth and motion vectors, and rather than hunting for them in the game's own frame graph, this
+reads the ones the game already hands to DLSS every frame. That is what makes it work in any DLSS title
+without per-game work -- and why it does nothing in a game that has no DLSS to intercept.
+
+Vulkan and DirectX 11 are not wired up yet.
+
+
+If it does not run
+------------------
+
+The overlay says why, under the enable checkbox, rather than failing quietly. The usual answers:
+
+  "nvngx.dll_dlssnr.dll is missing"   That file is part of this archive. Extract all of it.
+  "nvngx_dlssnr.dll was not found"    Step 3 above.
+  "the model would not initialise"    Usually an older card or a driver without the model.
+
+OptiScaler.log in the same folder has more, if logging is on.
+
+
+The controls
+------------
+
+Most of them are the model's own and are undocumented; the tooltips say which ones are guesses.
+
+Two are worth knowing about:
+
+  Inject point       Where the pass runs. "Finished frame" shows the model the picture after the game's
+                     own tonemapper, which is what it was trained on, and gives the better image at a
+                     cost of one run per presented frame -- roughly double with frame generation.
+                     "Before frame generation" runs once per rendered frame and generated frames inherit
+                     the result, but the tonemapper has not run at that point, so the model works from an
+                     approximation and the result is applied more cautiously. Takes effect on restart.
+
+  Detail strength    How much of the model's edit reaches the frame. 0 gives back exactly what the game
+                     rendered. Above 1 exaggerates it, which is the quickest way to see what the model is
+                     actually contributing.
+
+There is also a debug view. "Difference" shows what the model changed, amplified: a flat grey frame there
+means it is doing nothing.
+
+
+A caution
+---------
+
+nvngx_dlssnr.dll is about 165 MB and identifies itself as "NVIDIA DLSSNR" in its file properties. A file
+of that size named nvngx_dlssd.dll is the Neural Rendering model misnamed, not Ray Reconstruction, and
+installing it as Ray Reconstruction will break that instead. Check the version details if you are unsure.
