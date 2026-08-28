@@ -195,6 +195,15 @@ void main(uint3 id : SV_DispatchThreadID)
             if (all(uvPrev >= 0.0) && all(uvPrev <= 1.0))
             {
                 float3 prev = gPrevEdit.SampleLevel(gLinear, uvPrev, 0).rgb;
+
+                // Rectified before blending: the history may not stray far from what the model says
+                // now, so a stale edit at a disocclusion is pulled in within a frame or two instead of
+                // being carried -- and then amplified -- indefinitely. The margin scales with the edit
+                // so strong legitimate detail is not clipped, with a floor so the noise floor itself
+                // can still cancel.
+                float3 bound = abs(edit) * 1.5 + 0.015;
+                prev = clamp(prev, edit - bound, edit + bound);
+
                 accumulated = lerp(edit, prev, gStability);
             }
         }
