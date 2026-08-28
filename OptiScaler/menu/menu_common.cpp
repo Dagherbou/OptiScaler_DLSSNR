@@ -5854,7 +5854,9 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\n\nWhat it trades: the shading the model adds is broad and survives enlargement;"
                        "\nthe fine structure it synthesises does not, and softens. Worth having when the"
                        "\npass costs more than you want to pay for the detail it returns."
-                       "\n\nFinished-frame inject point only.");
+                       "\n\nWorks at both inject points. Before frame generation this is the cheap way to"
+                       "\nrun the model alongside Ray Reconstruction: the delta composite keeps the frame"
+                       "\nitself at native detail.");
 
         ImGui::SeparatorText("How much of it lands");
 

@@ -654,7 +654,17 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         return;
     }
 
-    if (g_nr.feature != nullptr && (g_nr.width != width || g_nr.height != height))
+    // What the model works at. The frame and its edit stay full resolution; only the model's input and
+    // answer shrink, and the resolve enlarges the answer while compositing.
+    float workScale = cfg.DlssNrWorkingScale.value_or_default();
+    workScale = workScale < 0.25f ? 0.25f : (workScale > 1.0f ? 1.0f : workScale);
+    const auto workWidth = (unsigned int) (width * workScale + 0.5f);
+    const auto workHeight = (unsigned int) (height * workScale + 0.5f);
+    const bool reduced = workWidth != width || workHeight != height;
+
+    if (g_nr.feature != nullptr &&
+        (g_nr.width != width || g_nr.height != height || g_nr.workWidth != workWidth ||
+         g_nr.workHeight != workHeight))
     {
         // A resolution change invalidates the model and both scratch textures. Nothing is released
         // underneath the GPU here because this runs on the same command list the upscaler just used, and
@@ -679,14 +689,25 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
             g_nr.hdrCopy->Release();
             g_nr.hdrCopy = nullptr;
         }
+
+        if (g_nr.colorSmall != nullptr)
+        {
+            g_nr.colorSmall->Release();
+            g_nr.colorSmall = nullptr;
+        }
     }
 
     if (g_nr.output == nullptr)
     {
-        g_nr.output = CreateScratch(device, desc.Format, width, height);
+        g_nr.output = CreateScratch(device, desc.Format, workWidth, workHeight);
         g_nr.colorCopy = CreateScratch(device, desc.Format, width, height);
         g_nr.hdrCopy = CreateScratch(device, desc.Format, width, height);
+        g_nr.workWidth = workWidth;
+        g_nr.workHeight = workHeight;
     }
+
+    if (reduced && g_nr.colorSmall == nullptr)
+        g_nr.colorSmall = CreateScratch(device, desc.Format, workWidth, workHeight);
 
     if (g_nr.feature == nullptr && g_nr.output != nullptr && g_nr.colorCopy != nullptr &&
         g_nr.hdrCopy != nullptr)
@@ -707,7 +728,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
         g_nr.feature =
             g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                        device, cmdList, g_nr.capabilityParams, width, height,
+                        device, cmdList, g_nr.capabilityParams, workWidth, workHeight,
                         (int) cfg.DlssNrPreset.value_or_default(),
                         cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
                         cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
@@ -828,8 +849,8 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     // extra barriers. Twice a second is far more often than an exposure meaningfully moves.
     if (autoWhite && (g_frames % 30 == 0) && g_reducer.ensure(device))
     {
-        ID3D12Resource* reduced = g_reducer.dispatch(cmdList, target, width, height);
-        g_reader.capture(cmdList, reduced, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        ID3D12Resource* reducedFrame = g_reducer.dispatch(cmdList, target, width, height);
+        g_reader.capture(cmdList, reducedFrame, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
 
     Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -839,6 +860,22 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    // Below full resolution the model is shown a filtered shrink of the proxy; the edit it returns is
+    // enlarged during the resolve while the frame underneath stays full size and untouched.
+    ID3D12Resource* modelInput = g_nr.colorCopy;
+
+    if (reduced && g_nr.colorSmall != nullptr)
+    {
+        codec::Params down {};
+        down.mode = codec::MODE_DOWNSAMPLE;
+        down.width = workWidth;
+        down.height = workHeight;
+        g_codec.dispatch(cmdList, down, g_nr.colorCopy, nullptr, nullptr, g_nr.colorSmall, nullptr);
+        Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        modelInput = g_nr.colorSmall;
+    }
 
     ID3D12Resource* depthIn = ReadableGuide(device, cmdList, depth, &g_nr.depthClone);
     ID3D12Resource* motionIn = ReadableGuide(device, cmdList, motion, &g_nr.motionClone);
@@ -852,13 +889,17 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         return;
     }
 
+    // The vectors were scaled to full-frame pixels; the image the model reprojects is the working size.
+    const float mvToWork = width != 0 ? (float) workWidth / (float) width : 1.0f;
+
     const int result = g_nr.evaluate(
-        cmdList, g_nr.feature, g_nr.capabilityParams, g_nr.colorCopy, depthIn, motionIn, g_nr.output, width,
-        height, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0, g_nr.reset ? 1 : 0,
-        cfg.DlssNrIntensity.value_or_default(),
+        cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
+        workWidth, workHeight, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0,
+        g_nr.reset ? 1 : 0, cfg.DlssNrIntensity.value_or_default(),
         (int) cfg.DlssNrStyle.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
         cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
-        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, g_nr.guideMvScaleX, g_nr.guideMvScaleY);
+        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, g_nr.guideMvScaleX * mvToWork,
+        g_nr.guideMvScaleY * mvToWork);
 
     g_nr.reset = false;
 
@@ -965,7 +1006,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        g_codec.dispatch(cmdList, resolveParams, g_nr.colorCopy, g_nr.output, g_nr.hdrCopy, target,
+        g_codec.dispatch(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, target,
                          historyOut, motionIn, historyIn);
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -1010,6 +1051,10 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     if (g_nr.motionClone != nullptr)
         Barrier(cmdList, g_nr.motionClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COPY_DEST);
+
+    if (reduced && g_nr.colorSmall != nullptr)
+        Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     // Leave the staging copy as the next frame expects to find it.
     Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
