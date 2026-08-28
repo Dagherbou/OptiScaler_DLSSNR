@@ -25,6 +25,8 @@ using PFN_NrEvaluate = int(__cdecl*) (ID3D12GraphicsCommandList*, void*, void*, 
                                       unsigned int, unsigned int, unsigned int, int, int, float, int,
                                       float, float, float, int, float, float);
 using PFN_NrRelease = void(__cdecl*) (void*);
+using PFN_NrSetFloatSlot = void(__cdecl*) (int);
+using PFN_NrProbeFloat = void(__cdecl*) (void*, const char*, float, int);
 
 // One per back buffer, so an allocator is never reset while its frame is still in flight.
 constexpr unsigned int kPresentAllocators = 3;
@@ -35,6 +37,9 @@ struct NrState
     PFN_NrCreate create = nullptr;
     PFN_NrEvaluate evaluate = nullptr;
     PFN_NrRelease release = nullptr;
+    PFN_NrSetFloatSlot setFloatSlot = nullptr;
+    PFN_NrProbeFloat probeFloat = nullptr;
+    bool floatSlotKnown = false;
     int* lastInit = nullptr;
     int* lastCreate = nullptr;
 
@@ -174,6 +179,8 @@ bool EnsureForwarder()
     g_nr.create = (PFN_NrCreate) GetProcAddress(g_nr.forwarder, "dlssnr_call_create");
     g_nr.evaluate = (PFN_NrEvaluate) GetProcAddress(g_nr.forwarder, "dlssnr_call_evaluate");
     g_nr.release = (PFN_NrRelease) GetProcAddress(g_nr.forwarder, "dlssnr_call_release");
+    g_nr.setFloatSlot = (PFN_NrSetFloatSlot) GetProcAddress(g_nr.forwarder, "dlssnr_call_set_float_slot");
+    g_nr.probeFloat = (PFN_NrProbeFloat) GetProcAddress(g_nr.forwarder, "dlssnr_call_probe_float");
     g_nr.lastInit = (int*) GetProcAddress(g_nr.forwarder, "dlssnr_call_last_init");
     g_nr.lastCreate = (int*) GetProcAddress(g_nr.forwarder, "dlssnr_call_last_create");
 
@@ -189,6 +196,8 @@ bool EnsureForwarder()
 
 // The model needs the driver core's own capability block: it carries the snippet and preset callbacks a
 // feature expects at create time, which a freshly allocated block does not have.
+void DiscoverFloatSlot(NVSDK_NGX_Parameter* params);
+
 bool EnsureCapabilityParams(ID3D12Device* device)
 {
     if (g_nr.capabilityParams != nullptr)
@@ -214,7 +223,46 @@ bool EnsureCapabilityParams(ID3D12Device* device)
         return false;
     }
 
+    // Before anything is written to it, work out where this block keeps floats.
+    DiscoverFloatSlot(g_nr.capabilityParams);
     return true;
+}
+
+// Works out which vtable slot this parameter block keeps floats in, by writing a known value through
+// each candidate and asking for it back through the header's typed getter. Only a slot that returns the
+// value it was given is accepted.
+//
+// Slot 1 is where the public header declares the float overload, so it is tried first and wins wherever
+// that assumption holds. It does not hold for the driver's own block: every float written there reads
+// back as FAIL_UnsupportedParameter while every uint lands, which is why intensity, local structure,
+// local tone and skin structure never did anything.
+void DiscoverFloatSlot(NVSDK_NGX_Parameter* params)
+{
+    if (g_nr.floatSlotKnown || params == nullptr || g_nr.probeFloat == nullptr ||
+        g_nr.setFloatSlot == nullptr)
+        return;
+
+    g_nr.floatSlotKnown = true;
+
+    static const char* kProbeKey = "DLSSNR.OptiScalerFloatProbe";
+    static const int kCandidates[] = { 1, 2, 5, 6, 7, 4, 3, 0 };
+    const float expected = 0.375f; // exact in binary, so the round trip is exact or it is wrong
+
+    for (int slot : kCandidates)
+    {
+        float readBack = 0.0f;
+        g_nr.probeFloat(params, kProbeKey, expected, slot);
+
+        if (params->Get(kProbeKey, &readBack) == NVSDK_NGX_Result_Success && readBack == expected)
+        {
+            g_nr.setFloatSlot(slot);
+            LOG_INFO("DLSS-NR float parameters go through vtable slot {}", slot);
+            return;
+        }
+    }
+
+    LOG_ERROR("DLSS-NR could not find the float setter: intensity, local structure, local tone and skin "
+              "structure will have no effect. The uint parameters still apply.");
 }
 
 ID3D12Resource* CreateScratch(ID3D12Device* device, DXGI_FORMAT format, unsigned int width,

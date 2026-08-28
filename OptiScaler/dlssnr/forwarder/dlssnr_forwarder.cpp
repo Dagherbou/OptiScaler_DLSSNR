@@ -22,7 +22,11 @@ namespace {
 // resource getter answers at slot 8, so resources are written through slot 0 -- the 64-bit setter, which
 // is what a resource handle is. Writing them through the typed D3D12 setter left them unset.
 constexpr int VT_SET_ULL = 0;
-constexpr int VT_SET_FLOAT = 1;
+// Where the float setter actually lives. The public header declares it at slot 1, and this block --
+// the driver's own, not the header's implementation -- does not keep a float there: every float written
+// to slot 1 reads back as FAIL_UnsupportedParameter while every uint lands. The host discovers the real
+// slot by round-tripping a value and sets it here before anything else is written.
+int g_floatSlot = 1;
 constexpr int VT_SET_UINT = 3;
 
 using PFN_SetULL = void(__thiscall *)(void *, const char *, unsigned long long);
@@ -36,7 +40,7 @@ void setUInt(void *params, const char *name, unsigned int v) {
 
 void setFloat(void *params, const char *name, float v) {
     void **vt = *reinterpret_cast<void ***>(params);
-    reinterpret_cast<PFN_SetFloat>(vt[VT_SET_FLOAT])(params, name, v);
+    reinterpret_cast<PFN_SetFloat>(vt[g_floatSlot])(params, name, v);
 }
 
 void setResource(void *params, const char *name, ID3D12Resource *v) {
@@ -79,6 +83,23 @@ bool loadSnippet(const wchar_t *path) {
 } // namespace
 
 extern "C" {
+
+// Called once, after the host has worked out which slot this block keeps floats in.
+__declspec(dllexport) void dlssnr_call_set_float_slot(int slot) {
+    if (slot >= 0 && slot < 8) {
+        g_floatSlot = slot;
+    }
+}
+
+// Writes a float through an arbitrary slot, so the host can find the right one by testing.
+__declspec(dllexport) void dlssnr_call_probe_float(void *params, const char *name, float value,
+                                                   int slot) {
+    if (!params || slot < 0 || slot >= 8) {
+        return;
+    }
+    void **vt = *reinterpret_cast<void ***>(params);
+    reinterpret_cast<PFN_SetFloat>(vt[slot])(params, name, value);
+}
 
 // Last init and create results, so the add-on can log why a feature never appeared.
 __declspec(dllexport) int dlssnr_call_last_init = 0;
