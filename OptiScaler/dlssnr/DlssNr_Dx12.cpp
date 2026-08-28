@@ -124,6 +124,34 @@ probe::BlockReader g_reader;
 
 // Writes matched before/after frames on request, so comparisons stop depending on video.
 capture::FrameCapture g_capture;
+
+// One capture happens on its own each session, so there is always a fresh sample without anyone having
+// to remember to ask. Started after the scene has had a moment to settle: the first frames after a
+// feature is built carry its reset, and are not representative of anything.
+constexpr unsigned long long kAutoCaptureAfterFrames = 180;
+bool g_autoCaptureDone = false;
+
+// Cleared once per run, so a session's captures are its own and nothing accumulates across launches.
+void ClearCaptureDirectory()
+{
+    static bool cleared = false;
+
+    if (cleared)
+        return;
+
+    cleared = true;
+
+    std::error_code ec;
+    const auto dir = Util::DllPath().remove_filename() / "dlssnr-capture";
+
+    if (std::filesystem::exists(dir, ec))
+    {
+        std::filesystem::remove_all(dir, ec);
+
+        if (ec)
+            LOG_WARN("DLSS-NR could not clear {}: {}", dir.string(), ec.message());
+    }
+}
 float g_autoWhitePoint = 2.0f;
 bool g_autoWhitePointSettled = false;
 unsigned long long g_frames = 0;
@@ -1208,6 +1236,14 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_COPY_SOURCE);
 
+        if (!g_autoCaptureDone && cfg.DlssNrAutoCapture.value_or_default() &&
+            g_frames > kAutoCaptureAfterFrames)
+        {
+            g_autoCaptureDone = true;
+            ClearCaptureDirectory();
+            g_capture.request(capture::kMaxFrames);
+        }
+
         // The frame as the upscaler produced it, and the same frame after the edit. Both are here, this
         // instant, for the same frame -- which is the whole point.
         if (g_capture.isActive())
@@ -1281,7 +1317,11 @@ float CurrentWhitePoint() { return g_autoWhitePointSettled ? g_autoWhitePoint : 
 
 std::optional<double> LastGpuTime() { return g_lastGpuTime; }
 
-void RequestCapture(unsigned int frames) { g_capture.request(frames); }
+void RequestCapture(unsigned int frames)
+{
+    ClearCaptureDirectory();
+    g_capture.request(frames);
+}
 
 bool CaptureInProgress() { return g_capture.isActive(); }
 

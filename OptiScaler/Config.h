@@ -294,6 +294,10 @@ class Config
     // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before.
     CustomOptional<float> DlssNrWorkingScale { 1.0f };
 
+    // Writes one set of matched before/after frames per session, without anyone having to ask. The
+    // folder is cleared at the start of each run, so it holds one session's worth and never grows.
+    CustomOptional<bool> DlssNrAutoCapture { true };
+
     // DLSS
     CustomOptional<bool> DLSSEnabled { true };
     CustomOptional<bool> RenderPresetOverride { false };
