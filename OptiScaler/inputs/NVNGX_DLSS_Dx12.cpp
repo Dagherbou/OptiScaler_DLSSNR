@@ -1029,6 +1029,18 @@ static bool SplitEnsureOversized(unsigned int w, unsigned int h, DXGI_FORMAT for
     return SplitDx12.oversized != nullptr;
 }
 
+static void SplitBarrier(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* res,
+                         D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
+{
+    D3D12_RESOURCE_BARRIER b {};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = res;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    b.Transition.StateBefore = from;
+    b.Transition.StateAfter = to;
+    cmdList->ResourceBarrier(1, &b);
+}
+
 // The final downscale, through OptiScaler's own filter so the look matches Output Scaling's.
 static bool SplitDownscale(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* from, ID3D12Resource* to)
 {
@@ -1231,7 +1243,32 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
     params->Set(NVSDK_NGX_Parameter_OutWidth, targetW);
     params->Set(NVSDK_NGX_Parameter_OutHeight, targetH);
 
+    // The internal SR consumes the intermediate as an input, and NGX requires inputs shader-readable.
+    // The model's pass leaves it in UNORDERED_ACCESS, and an input in the wrong state is undefined
+    // reads -- which upscales to garbage without a single error anywhere.
+    SplitBarrier(cmdList, SplitDx12.intermediate, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    // The feature was created with IsHDR and no AutoExposure, so it requires an exposure texture. The
+    // game supplies one under its Ray Reconstruction name; hand it over under the name SR reads, or the
+    // result is black -- the community guide's exposure trap, in its two-feature form.
+    ID3D12Resource* rrExposure = nullptr;
+    params->Get("DLSSD.ExposureTexture", &rrExposure);
+
+    if (rrExposure != nullptr)
+        params->Set("ExposureTexture", rrExposure);
+
+    // And the game's sharpness would switch on RCAS inside our SR, against motion vectors it does not
+    // understand at this geometry. The enlargement is an enlargement, nothing more.
+    float gameSharpness = 0.0f;
+    params->Get(NVSDK_NGX_Parameter_Sharpness, &gameSharpness);
+    params->Set(NVSDK_NGX_Parameter_Sharpness, 0.0f);
+
     bool srOk = SplitDx12.sr->Evaluate(cmdList, params);
+
+    SplitBarrier(cmdList, SplitDx12.intermediate, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    params->Set(NVSDK_NGX_Parameter_Sharpness, gameSharpness);
 
     if (srOk && useOversized)
         srOk = SplitDownscale(cmdList, SplitDx12.oversized, gameOutput);
