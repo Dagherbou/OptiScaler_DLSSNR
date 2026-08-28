@@ -5790,7 +5790,24 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
         }
         else
         {
-            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running.");
+            // The cost belongs here rather than only in the upscaler's breakdown: that tooltip needs
+            // OptiScaler's own upscaler to have run, and with native DLSS passing through there is
+            // nothing in it to hang this off.
+            const auto ms = DlssNr::LastGpuTime();
+
+            if (ms.has_value())
+                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running - %.2f ms per frame",
+                                   ms.value());
+            else
+                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running.");
+
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("The whole pass: the staging copies and the resolve as well as the"
+                                  "\nmodel. Timing only the model would flatter the number."
+                                  "\n\nCompare it against the frame time at the bottom of this window to"
+                                  "\nsee what it is costing you.");
         }
 
         ImGui::Spacing();
