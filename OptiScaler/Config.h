@@ -303,6 +303,12 @@ class Config
     // consistent detail and cancels the re-randomised part. 0 is off and bit-identical to before.
     CustomOptional<float> DlssNrEditStability { 0.0f };
 
+    // The split pipeline: Ray Reconstruction runs 1:1 as a pure denoiser, the model runs at render
+    // resolution, and an internal second Super Resolution feature does the one enlargement. Needs a
+    // restart (the clamp happens when the game creates its feature) and a render scale below native to
+    // gain anything.
+    CustomOptional<bool> DlssNrSplitPipeline { false };
+
     // DLSS
     CustomOptional<bool> DLSSEnabled { true };
     CustomOptional<bool> RenderPresetOverride { false };

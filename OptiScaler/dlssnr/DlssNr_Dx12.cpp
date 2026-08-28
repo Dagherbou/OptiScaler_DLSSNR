@@ -585,7 +585,12 @@ void WaitForAllocator(unsigned int index)
 
 namespace DlssNr
 {
-void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params)
+bool g_splitActive = false;
+
+void SetSplitActive(bool active) { g_splitActive = active; }
+
+void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
+                          bool forceInPlace)
 {
     const Config& cfg = *Config::Instance();
 
@@ -662,8 +667,9 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     }
 
     // When the model runs on the finished frame instead, this call exists only to take a copy of the
-    // guides while they are still valid and still describe this frame.
-    if (cfg.DlssNrInjectPoint.value_or_default() == INJECT_PRESENT)
+    // guides while they are still valid and still describe this frame. The split pipeline overrides the
+    // choice: it calls for the in-place pass on its own intermediate, whatever the dropdown says.
+    if (!forceInPlace && cfg.DlssNrInjectPoint.value_or_default() == INJECT_PRESENT)
     {
         if (CloneGuideAlways(device, cmdList, depth, &g_nr.depthClone) != nullptr &&
             CloneGuideAlways(device, cmdList, motion, &g_nr.motionClone) != nullptr)
@@ -1109,6 +1115,10 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         return;
 
     if (cfg.DlssNrInjectPoint.value_or_default() != INJECT_PRESENT)
+        return;
+
+    // The split pipeline already ran the model this frame, on its own intermediate.
+    if (g_splitActive)
         return;
 
     // Nothing to work from until the upscaler has run at least once and left its guides behind.

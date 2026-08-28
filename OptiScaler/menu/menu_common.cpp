@@ -5833,6 +5833,23 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\n\nTakes effect on restart: only one model may exist at a time, and swapping it"
                        "\nmid-session is not worth the crash it caused every time it was tried.");
 
+        bool split = config->DlssNrSplitPipeline.value_or_default();
+        if (ImGui::Checkbox("Split pipeline: RR 1:1 + NR + internal SR (restart)", &split))
+            config->DlssNrSplitPipeline = split;
+
+        ShowHelpMarker("Ray Reconstruction runs 1:1 as a pure denoiser, the model runs at render"
+                       "\nresolution, and one enlargement at the end is done by an internal DLSS Super"
+                       "\nResolution feature -- a temporal upscaler with the full G-buffer, not a"
+                       "\nstretch. Everything stays linear HDR, so both features keep the game's own"
+                       "\nflags."
+                       "\n\nDenoise gets cheaper, the model runs on fewer pixels, and its detail rides"
+                       "\nthrough the upscaler's accumulation. The published measurements at a 66%"
+                       "\nrender scale: about 4.5 + 6 + 3.5 ms against roughly 17 conventionally."
+                       "\n\nRay Reconstruction titles only, needs a render scale below native (Quality or"
+                       "\nlower -- at DLAA there is nothing to enlarge), and takes effect on restart:"
+                       "\nthe 1:1 clamp happens when the game creates its feature. Falls back to the"
+                       "\nconventional path, with a line in the log, if any stage refuses.");
+
         ImGui::SeparatorText("Cost");
 
         static const char* scaleNames[] = { "Full resolution", "75%", "50%", "33%" };
