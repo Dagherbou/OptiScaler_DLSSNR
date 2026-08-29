@@ -6154,12 +6154,15 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\ntreats them as less extreme, so its tone edits back off; below 1, the"
                        "\nopposite. The encode and resolve stay exact inverses, so this only moves"
                        "\nwhat the model is shown, never the untouched image."
-                       "\n\nHDR paths only: linear-HDR games before frame generation, and scRGB"
-                       "\nfinished frames. An SDR finished frame is never encoded, so this does"
-                       "\nnothing there -- use Highlight restore below instead.");
+                       "\n\nIn SDR this becomes a proxy exposure: away from 1.00x the frame is run"
+                       "\nthrough the curve just for the model's eyes -- it judges tone on the"
+                       "\nre-exposed picture and the resolve inverts exactly, so at strength zero"
+                       "\nnothing changes. Lower makes it treat your lights as more extreme (and"
+                       "\nleave them alone more); higher, the opposite. At exactly 1.00x SDR frames"
+                       "\ngo over untouched, as before.");
 
         float protectHl = config->DlssNrProtectHighlights.value_or_default();
-        if (ImGui::SliderFloat("Highlight restore", &protectHl, 0.0f, 1.0f, "%.2f"))
+        if (ImGui::SliderFloat("Highlight restore", &protectHl, 0.0f, 2.0f, "%.2f"))
             config->DlssNrProtectHighlights = protectHl;
 
         ShowHelpMarker("How the highlights look. The model's trained instinct is to calm bright things"
@@ -6168,8 +6171,10 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\nregions, scaled by how bright they are; colour, brightening and structure"
                        "\ndetail pass untouched, so nothing else changes."
                        "\n\n0 is off and bit-identical; 1 removes all darkening from the brightest"
-                       "\nregions. The blunter lever is Local tone below: at 0 the model stops"
-                       "\nre-toning entirely, everywhere, dark corners included.");
+                       "\nregions. Above 1 it flips into a boost: what the model tried to dim gets"
+                       "\nbrightened past the original instead -- extra punch, bounded by the"
+                       "\nHighlight guard clamp. The blunter lever is Local tone below: at 0 the"
+                       "\nmodel stops re-toning entirely, everywhere, dark corners included.");
 
         float shadowRestore = config->DlssNrShadowRestore.value_or_default();
         if (ImGui::SliderFloat("Shadow restore", &shadowRestore, 0.0f, 1.0f, "%.2f"))

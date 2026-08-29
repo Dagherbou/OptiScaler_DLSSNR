@@ -860,15 +860,20 @@ void EvaluateHudless(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* hudless
     // An scRGB HDR hudless is encoded around the model exactly like the finished frame is; SDR goes
     // over as it is.
     const bool scRGB = desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    const float wpScale = cfg.DlssNrWhitePointScale.value_or_default();
+
+    // In SDR the scale becomes a proxy exposure: the frame is run through the curve just for the
+    // model's eyes, with the scale as the white point, and the resolve inverts exactly.
+    const bool proxyCurve = scRGB || wpScale < 0.99f || wpScale > 1.01f;
     float presentWhite = 1.0f;
     bool hdrEncoded = false;
     ID3D12Resource* modelInput = g_nr.colorCopy;
 
-    if (scRGB)
+    if (proxyCurve)
     {
         const probe::Stats stats = g_presentReader.collect();
 
-        if (stats.valid && stats.meanLuma > 0.0f)
+        if (scRGB && stats.valid && stats.meanLuma > 0.0f)
         {
             const float targetWhite = WhitePointForMean(stats.meanLuma);
 
@@ -897,9 +902,9 @@ void EvaluateHudless(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* hudless
             g_nr.presentProxy = CreateScratch(device, desc.Format, width, height);
     }
 
-    if (scRGB && g_nr.presentProxy != nullptr)
+    if (proxyCurve && g_nr.presentProxy != nullptr)
     {
-        presentWhite = g_presentWhite * cfg.DlssNrWhitePointScale.value_or_default();
+        presentWhite = scRGB ? g_presentWhite * wpScale : wpScale;
         hdrEncoded = true;
 
         codec::Params encodeParams {};
@@ -917,7 +922,7 @@ void EvaluateHudless(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* hudless
         keepHazard.UAV.pResource = g_nr.hdrCopy;
         cmdList->ResourceBarrier(1, &keepHazard);
 
-        if ((g_frames % 30 == 0) && g_presentReducer.ensure(device))
+        if (scRGB && (g_frames % 30 == 0) && g_presentReducer.ensure(device))
         {
             ID3D12Resource* reducedFrame =
                 g_presentReducer.dispatch(cmdList, g_nr.colorCopy, width, height);
@@ -1870,6 +1875,8 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
     const bool scRGB = backBuffer->GetDesc().Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    const float wpScale = cfg.DlssNrWhitePointScale.value_or_default();
+    const bool proxyCurve = scRGB || wpScale < 0.99f || wpScale > 1.01f;
     float presentWhite = 1.0f;
     bool hdrEncoded = false;
 
@@ -1877,12 +1884,12 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
     // full size and is what the edit is finally added to.
     ID3D12Resource* modelInput = g_nr.colorCopy;
 
-    if (scRGB)
+    if (proxyCurve)
     {
         // The latest white point reading, eased exactly like the render path's.
         const probe::Stats stats = g_presentReader.collect();
 
-        if (stats.valid && stats.meanLuma > 0.0f)
+        if (scRGB && stats.valid && stats.meanLuma > 0.0f)
         {
             const float targetWhite = WhitePointForMean(stats.meanLuma);
 
@@ -1911,9 +1918,9 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
             g_nr.presentProxy = CreateScratch(device, backBuffer->GetDesc().Format, width, height);
     }
 
-    if (scRGB && g_nr.presentProxy != nullptr)
+    if (proxyCurve && g_nr.presentProxy != nullptr)
     {
-        presentWhite = g_presentWhite * cfg.DlssNrWhitePointScale.value_or_default();
+        presentWhite = scRGB ? g_presentWhite * wpScale : wpScale;
         hdrEncoded = true;
 
         codec::Params encodeParams {};
@@ -1934,7 +1941,7 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         cmdList->ResourceBarrier(1, &keepHazard);
 
         // Measure for the white point on the render path's cadence.
-        if ((g_frames % 30 == 0) && g_presentReducer.ensure(device))
+        if (scRGB && (g_frames % 30 == 0) && g_presentReducer.ensure(device))
         {
             ID3D12Resource* reducedFrame =
                 g_presentReducer.dispatch(cmdList, g_nr.colorCopy, width, height);
