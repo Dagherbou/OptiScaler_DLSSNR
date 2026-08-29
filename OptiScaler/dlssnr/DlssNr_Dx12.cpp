@@ -524,7 +524,7 @@ ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* c
         if (*clone == nullptr)
             return nullptr;
 
-        LOG_INFO("DLSS-NR cloned a typeless guide as format {}",
+        LOG_DEBUG("DLSS-NR cloned a typeless guide as format {}",
                  (int) TypedGuideFormat(source->GetDesc().Format));
     }
 
@@ -1207,7 +1207,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     if (g_frames - lastFullRunLog > 60)
     {
         lastFullRunLog = g_frames;
-        LOG_INFO("DLSS-NR render-path full run: forceInPlace={}, inject={}, frame {}x{}",
+        LOG_DEBUG("DLSS-NR render-path full run: forceInPlace={}, inject={}, frame {}x{}",
                  forceInPlace ? 1 : 0, (int) cfg.DlssNrInjectPoint.value_or_default(), width, height);
     }
 
@@ -1485,7 +1485,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         {
             float value = 0.0f;
             const NVSDK_NGX_Result r = g_nr.capabilityParams->Get(name, &value);
-            LOG_INFO("DLSS-NR readback {} -> {} (result 0x{:X})", name, value, (uint32_t) r);
+            LOG_DEBUG("DLSS-NR readback {} -> {} (result 0x{:X})", name, value, (uint32_t) r);
         };
 
         report("DLSSNR.Intensity");
@@ -1495,17 +1495,17 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
         unsigned int style = 0;
         const NVSDK_NGX_Result styleResult = g_nr.capabilityParams->Get("DLSSNR.Style", &style);
-        LOG_INFO("DLSS-NR readback DLSSNR.Style -> {} (result 0x{:X})", style, (uint32_t) styleResult);
+        LOG_DEBUG("DLSS-NR readback DLSSNR.Style -> {} (result 0x{:X})", style, (uint32_t) styleResult);
 
         // The preset is the last control whose arrival has never been checked, and three of them look
         // identical in play. Either it is not landing or the presets really are alike.
         unsigned int preset = 0;
         const NVSDK_NGX_Result presetResult =
             g_nr.capabilityParams->Get("DLSSNR.Hint.Render.Preset", &preset);
-        LOG_INFO("DLSS-NR readback DLSSNR.Hint.Render.Preset -> {} (result 0x{:X}, we wrote {})", preset,
+        LOG_DEBUG("DLSS-NR readback DLSSNR.Hint.Render.Preset -> {} (result 0x{:X}, we wrote {})", preset,
                  (uint32_t) presetResult, cfg.DlssNrPreset.value_or_default());
 
-        LOG_INFO("DLSS-NR wrote intensity {}, local structure {}, local tone {}, skin {}, style {}",
+        LOG_DEBUG("DLSS-NR wrote intensity {}, local structure {}, local tone {}, skin {}, style {}",
                  cfg.DlssNrIntensity.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
                  cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
                  cfg.DlssNrStyle.value_or_default());
@@ -1833,7 +1833,7 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
             unsigned int presetBack = 0;
             const NVSDK_NGX_Result r =
                 g_nr.capabilityParams->Get("DLSSNR.Hint.Render.Preset", &presetBack);
-            LOG_INFO("DLSS-NR readback DLSSNR.Hint.Render.Preset -> {} (result 0x{:X}, we wrote {})",
+            LOG_DEBUG("DLSS-NR readback DLSSNR.Hint.Render.Preset -> {} (result 0x{:X}, we wrote {})",
                      presetBack, (uint32_t) r, cfg.DlssNrPreset.value_or_default());
         }
 

@@ -252,6 +252,7 @@ class Config
     CustomOptional<int32_t> NetworkModel { 0 };
     CustomOptional<bool> CreateHeaps { true };
 
+    // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) --- removable as one block -----------------
     // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
     CustomOptional<bool> DlssNrEnabled { false };
@@ -337,6 +338,7 @@ class Config
     // Include-RR's own supersample ratio. 0 follows Output Scaling's Ratio; anything above 1.05 runs
     // RR at this ratio instead -- most of the reconstruction sharpness for far less of RR's cost.
     CustomOptional<float> DlssNrSplitIncludeRRRatio { 0.0f };
+    // --- end DLSS 5 Neural Rendering -------------------------------------------------------------
 
     // DLSS
     CustomOptional<bool> DLSSEnabled { true };

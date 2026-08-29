@@ -315,6 +315,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             // Don't enable again if set false because of no nvngx found
             DLSSEnabled.set_from_config(readBool("DLSS", "Enabled"));
 
+            // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
             DlssNrEnabled.set_from_config(readBool("DlssNr", "Enabled"));
             DlssNrInjectPoint.set_from_config(readUInt("DlssNr", "InjectPoint"));
             DlssNrTransferStrength.set_from_config(readFloat("DlssNr", "TransferStrength"));
@@ -335,6 +336,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrHudGuard.set_from_config(readFloat("DlssNr", "HudGuard"));
             DlssNrShadowRestore.set_from_config(readFloat("DlssNr", "ShadowRestore"));
             DlssNrSplitIncludeRRRatio.set_from_config(readFloat("DlssNr", "SplitIncludeRRRatio"));
+            // --- end DLSS 5 Neural Rendering ---
             DlssNrPreset.set_from_config(readUInt("DlssNr", "Preset"));
             DlssNrIntensity.set_from_config(readFloat("DlssNr", "Intensity"));
             DlssNrStyle.set_from_config(readUInt("DlssNr", "Style"));
@@ -1171,6 +1173,7 @@ bool Config::SaveIni()
     {
         ini.SetValue("DLSS", "Enabled", GetBoolValue(Instance()->DLSSEnabled.value_for_config()).c_str());
 
+    // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
     ini.SetValue("DlssNr", "Enabled", GetBoolValue(Instance()->DlssNrEnabled.value_for_config()).c_str());
     ini.SetValue("DlssNr", "InjectPoint", GetIntValue(Instance()->DlssNrInjectPoint.value_for_config()).c_str());
     ini.SetValue("DlssNr", "TransferStrength",
@@ -1199,6 +1202,7 @@ bool Config::SaveIni()
                  GetFloatValue(Instance()->DlssNrShadowRestore.value_for_config()).c_str());
     ini.SetValue("DlssNr", "SplitIncludeRRRatio",
                  GetFloatValue(Instance()->DlssNrSplitIncludeRRRatio.value_for_config()).c_str());
+    // --- end DLSS 5 Neural Rendering ---
     ini.SetValue("DlssNr", "Preset", GetIntValue(Instance()->DlssNrPreset.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Intensity", GetFloatValue(Instance()->DlssNrIntensity.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Style", GetIntValue(Instance()->DlssNrStyle.value_for_config()).c_str());
