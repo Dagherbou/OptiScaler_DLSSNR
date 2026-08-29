@@ -4,38 +4,45 @@ A self-contained module that drives NVIDIA's DLSS Neural Rendering model (`nvngx
 feature 18) over the frames OptiScaler already handles. Nothing in it is officially supported by
 NVIDIA; the model ships in driver packages and is not redistributed here.
 
-## For maintainers: the shape of the integration
+## For maintainers: how to remove it
 
-Everything lives in this directory. The rest of OptiScaler touches it through **five guarded call
-sites**, each one line, each wrapped in `#if OPTI_DLSSNR`:
+**Set `OPTI_DLSSNR` to `0` in `dlssnr/DlssNr_Switch.h`.** That is the whole procedure. The switch
+lives in a header containing nothing but the macro, so `Config.h` can test it without pulling in
+D3D12.
 
-| File | What the call does |
-|---|---|
-| `inputs/NVNGX_DLSS_Dx12.cpp` | the pass after an upscale (render path), and the split pipeline's three entry points |
-| `menu/menu_overlay_dx.cpp` | the finished-frame pass at present |
-| `hooks/Streamline_Hooks.cpp` | the hudless pass at Streamline tag time |
-| `upscalers/IFeature_Dx11wDx12.cpp` | the pass inside the D3D11-on-D3D12 bridge |
-| `menu/menu_common.cpp` | the settings panel, and the cost row in the timing table |
+With it at `0`: the guarded call sites vanish, the three module sources become empty translation
+units, the settings panel loses its section, and the `[DlssNr]` config entries are not even
+declared. Verified by building it both ways — the resulting `OptiScaler.dll` contains **zero**
+occurrences of `DlssNr`, `dlssnr` or `Neural Rendering`, and is 117 KB smaller.
 
-`OPTI_DLSSNR` is defined in `DlssNr.h`. Set it to `0` and the module compiles out entirely: the call
-sites vanish, the module's translation units become empty, and the build produces a binary with no
-trace of it (verified: zero `DLSS-NR` strings). The `[DlssNr]` entries in `Config.h`/`Config.cpp`
-are delimited with `--- DLSS 5 Neural Rendering ---` comments and can be deleted as one block.
+To remove the *source* as well: delete this directory, drop `dlssnr_forwarder.vcxproj` from the
+solution, and delete the `#if OPTI_DLSSNR` blocks listed below. Nothing else refers to it.
 
-One change outside the module is a genuine upstream fix, separable on its own:
-`shaders/output_scaling/OS_Dx12.cpp` sized its dispatch from the global current feature rather than
-the resources passed in, which only coincides for the conventional Output Scaling chain.
+| File | Blocks | What the calls do |
+|---|---|---|
+| `inputs/NVNGX_DLSS_Dx12.cpp` | 5 | the pass after an upscale (render path), and the split pipeline's entry points |
+| `menu/menu_common.cpp` | 2 | the settings panel, and the cost row in the timing table |
+| `hooks/Streamline_Hooks.cpp` | 2 | hands the model the game's tagged UI layer, at Streamline tag time |
+| `menu/menu_overlay_dx.cpp` | 1 | the finished-frame pass at present |
+| `upscalers/IFeature_Dx11wDx12.cpp` | 1 | the pass inside the D3D11-on-D3D12 bridge |
+| `Config.h` / `Config.cpp` | 3 | the `[DlssNr]` declarations and their read/write runs |
+
+One change outside the module is **a genuine upstream fix, separable on its own and worth taking
+regardless of this feature**: `shaders/output_scaling/OS_Dx12.cpp` sized its dispatch from the global
+current feature rather than from the resources passed in. Those coincide for the conventional Output
+Scaling chain, so the bug stayed invisible until something else called it.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `DlssNr.h` | umbrella header; the `OPTI_DLSSNR` switch |
-| `DlssNr_Dx12.h/.cpp` | the model: forwarder loading, feature lifetime, the three evaluate paths (render, finished frame, hudless), encode/resolve orchestration, white point metering, capture |
-| `DlssNr_Split.h/.cpp` | the split pipeline (RR 1:1 → NR → internal enlargement), OS absorption, native-1:1 serving |
+| `DlssNr_Switch.h` | the `OPTI_DLSSNR` macro, and nothing else |
+| `DlssNr.h` | umbrella header; documents the call sites |
+| `DlssNr_Dx12.h/.cpp` | the model: forwarder loading, feature lifetime, the evaluate paths, encode/resolve orchestration, white point metering, capture |
+| `DlssNr_Split.h/.cpp` | the split pipeline (RR/DLSS 1:1 → NR → internal enlargement), Output Scaling absorption, native-1:1 serving |
 | `DlssNr_Menu.cpp` | the settings panel |
-| `DlssNr_Codec.h` | the compute shader: encode (Reinhard-on-luma proxy), resolve (delta composite, lighting-band accumulator, restores, hue-preserving clamp), downsample |
-| `DlssNr_Probe.h` | frame reduction and readback for the white point meter and the proxy-curve fit |
+| `DlssNr_Codec.h` | the compute shader: encode (scale and sRGB-encode with a soft knee), resolve (ratio composition against a measured slope, temporal accumulator, restores, AP1 clamp), downsample |
+| `DlssNr_Probe.h` | frame reduction and readback for the white point meter |
 | `DlssNr_Capture.h` | matched before/after frame dumps |
 | `forwarder/` | the caller-gate shim, built by `dlssnr_forwarder.vcxproj` into the release layout |
 
@@ -43,26 +50,31 @@ the resources passed in, which only coincides for the conventional Output Scalin
 
 The model's snippet resolves the module that owns its caller's return address and refuses any whose
 path does not contain `nvngx.dll`. The forwarder (`nvngx.dll_dlssnr.dll`, ~13 KB) exists only to
-satisfy that check; every NGX call to the model originates from it. It is part of the solution and
-builds with everything else.
+satisfy that check; every NGX call to the model originates from it. It contains no NVIDIA code, is
+part of the solution, and builds with everything else.
 
 ## Design notes worth knowing before changing anything
 
-- **Delta composite.** The model is shown an encoded proxy; its answer minus the proxy is the edit,
-  applied onto the untouched original. At strength zero the frame is bit-identical, always.
+- **Ratio composition, not a delta.** The model is shown an encoded proxy; what it returns is
+  composed back as a ratio against the original's luminance, scaled by a measured slope, with the
+  chroma added. Composing it additively — which earlier revisions did — discards the model's
+  behaviour in highlights and makes every arrangement look alike. At strength zero the frame is
+  bit-identical, always.
 - **Create-time parameters.** The model's tuning (preset, style, intensity, local *) is latched at
   feature creation; changes rebuild the feature after a settle. The driver's parameter block is not
-  the SDK header's vtable (floats sit at slot 6); the forwarder probes it.
+  the SDK header's vtable (floats sit at slot 6); the forwarder probes it. Rebuilding every frame
+  exhausts the driver's latches and the feature stops responding until the process restarts, which
+  is why the rebuild is debounced.
 - **Never free under the GPU.** Every retired feature or surface is parked and freed 32 evaluates
-  later; every internal feature is created on a private queue and fenced before use. Both rules
-  were paid for with device hangs.
+  later; every internal feature is created on a private queue and fenced before use. Both rules were
+  paid for with device hangs.
 - **Two paths, one lock.** The render path runs on the game's render thread and the finished-frame
-  path on the present thread; a mutex covers both.
-- **The proxy curve.** In arrangements where the model sees the linear frame (the split, the DX11
-  bridge), it is shown a compressed proxy. Reinhard is the generic default; "Match the game's
-  tonemapper" fits a 32-entry curve by histogram-matching the linear frame against the finished
-  frame (measured at present, SDR only) and passes it to the shader as root constants -- no extra
-  descriptors. Encode and resolve stay exact inverses through the curve's slope.
+  path on the present thread; a mutex covers both. Removing it produces crashes that look random and
+  are not.
 - **Temporal filtering of the edit's detail band was measured to be a dead end** (twice, including
   with a trained DLAA pass): the model re-decides detail with the framing. Only the lighting band is
-  accumulated. Detail stability comes from routing the pass through a real upscaler (the split).
+  accumulated. Detail stability comes from routing the pass through a real upscaler — the split.
+- **HUD detection was tried and removed.** Measured with grain, chromatic aberration and depth of
+  field all off, a static HUD pixel still scored 0.31 on the "did not change" test, because game
+  interfaces are translucent and animated. Separation from the world was 2.5:1 — not a detector at
+  any threshold. The split is the answer to the interface, because it never sees it.
