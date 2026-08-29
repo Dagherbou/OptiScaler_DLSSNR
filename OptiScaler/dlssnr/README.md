@@ -22,7 +22,6 @@ solution, and delete the `#if OPTI_DLSSNR` blocks listed below. Nothing else ref
 |---|---|---|
 | `inputs/NVNGX_DLSS_Dx12.cpp` | 5 | the pass after an upscale (render path), and the split pipeline's entry points |
 | `menu/menu_common.cpp` | 2 | the settings panel, and the cost row in the timing table |
-| `hooks/Streamline_Hooks.cpp` | 2 | hands the model the game's tagged UI layer, at Streamline tag time |
 | `menu/menu_overlay_dx.cpp` | 1 | the finished-frame pass at present |
 | `upscalers/IFeature_Dx11wDx12.cpp` | 1 | the pass inside the D3D11-on-D3D12 bridge |
 | `Config.h` / `Config.cpp` | 3 | the `[DlssNr]` declarations and their read/write runs |
@@ -74,6 +73,10 @@ part of the solution, and builds with everything else.
 - **Temporal filtering of the edit's detail band was measured to be a dead end** (twice, including
   with a trained DLAA pass): the model re-decides detail with the framing. Only the lighting band is
   accumulated. Detail stability comes from routing the pass through a real upscaler — the split.
+- **The model's own UI correction went with it.** It only ever acted on a UI layer the game tagged
+  through Streamline, which almost no title does, and it could not be shown to change anything when
+  one did. Removing it removed the Streamline tag hook as well, so the module no longer touches that
+  file at all. The model is created with the parameter at its own default.
 - **HUD detection was tried and removed.** Measured with grain, chromatic aberration and depth of
   field all off, a static HUD pixel still scored 0.31 on the "did not change" test, because game
   interfaces are translucent and animated. Separation from the world was 2.5:1 — not a detector at

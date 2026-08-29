@@ -343,7 +343,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrLocalTone.set_from_config(readFloat("DlssNr", "LocalTone"));
             DlssNrSkinStructure.set_from_config(readFloat("DlssNr", "SkinStructure"));
             DlssNrAutoMask.set_from_config(readBool("DlssNr", "AutoMask"));
-            DlssNrUiCorrection.set_from_config(readBool("DlssNr", "UiCorrection"));
 #endif // OPTI_DLSSNR
             UseGenericAppIdWithDlss.set_from_config(readBool("DLSS", "UseGenericAppIdWithDlss"));
 
@@ -1211,7 +1210,6 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "SkinStructure",
                  GetFloatValue(Instance()->DlssNrSkinStructure.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AutoMask", GetBoolValue(Instance()->DlssNrAutoMask.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "UiCorrection", GetBoolValue(Instance()->DlssNrUiCorrection.value_for_config()).c_str());
 #endif // OPTI_DLSSNR
         ini.SetValue("DLSS", "RenderPresetOverride",
                      GetBoolValue(Instance()->RenderPresetOverride.value_for_config()).c_str());

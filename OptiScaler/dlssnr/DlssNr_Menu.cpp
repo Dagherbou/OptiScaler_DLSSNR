@@ -336,19 +336,6 @@ void RenderMenu(Config* config, float menuResScale)
 
         HelpMarker("Lets the model find skin itself rather than treating the frame uniformly.");
 
-        bool uiCorrection = config->DlssNrUiCorrection.value_or_default();
-        if (ImGui::Checkbox("UI correction", &uiCorrection))
-            config->DlssNrUiCorrection = uiCorrection;
-
-
-        HelpMarker("Keeps the model off the interface."
-                       "\n\nIt matters most on the finished frame, where the HUD is part of the picture"
-                       "\nthe model is handed and it will otherwise synthesise detail into text and"
-                       "\nicons. Before frame generation the UI has not been drawn yet, so there is"
-                       "\nnothing there to protect.");
-
-        ImGui::TextDisabled("%s", DlssNr::UiLayerStatus());
-
         ImGui::SeparatorText("Colour");
 
         ImGui::TextDisabled("On the finished frame an SDR picture goes over unconverted and an scRGB\n"

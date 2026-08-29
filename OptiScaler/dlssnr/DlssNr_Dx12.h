@@ -35,12 +35,9 @@ void SetSplitActive(bool active);
 void SetSplitStatus(const char* status);
 // Frame generation titles tag their UI layer through Streamline; a copy of it makes the HUD mask
 // exact at the finished frame. Called at tag time.
-void NoteUiLayer(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* ui, D3D12_RESOURCE_STATES state);
 
 const char* SplitStatus();
 
-// Whether the game's UI layer reached the model recently, for the panel.
-const char* UiLayerStatus();
 
 
 // The settings panel, drawn inside OptiScaler's menu.

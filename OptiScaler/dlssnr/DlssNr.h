@@ -10,7 +10,6 @@
 // Call sites, for the record:
 //   inputs/NVNGX_DLSS_Dx12.cpp        the render-path pass after an upscale, and the split pipeline
 //   menu/menu_overlay_dx.cpp          the finished-frame pass at present
-//   hooks/Streamline_Hooks.cpp        the hudless pass at tag time
 //   upscalers/IFeature_Dx11wDx12.cpp  the pass inside the D3D11-on-D3D12 bridge
 //   menu/menu_common.cpp              the settings panel
 

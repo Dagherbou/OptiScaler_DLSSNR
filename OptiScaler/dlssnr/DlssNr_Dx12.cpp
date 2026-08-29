@@ -75,9 +75,6 @@ struct NrState
     ID3D12Resource* colorSmall = nullptr;
     ID3D12Resource* presentProxy = nullptr; // scRGB finished frame: the encoded picture the model sees
 
-    // The game's tagged UI layer, when it offers one: the model takes it as its own UI input.
-    ID3D12Resource* uiClone = nullptr;
-    unsigned long long uiCloneFrame = 0;
     unsigned int workWidth = 0;
     unsigned int workHeight = 0;
 
@@ -122,7 +119,6 @@ struct NrState
     float builtLocalTone = 0.0f;
     float builtSkinStructure = 0.0f;
     bool builtAutoMask = false;
-    bool builtUiCorrection = false;
     unsigned long long settledAt = 0;
 
     // Once something fails there is no recovering it mid-session, and retrying every frame turns a
@@ -615,8 +611,7 @@ bool TuningMatchesFeature(const Config& cfg)
            g_nr.builtLocalStructure == cfg.DlssNrLocalStructure.value_or_default() &&
            g_nr.builtLocalTone == cfg.DlssNrLocalTone.value_or_default() &&
            g_nr.builtSkinStructure == cfg.DlssNrSkinStructure.value_or_default() &&
-           g_nr.builtAutoMask == cfg.DlssNrAutoMask.value_or_default() &&
-           g_nr.builtUiCorrection == cfg.DlssNrUiCorrection.value_or_default();
+           g_nr.builtAutoMask == cfg.DlssNrAutoMask.value_or_default();
 }
 
 void RecordBuiltTuning(const Config& cfg)
@@ -628,7 +623,6 @@ void RecordBuiltTuning(const Config& cfg)
     g_nr.builtLocalTone = cfg.DlssNrLocalTone.value_or_default();
     g_nr.builtSkinStructure = cfg.DlssNrSkinStructure.value_or_default();
     g_nr.builtAutoMask = cfg.DlssNrAutoMask.value_or_default();
-    g_nr.builtUiCorrection = cfg.DlssNrUiCorrection.value_or_default();
 }
 
 // Waits for every list this has submitted. Releasing the feature before that is what took the game down
@@ -712,66 +706,6 @@ void SetSplitStatus(const char* status)
     strncpy_s(g_splitStatus, status, _TRUNCATE);
 }
 
-
-void NoteUiLayer(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* ui, D3D12_RESOURCE_STATES state)
-{
-    std::lock_guard<std::mutex> nrLock(g_nrMutex);
-    const Config& cfg = *Config::Instance();
-
-    if (!cfg.DlssNrEnabled.value_or_default() || cmdList == nullptr || ui == nullptr)
-        return;
-
-    ID3D12Device* device = nullptr;
-
-    if (FAILED(cmdList->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
-        return;
-
-    const auto desc = ui->GetDesc();
-
-    if (g_nr.uiClone != nullptr)
-    {
-        const auto have = g_nr.uiClone->GetDesc();
-
-        if (have.Width != desc.Width || have.Height != desc.Height || have.Format != desc.Format)
-        {
-            g_nr.uiClone->Release();
-            g_nr.uiClone = nullptr;
-        }
-    }
-
-    if (g_nr.uiClone == nullptr)
-        g_nr.uiClone = CreateGuideClone(device, ui);
-
-    if (g_nr.uiClone != nullptr)
-    {
-        Barrier(cmdList, ui, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        cmdList->CopyResource(g_nr.uiClone, ui);
-        Barrier(cmdList, ui, D3D12_RESOURCE_STATE_COPY_SOURCE, state);
-        g_nr.uiCloneFrame = g_frames;
-
-        static bool saidUi = false;
-
-        if (!saidUi)
-        {
-            saidUi = true;
-            LOG_INFO("DLSS-NR: the game tags its UI layer through Streamline ({}x{}, format {}); it goes to "
-                     "the model as UI and UIAlpha and makes HUD detection exact",
-                     (unsigned int) desc.Width, desc.Height, (int) desc.Format);
-        }
-    }
-
-    device->Release();
-}
-
-// Whether the game's UI layer reached the model recently.
-const char* UiLayerStatus()
-{
-    if (g_nr.uiClone == nullptr)
-        return "UI layer: the game has not tagged one (Cyberpunk tags it with frame generation on)";
-
-    return g_frames - g_nr.uiCloneFrame <= 4 ? "UI layer: arriving from the game -- the model sees the HUD as the game draws it"
-                                             : "UI layer: seen earlier, not this frame";
-}
 
 const char* SplitStatus() { return g_splitStatus; }
 
@@ -958,7 +892,9 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
                         cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
                         cfg.DlssNrSkinStructure.value_or_default(),
                         cfg.DlssNrAutoMask.value_or_default() ? 1 : 0,
-                        cfg.DlssNrUiCorrection.value_or_default() ? 1 : 0);
+                        // UI correction at the model's own default: with no UI layer fed to it there
+                        // is nothing for it to correct.
+                        1);
 
         if (g_nr.feature == nullptr)
         {
@@ -1483,7 +1419,9 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
                         cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
                         cfg.DlssNrSkinStructure.value_or_default(),
                         cfg.DlssNrAutoMask.value_or_default() ? 1 : 0,
-                        cfg.DlssNrUiCorrection.value_or_default() ? 1 : 0);
+                        // UI correction at the model's own default: with no UI layer fed to it there
+                        // is nothing for it to correct.
+                        1);
 
         if (g_nr.feature == nullptr)
         {
@@ -1511,10 +1449,9 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         }
 
         LOG_INFO("DLSS-NR running on the finished frame at {}x{}, guides {}x{} (preset {}, intensity {}, "
-                 "style {}, local structure {}, local tone {}, skin {}, ui correction {})",
+                 "style {}, local structure {}, local tone {}, skin {})",
                  width, height, g_nr.guideWidth, g_nr.guideHeight, g_nr.builtPreset, g_nr.builtIntensity,
-                 g_nr.builtStyle, g_nr.builtLocalStructure, g_nr.builtLocalTone, g_nr.builtSkinStructure,
-                 cfg.DlssNrUiCorrection.value_or_default() ? 1 : 0);
+                 g_nr.builtStyle, g_nr.builtLocalStructure, g_nr.builtLocalTone, g_nr.builtSkinStructure);
 
         // Same dice-roll as the render-path creation: the creation commands are submitted and fenced
         // on their own, and the first evaluate happens on the next pass.
@@ -1650,13 +1587,7 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
 
     // The interface as the game draws it, when it tags its UI layer this frame -- the input the
     // model's own UI correction was designed around -- and the composited frame as the back buffer.
-    ID3D12Resource* nrUi = g_nr.uiClone != nullptr && g_frames - g_nr.uiCloneFrame <= 2 ? g_nr.uiClone : nullptr;
-    const auto uiDesc = nrUi != nullptr ? nrUi->GetDesc() : D3D12_RESOURCE_DESC {};
-
-    if (nrUi != nullptr)
-        Barrier(cmdList, nrUi, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-    SetExtras(cfg, nrUi, g_nr.colorCopy, (unsigned int) uiDesc.Width, uiDesc.Height, width, height);
+    SetExtras(cfg, nullptr, g_nr.colorCopy, 0, 0, width, height);
 
     const int result = g_nr.evaluate(
         cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, g_nr.depthClone, g_nr.motionClone,
@@ -1669,9 +1600,6 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         g_nr.guideMvScaleX * mvToWork, g_nr.guideMvScaleY * mvToWork);
 
     g_nr.reset = false;
-
-    if (nrUi != nullptr)
-        Barrier(cmdList, nrUi, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
 
 
     // The motion clone stays readable through the resolve: the accumulator reprojects the edit's
@@ -1902,12 +1830,6 @@ void Shutdown()
     {
         g_nr.presentProxy->Release();
         g_nr.presentProxy = nullptr;
-    }
-
-    if (g_nr.uiClone != nullptr)
-    {
-        g_nr.uiClone->Release();
-        g_nr.uiClone = nullptr;
     }
 
     for (auto& h : g_nr.editHistory)
