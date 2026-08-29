@@ -1,0 +1,111 @@
+import io
+
+p = 'OptiScaler/dlssnr/DlssNr_Dx12.cpp'
+t = io.open(p, encoding='utf-8').read()
+
+# the hudless evaluate: from its comment to the start of NoteUiLayer's comment
+start = t.find("// The best seat in the house, when a game offers it")
+assert start > 0
+end = t.find("// Frame generation titles tag their UI layer")
+assert end > start
+t = t[:start] + t[end:]
+assert 'EvaluateHudless' not in t and 'INJECT_HUDLESS' not in t
+
+old = """    if (cfg.DlssNrInjectPoint.value_or_default() != INJECT_PRESENT)
+        return;
+
+    ID3D12Device* device = nullptr;"""
+assert old in t
+t = t.replace(old, """    ID3D12Device* device = nullptr;""", 1)
+
+old = """    if (cfg.DlssNrProxyCurve.value_or_default() == 1 &&
+        (cfg.DlssNrInjectPoint.value_or_default() != INJECT_PRESENT || g_splitActive))"""
+assert old in t
+t = t.replace(old, """    if (cfg.DlssNrProxyCurve.value_or_default() == 1 && g_splitActive)""", 1)
+
+old = """    if (cfg.DlssNrInjectPoint.value_or_default() != INJECT_PRESENT)
+        return;
+
+    // The split pipeline already ran the model this frame, on its own intermediate."""
+assert old in t
+t = t.replace(old, """    // The split pipeline already ran the model this frame, on its own intermediate.""", 1)
+
+assert 'InjectPoint' not in t and 'INJECT_' not in t
+io.open(p, 'w', encoding='utf-8').write(t)
+print('module in')
+
+p = 'OptiScaler/hooks/Streamline_Hooks.cpp'
+s = io.open(p, encoding='utf-8').read()
+for marker in ("        if (tags[i].type == sl::kBufferTypeHUDLessColor && cmdBuffer != nullptr)",
+               "        if (resources[i].type == sl::kBufferTypeHUDLessColor && cmdBuffer != nullptr)"):
+    i = s.find(marker)
+    assert i > 0, marker
+    end = s.find(";", s.find("DlssNr::EvaluateHudless", i)) + 1
+
+    while s[end:end + 1] == "\n":
+        end += 1
+
+    s = s[:i] + s[end:]
+assert 'EvaluateHudless' not in s
+io.open(p, 'w', encoding='utf-8').write(s)
+print('hooks in')
+
+p = 'OptiScaler/Config.h'
+c = io.open(p, encoding='utf-8').read()
+line_start = c.find("    CustomOptional<uint32_t> DlssNrInjectPoint { 1 };")
+assert line_start > 0
+line_end = c.find("\n", line_start) + 1
+ls = line_start
+
+while True:
+    prev = c.rfind("\n", 0, ls - 1) + 1
+    if c[prev:ls].lstrip().startswith("//"):
+        ls = prev
+    else:
+        break
+
+c = c[:ls] + c[line_end:]
+assert 'InjectPoint' not in c
+io.open(p, 'w', encoding='utf-8').write(c)
+
+p = 'OptiScaler/Config.cpp'
+c = io.open(p, encoding='utf-8').read()
+for old in ('            DlssNrInjectPoint.set_from_config(readUInt("DlssNr", "InjectPoint"));\n',
+            '    ini.SetValue("DlssNr", "InjectPoint", GetIntValue(Instance()->DlssNrInjectPoint.value_for_config()).c_str());\n'):
+    assert old in c
+    c = c.replace(old, "", 1)
+assert 'InjectPoint' not in c
+io.open(p, 'w', encoding='utf-8').write(c)
+print('config in')
+
+p = 'OptiScaler/dlssnr/DlssNr_Menu.cpp'
+m = io.open(p, encoding='utf-8').read()
+
+start = m.find("        static const char* injectNames[]")
+assert start > 0
+end = m.find('frame simply looks better, and the split covers the pre-tonemapper case.");', start)
+assert end > start
+end += len('frame simply looks better, and the split covers the pre-tonemapper case.");') + 1
+
+while m[end:end + 1] == "\n":
+    end += 1
+
+m = m[:start] + m[end:]
+
+old = """        if (config->DlssNrInjectPoint.value_or_default() == DlssNr::INJECT_PRESENT)
+            ImGui::TextDisabled("%s", DlssNr::UiLayerStatus());"""
+assert old in m
+m = m.replace(old, """        ImGui::TextDisabled("%s", DlssNr::UiLayerStatus());""", 1)
+
+old = """        if (config->DlssNrInjectPoint.value_or_default() == DlssNr::INJECT_PRESENT)
+            ImGui::TextDisabled("SDR finished frames go over unconverted; scRGB HDR frames are\\n"
+                                "encoded with their own measured white point. Everything below\\n"
+                                "still applies.");"""
+assert old in m
+m = m.replace(old, """        ImGui::TextDisabled("On the finished frame an SDR picture goes over unconverted and an scRGB\\n"
+                            "one is encoded with its measured white point. In the split the frame is\\n"
+                            "compressed through the proxy curve instead -- and everything the resolve\\n"
+                            "does there is attenuated by the game's own tonemapper afterwards.");""", 1)
+assert 'InjectPoint' not in m and 'INJECT_' not in m
+io.open(p, 'w', encoding='utf-8').write(m)
+print('menu in')

@@ -90,23 +90,6 @@ void RenderMenu(Config* config, float menuResScale)
 
         ImGui::SeparatorText("Where it runs");
 
-        static const char* injectNames[] = { "Finished frame", "Finished look, before UI (FG games)" };
-        // Stored values: 1 = finished frame, 2 = hudless; a stored 0 (the retired pre-tonemapper
-        // point) reads as the finished frame.
-        int injectIndex = config->DlssNrInjectPoint.value_or_default() == DlssNr::INJECT_HUDLESS ? 1 : 0;
-        if (ImGui::Combo("Inject point", &injectIndex, injectNames, IM_ARRAYSIZE(injectNames)))
-            config->DlssNrInjectPoint = injectIndex == 1 ? DlssNr::INJECT_HUDLESS : DlssNr::INJECT_PRESENT;
-
-        HelpMarker("Finished frame: the model sees the picture after the game's own tonemapper --"
-                   "\nexactly what it was trained on -- and its answer is used as it comes. The"
-                   "\ninterface is part of that picture; HUD detection below keeps the model off it."
-                   "\n\nFinished look, before UI: the same picture before the interface is drawn,"
-                   "\nwhich frame generation titles hand Streamline every frame. The model never"
-                   "\ntouches the HUD, and generated frames inherit the result. Does nothing in"
-                   "\ngames that do not tag that buffer; the log says when it engages."
-                   "\n\nBoth apply live. The old pre-tonemapper point is retired: the finished"
-                   "\nframe simply looks better, and the split covers the pre-tonemapper case.");
-
         bool split = config->DlssNrSplitPipeline.value_or_default();
         if (ImGui::Checkbox("Split pipeline: RR/DLSS 1:1 + NR + internal SR", &split))
             config->DlssNrSplitPipeline = split;
@@ -364,8 +347,7 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nicons. Before frame generation the UI has not been drawn yet, so there is"
                        "\nnothing there to protect.");
 
-        if (config->DlssNrInjectPoint.value_or_default() == DlssNr::INJECT_PRESENT)
-            ImGui::TextDisabled("%s", DlssNr::UiLayerStatus());
+        ImGui::TextDisabled("%s", DlssNr::UiLayerStatus());
 
         float hudDetect = config->DlssNrHudDetect.value_or_default();
         if (ImGui::SliderFloat("HUD detection", &hudDetect, 0.0f, 1.0f, "%.2f"))
@@ -382,10 +364,10 @@ void RenderMenu(Config* config, float menuResScale)
 
         ImGui::SeparatorText("Colour");
 
-        if (config->DlssNrInjectPoint.value_or_default() == DlssNr::INJECT_PRESENT)
-            ImGui::TextDisabled("SDR finished frames go over unconverted; scRGB HDR frames are\n"
-                                "encoded with their own measured white point. Everything below\n"
-                                "still applies.");
+        ImGui::TextDisabled("On the finished frame an SDR picture goes over unconverted and an scRGB\n"
+                            "one is encoded with its measured white point. In the split the frame is\n"
+                            "compressed through the proxy curve instead -- and everything the resolve\n"
+                            "does there is attenuated by the game's own tonemapper afterwards.");
 
         {
         bool autoWhite = config->DlssNrAutoWhitePoint.value_or_default();

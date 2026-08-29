@@ -417,11 +417,6 @@ sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const
         // The hudless inject point: the finished look, before the interface. Recorded here so the
         // edit precedes anything frame generation copies from this buffer.
 #if OPTI_DLSSNR
-        if (tags[i].type == sl::kBufferTypeHUDLessColor && cmdBuffer != nullptr)
-            DlssNr::EvaluateHudless((ID3D12GraphicsCommandList*) cmdBuffer,
-                                    (ID3D12Resource*) tags[i].resource->native,
-                                    (D3D12_RESOURCE_STATES) tags[i].resource->state);
-
         if (tags[i].type == sl::kBufferTypeUIColorAndAlpha && cmdBuffer != nullptr)
             DlssNr::NoteUiLayer((ID3D12GraphicsCommandList*) cmdBuffer,
                                 (ID3D12Resource*) tags[i].resource->native,
@@ -508,11 +503,6 @@ sl::Result StreamlineHooks::hkslSetTagForFrame(const sl::FrameToken& frame, cons
         }
 
 #if OPTI_DLSSNR
-        if (resources[i].type == sl::kBufferTypeHUDLessColor && cmdBuffer != nullptr)
-            DlssNr::EvaluateHudless((ID3D12GraphicsCommandList*) cmdBuffer,
-                                    (ID3D12Resource*) resources[i].resource->native,
-                                    (D3D12_RESOURCE_STATES) resources[i].resource->state);
-
         if (resources[i].type == sl::kBufferTypeUIColorAndAlpha && cmdBuffer != nullptr)
             DlssNr::NoteUiLayer((ID3D12GraphicsCommandList*) cmdBuffer,
                                 (ID3D12Resource*) resources[i].resource->native,
