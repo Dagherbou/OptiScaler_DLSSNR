@@ -2,7 +2,6 @@
 #include "menu_overlay_base.h"
 #include "menu_overlay_dx.h"
 
-
 #include <Util.h>
 #include <Logger.h>
 #include <Config.h>
