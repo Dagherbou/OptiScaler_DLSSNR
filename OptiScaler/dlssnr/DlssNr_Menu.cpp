@@ -474,6 +474,15 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nHighlight guard clamp. The blunter lever is Local tone below: at 0 the"
                        "\nmodel stops re-toning entirely, everywhere, dark corners included.");
 
+        bool skipSkin = config->DlssNrRestoreSkipSkin.value_or_default();
+        if (ImGui::Checkbox("Highlight restore skips skin", &skipSkin))
+            config->DlssNrRestoreSkipSkin = skipSkin;
+
+        HelpMarker("Keeps Highlight restore off skin, so the environment gets its punch back while"
+                   "\nthe model's softening of lit faces -- its skin work -- stays. A soft skin-tone"
+                   "\nclassifier on colour, not a person detector: wood and sand can qualify, which"
+                   "\nonly means a little less restore there.");
+
         float shadowRestore = config->DlssNrShadowRestore.value_or_default();
         if (ImGui::SliderFloat("Shadow restore", &shadowRestore, 0.0f, 1.0f, "%.2f"))
             config->DlssNrShadowRestore = shadowRestore;

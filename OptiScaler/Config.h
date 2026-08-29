@@ -336,6 +336,9 @@ class Config
     // of lamps and signs from the model's trained instinct to calm extreme highlights. 0 is off.
     CustomOptional<float> DlssNrProtectHighlights { 0.0f };
 
+    // Highlight restore leaves skin alone: the model's softening of a lit face is its skin work.
+    CustomOptional<bool> DlssNrRestoreSkipSkin { false };
+
     // HUD detection at the finished frame: the edit fades where a mask says interface -- exact where
     // the game tags its UI layer through Streamline, estimated elsewhere. Strength; 0 is off.
     CustomOptional<float> DlssNrHudDetect { 0.0f };

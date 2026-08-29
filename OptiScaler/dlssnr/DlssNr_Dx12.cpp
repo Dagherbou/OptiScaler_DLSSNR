@@ -1101,6 +1101,7 @@ void EvaluateHudless(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* hudless
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
+        resolveParams.restoreSkipSkin = cfg.DlssNrRestoreSkipSkin.value_or_default() ? 1.0f : 0.0f;
         resolveParams.hudDetect = 0.0f; // there is no HUD here -- that is the whole point
         resolveParams.shadowRestore = cfg.DlssNrShadowRestore.value_or_default();
 
@@ -1717,6 +1718,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
+        resolveParams.restoreSkipSkin = cfg.DlssNrRestoreSkipSkin.value_or_default() ? 1.0f : 0.0f;
         resolveParams.hudDetect = 0.0f; // before the interface is drawn
         resolveParams.shadowRestore = cfg.DlssNrShadowRestore.value_or_default();
         resolveParams.passthrough = isHdrBuffer ? 0u : 1u;
@@ -2384,6 +2386,7 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
+        resolveParams.restoreSkipSkin = cfg.DlssNrRestoreSkipSkin.value_or_default() ? 1.0f : 0.0f;
         resolveParams.hudDetect = hudDetect;
         resolveParams.shadowRestore = cfg.DlssNrShadowRestore.value_or_default();
 
