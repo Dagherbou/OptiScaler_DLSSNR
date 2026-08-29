@@ -50,6 +50,9 @@ void NoteUiLayer(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* ui, D3D12_R
 
 const char* SplitStatus();
 
+// Whether the game's UI layer reached the model recently, for the panel.
+const char* UiLayerStatus();
+
 // Whether the game-matched proxy curve is measuring or matched; empty when Reinhard is in use.
 const char* ProxyCurveStatus();
 

@@ -361,6 +361,9 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nicons. Before frame generation the UI has not been drawn yet, so there is"
                        "\nnothing there to protect.");
 
+        if (config->DlssNrInjectPoint.value_or_default() == DlssNr::INJECT_PRESENT)
+            ImGui::TextDisabled("%s", DlssNr::UiLayerStatus());
+
         float hudDetect = config->DlssNrHudDetect.value_or_default();
         if (ImGui::SliderFloat("HUD detection", &hudDetect, 0.0f, 1.0f, "%.2f"))
             config->DlssNrHudDetect = hudDetect;

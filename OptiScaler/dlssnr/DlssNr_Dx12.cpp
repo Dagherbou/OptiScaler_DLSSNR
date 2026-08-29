@@ -1247,9 +1247,29 @@ void NoteUiLayer(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* ui, D3D12_R
         cmdList->CopyResource(g_nr.uiClone, ui);
         Barrier(cmdList, ui, D3D12_RESOURCE_STATE_COPY_SOURCE, state);
         g_nr.uiCloneFrame = g_frames;
+
+        static bool saidUi = false;
+
+        if (!saidUi)
+        {
+            saidUi = true;
+            LOG_INFO("DLSS-NR: the game tags its UI layer through Streamline ({}x{}, format {}); it goes to "
+                     "the model as UI and UIAlpha and makes HUD detection exact",
+                     (unsigned int) desc.Width, desc.Height, (int) desc.Format);
+        }
     }
 
     device->Release();
+}
+
+// Whether the game's UI layer reached the model recently.
+const char* UiLayerStatus()
+{
+    if (g_nr.uiClone == nullptr)
+        return "UI layer: the game has not tagged one (Cyberpunk tags it with frame generation on)";
+
+    return g_frames - g_nr.uiCloneFrame <= 4 ? "UI layer: arriving from the game -- the model sees the HUD as the game draws it"
+                                             : "UI layer: seen earlier, not this frame";
 }
 
 const char* SplitStatus() { return g_splitStatus; }
@@ -1659,6 +1679,13 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         unsigned int style = 0;
         const NVSDK_NGX_Result styleResult = g_nr.capabilityParams->Get("DLSSNR.Style", &style);
         LOG_DEBUG("DLSS-NR readback DLSSNR.Style -> {} (result 0x{:X})", style, (uint32_t) styleResult);
+
+        {
+            float globalToneBack = -1.0f;
+            const NVSDK_NGX_Result gtResult = g_nr.capabilityParams->Get("DLSSNR.GlobalToneStrength", &globalToneBack);
+            LOG_INFO("DLSS-NR readback DLSSNR.GlobalToneStrength -> {} (result 0x{:X}, we wrote {})",
+                     globalToneBack, (uint32_t) gtResult, cfg.DlssNrGlobalTone.value_or_default());
+        }
 
         // The preset is the last control whose arrival has never been checked, and three of them look
         // identical in play. Either it is not landing or the presets really are alike.
