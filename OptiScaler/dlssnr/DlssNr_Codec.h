@@ -132,6 +132,42 @@ float CurveToned(float luma)
     return lerp(CurveAt(i), CurveAt(i + 1), x - i);
 }
 
+// The curve read backwards: given a toned luminance, the scene luminance that produces it. The table
+// is monotonic, so this is a lookup rather than an approximation -- which is the point. Scaling a
+// pixel by a ratio only undoes a curve that is a straight line through zero; a real tone curve is
+// compressive, so the ratio under-applies the model's edit, worst in the highlights.
+float CurveInverse(float toned)
+{
+    if (toned <= CurveAt(0))
+        return exp2(gCurveMinLog);
+
+    [unroll]
+    for (int i = 0; i < 23; ++i)
+    {
+        float a = CurveAt(i);
+        float b = CurveAt(i + 1);
+
+        if (toned <= b)
+        {
+            float f = saturate((toned - a) / max(b - a, 1e-6));
+            float la = gCurveMinLog + gCurveRangeLog * (i / 23.0);
+            float lb = gCurveMinLog + gCurveRangeLog * ((i + 1) / 23.0);
+            return exp2(lerp(la, lb, f));
+        }
+    }
+
+    // Above the table the curve has flattened; carry on proportionally rather than clamping, so a
+    // bright highlight can still be brightened.
+    float top = exp2(gCurveMinLog + gCurveRangeLog);
+    return top * (toned / max(CurveAt(23), 1e-6));
+}
+
+// The soft knee, read backwards.
+float UnKnee(float y)
+{
+    return y <= 0.75 ? y : 0.75 - 0.25 * log(max(1.0 - (y - 0.75) / 0.25, 1e-4));
+}
+
 Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
 Texture2D<float4>   gModel    : register(t1);  // resolve: what the model returned.
 Texture2D<float4>   gOriginal : register(t2);  // resolve: the untouched frame.
@@ -465,6 +501,26 @@ void main(uint3 id : SV_DispatchThreadID)
         float appliedLuma = dot(appliedScene, kLuma);
         float3 appliedChroma = appliedScene - appliedLuma;
         float gain = max(1.0 + appliedLuma * slope / originalLuma, 0.0);
+
+        // With the game's curve fitted, the edit does not have to be scaled back by a ratio: the
+        // curve can be read backwards. Take what the model asked for, undo the knee and the colour
+        // matrix, and ask the curve which scene luminance produces it. That lands the edit at the
+        // strength the model intended instead of a damped version of it -- the ratio is exact only
+        // for a straight line, and a tone curve is anything but.
+        if (gCurveMode == 1)
+        {
+            float3 targetDisplay = proxy + applied;
+            float targetLuma = dot(targetDisplay, kLuma);
+            float unkneed = UnKnee(targetLuma);
+
+            if (targetLuma > 1e-6)
+                targetDisplay *= unkneed / targetLuma;
+
+            float3 preMatrix = mul(Inverse3(CurveMatrix()), targetDisplay);
+            float sceneLuma = CurveInverse(max(dot(preMatrix, kLuma), 0.0));
+            gain = max(sceneLuma / originalLuma, 0.0);
+        }
+
         result = original * gain + appliedChroma * slope;
     }
 

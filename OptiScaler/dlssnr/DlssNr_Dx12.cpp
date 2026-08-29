@@ -1350,7 +1350,9 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     // the resolve adds the model's edit back at full scale.
     encodeParams.passthrough = isHdrBuffer ? 0u : 1u;
     encodeParams.whitePoint = whitePoint;
-    encodeParams.curveMode = proxyMode;
+    // Match only takes effect once a fit exists; until then the table is empty and the shader would
+    // read a curve of zeros, so it falls back to the plain proxy.
+    encodeParams.curveMode = (proxyMode == 1 && !g_curve.ready) ? 2u : proxyMode;
     FillCurve(encodeParams, curveMatch);
     encodeParams.width = width;
     encodeParams.height = height;
@@ -1468,7 +1470,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         codec::Params resolveParams {};
         resolveParams.mode = codec::MODE_RESOLVE;
         resolveParams.whitePoint = whitePoint;
-        resolveParams.curveMode = proxyMode;
+        resolveParams.curveMode = (proxyMode == 1 && !g_curve.ready) ? 2u : proxyMode;
         FillCurve(resolveParams, curveMatch);
         resolveParams.width = width;
         resolveParams.height = height;
