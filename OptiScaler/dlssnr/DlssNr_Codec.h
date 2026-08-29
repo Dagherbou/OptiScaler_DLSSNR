@@ -372,7 +372,24 @@ void main(uint3 id : SV_DispatchThreadID)
     if (gHudDetect > 0.0)
         applied *= 1.0 - saturate(originalSample.a) * gHudDetect;
 
-    float3 result = original + applied * slope;
+    float3 result;
+
+    if (gPassthrough != 0 || originalLuma < 0.002)
+    {
+        // Display space (or near black): an offset lands as an offset.
+        result = original + applied * slope;
+    }
+    else
+    {
+        // Linear light: an achromatic offset is a colour change -- adding equal amounts to R, G and B
+        // pulls every colour toward grey, and the game's per-channel tone curve then bends whatever
+        // remains. That was the split's colour drift. The luminance part of the edit is applied as a
+        // ratio instead, which preserves chromaticity exactly; the colour part stays additive.
+        float appliedLuma = dot(applied, kLuma);
+        float3 appliedChroma = applied - appliedLuma;
+        float gain = max(1.0 + appliedLuma * slope / originalLuma, 0.0);
+        result = original * gain + appliedChroma * slope;
+    }
 
     // A detail pass should not be able to restyle anything, whatever comes back -- and that includes
     // restyling by accident. The old clamp bounded each channel separately, and on a saturated pixel
