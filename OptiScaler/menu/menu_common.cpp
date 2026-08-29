@@ -6102,10 +6102,12 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
         ImGui::SeparatorText("Colour");
 
         if (config->DlssNrInjectPoint.value_or_default() == DlssNr::INJECT_PRESENT)
-        {
-            ImGui::TextUnformatted("Not used here: the finished frame needs no conversion.");
-        }
-        else
+            ImGui::TextDisabled("SDR finished frames go over unconverted; scRGB HDR frames are
+"
+                                "encoded with their own measured white point. Everything below
+"
+                                "still applies.");
+
         {
         bool autoWhite = config->DlssNrAutoWhitePoint.value_or_default();
         if (ImGui::Checkbox("Automatic white point", &autoWhite))
