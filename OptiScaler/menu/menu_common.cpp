@@ -5776,7 +5776,9 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
             config->DlssNrEnabled = enabled;
 
         ShowHelpMarker("Synthesises detail in the upscaler's output, before frame generation sees it."
-                       "\n\nRequires nvngx_dlssnr.dll and nvngx.dll_dlssnr.dll beside OptiScaler."
+                       "\n\nNeeds two similarly named files beside OptiScaler, one character apart:"
+                       "\n  nvngx_dlssnr.dll       NVIDIA's model (~165 MB) -- you supply it"
+                       "\n  nvngx.dll_dlssnr.dll   the forwarder (~13 KB) -- ships in this package"
                        "\nUndocumented and driven directly, so none of this is officially supported.");
 
         if (!DlssNr::IsRunning())
