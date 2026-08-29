@@ -6102,10 +6102,8 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
         ImGui::SeparatorText("Colour");
 
         if (config->DlssNrInjectPoint.value_or_default() == DlssNr::INJECT_PRESENT)
-            ImGui::TextDisabled("SDR finished frames go over unconverted; scRGB HDR frames are
-"
-                                "encoded with their own measured white point. Everything below
-"
+            ImGui::TextDisabled("SDR finished frames go over unconverted; scRGB HDR frames are\n"
+                                "encoded with their own measured white point. Everything below\n"
                                 "still applies.");
 
         {
