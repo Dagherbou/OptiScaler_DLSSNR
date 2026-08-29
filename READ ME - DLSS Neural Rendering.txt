@@ -1,6 +1,6 @@
 DLSS 5 Neural Rendering for OptiScaler
 ======================================
-edited by daglander, for all mortals
+an attempt at DLSS Neural Rendering, by dag
 
 This is OptiScaler with an extra pass: NVIDIA's Neural Rendering model, run over the finished frame to
 synthesise detail. NVIDIA ships no public integration for it, so it is driven directly. Nothing here is
