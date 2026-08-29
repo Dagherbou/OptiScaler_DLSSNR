@@ -305,13 +305,24 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nNot the same scale as the super resolution or ray reconstruction presets --"
                        "\nthe same number means something different here.");
 
-        static const char* nrStyleNames[] = { "Natural (default)", "Cinematic" };
+        static const char* nrStyleNames[] = { "Default (standard)", "Natural", "Cinematic" };
         int style = (int) config->DlssNrStyle.value_or_default();
+
+        if (style > 2)
+            style = 2;
+
         if (ImGui::Combo("Style", &style, nrStyleNames, IM_ARRAYSIZE(nrStyleNames)))
             config->DlssNrStyle = (uint32_t) style;
 
-        HelpMarker("The model has two, and only two. A slider offering more was a guess, and it"
-                       "\nmatched the observation that most of its positions did nothing.");
+        HelpMarker("The model's own processing profiles."
+                   "\n\nDefault (standard): the strongest. Boosts local contrast and deepens"
+                   "\nlighting, and can oversaturate or look stylised -- most of what reads as"
+                   "\n'the model changed my game's look' is this profile."
+                   "\n\nNatural: the same detail work with a gentler hand. Keeps skin tones and"
+                   "\ntonal balance closer to what the game rendered."
+                   "\n\nCinematic: tones down the shine and over-processing for a film-like look."
+                   "\n\nRead when the model is built, so a change rebuilds it after a moment. The"
+                   "\nnames come from community testing; NVIDIA ships no names in the binaries.");
 
         float intensity = config->DlssNrIntensity.value_or_default();
         if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 2.0f, "%.2f"))
@@ -328,14 +339,6 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::SliderFloat("Local tone", &localTone, 0.0f, 2.0f, "%.2f"))
             config->DlssNrLocalTone = localTone;
 
-        float globalTone = config->DlssNrGlobalTone.value_or_default();
-        if (ImGui::SliderFloat("Global tone", &globalTone, 0.0f, 2.0f, "%.2f"))
-            config->DlssNrGlobalTone = globalTone;
-
-        HelpMarker("The model's overall re-exposure of the scene, as opposed to the local re-toning"
-                   "\nabove. A parameter NVIDIA's own integration sets that was found in their"
-                   "\nStreamline plugin; 1 is the model's default behaviour, 0 keeps the game's"
-                   "\nglobal tone and lets the model add detail only. Read when the model is built.");
 
         float skin = config->DlssNrSkinStructure.value_or_default();
         if (ImGui::SliderFloat("Skin structure", &skin, -1.0f, 2.0f, "%.2f"))
@@ -475,14 +478,6 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nHighlight guard clamp. The blunter lever is Local tone below: at 0 the"
                        "\nmodel stops re-toning entirely, everywhere, dark corners included.");
 
-        bool skipSkin = config->DlssNrRestoreSkipSkin.value_or_default();
-        if (ImGui::Checkbox("Highlight restore skips skin", &skipSkin))
-            config->DlssNrRestoreSkipSkin = skipSkin;
-
-        HelpMarker("Keeps Highlight restore off skin, so the environment gets its punch back while"
-                   "\nthe model's softening of lit faces -- its skin work -- stays. A soft skin-tone"
-                   "\nclassifier on colour, not a person detector: wood and sand can qualify, which"
-                   "\nonly means a little less restore there.");
 
         float shadowRestore = config->DlssNrShadowRestore.value_or_default();
         if (ImGui::SliderFloat("Shadow restore", &shadowRestore, 0.0f, 1.0f, "%.2f"))

@@ -76,7 +76,7 @@ cbuffer Params : register(b0)
     uint  gCurveMode;    // 0: Reinhard against the white point. 1: the fitted curve and matrix below.
     float gCurveMinLog;  // log2 luminance of the curve's first entry
     float gCurveRangeLog; // log2 span across its 24 entries
-    float gRestoreSkipSkin; // 1: highlight restore leaves skin alone; 0: applies everywhere
+    uint  gPad1;
     uint  gPad2;
     uint  gPad3;
     float4 gCurve[6];    // 24 toned (linear-display) luminance values, log-spaced in scene luminance
@@ -96,20 +96,6 @@ float3x3 Inverse3(float3x3 m)
     float det = dot(m[0], c0);
     float3x3 adj = float3x3(c0.x, c1.x, c2.x, c0.y, c1.y, c2.y, c0.z, c1.z, c2.z);
     return abs(det) > 1e-6 ? adj / det : float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
-}
-
-// A soft skin-tone classifier on gamma-space colour: the classic YCbCr region skin occupies. Not a
-// person detector -- wood and sand can qualify -- but for deciding where a restore should hold back it
-// errs in the harmless direction.
-float SkinWeight(float3 rgb)
-{
-    float y = 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
-    float cb = 0.5 - 0.168736 * rgb.r - 0.331264 * rgb.g + 0.5 * rgb.b;
-    float cr = 0.5 + 0.5 * rgb.r - 0.418688 * rgb.g - 0.081312 * rgb.b;
-    float inCr = smoothstep(0.50, 0.53, cr) * (1.0 - smoothstep(0.66, 0.70, cr));
-    float inCb = smoothstep(0.28, 0.31, cb) * (1.0 - smoothstep(0.48, 0.52, cb));
-    float lit = smoothstep(0.10, 0.20, y);
-    return inCr * inCb * lit;
 }
 
 // The fitted proxy curve: what the game's own tonemapper does to luminance, learned by matching the
@@ -408,18 +394,12 @@ void main(uint3 id : SV_DispatchThreadID)
         float relLuma = saturate(dot(original, kLuma) / max(gWhitePoint, 1e-4));
         float appliedLuma = dot(applied, kLuma);
 
-        // Highlight restore: the model's darkening of bright regions is pulled back -- except on skin,
-        // when asked: the model's softening of a lit face is its skin work, not a muted highlight.
-        float skinHold = 1.0;
-
-        if (gRestoreSkipSkin > 0.0)
-        {
-            float3 gammaRgb = gPassthrough != 0 ? proxy : LinearToSrgb(saturate(proxy));
-            skinHold = 1.0 - SkinWeight(gammaRgb) * gRestoreSkipSkin;
-        }
-
+        // Highlight restore: the model's darkening of bright regions is pulled back. A colour test for
+        // skin was tried here and removed -- wood, sand and brick sit in the same chromaticity region,
+        // so it withheld the restore from half the environment. The model's own Style and Skin
+        // structure controls are where skin belongs.
         if (appliedLuma < 0.0)
-            applied -= appliedLuma * gProtectHighlights * smoothstep(0.25, 0.9, relLuma) * skinHold;
+            applied -= appliedLuma * gProtectHighlights * smoothstep(0.25, 0.9, relLuma);
 
         // Shadow restore, the mirror: the model lifts dark regions toward its trained idea of a
         // well-exposed picture, and that lift is the other half of the washed-out look -- the alley
@@ -510,7 +490,7 @@ struct Params
     unsigned int curveMode;
     float curveMinLog;
     float curveRangeLog;
-    float restoreSkipSkin;
+    unsigned int pad1;
     unsigned int pad2;
     unsigned int pad3;
     float curve[24];

@@ -126,7 +126,6 @@ struct NrState
     float builtSkinStructure = 0.0f;
     bool builtAutoMask = false;
     bool builtUiCorrection = false;
-    float builtGlobalTone = 1.0f;
     unsigned long long settledAt = 0;
 
     // Once something fails there is no recovering it mid-session, and retrying every frame turns a
@@ -849,7 +848,9 @@ void SetExtras(const Config& cfg, ID3D12Resource* ui, ID3D12Resource* backbuffer
     if (g_nr.setExtras == nullptr || g_nr.capabilityParams == nullptr)
         return;
 
-    g_nr.setExtras(g_nr.capabilityParams, cfg.DlssNrGlobalTone.value_or_default(), ui, ui, backbuffer,
+    // Global tone is written at the model's own default: the control that exposed it changed nothing
+    // that could be seen, and the block persists, so a value still has to be put there.
+    g_nr.setExtras(g_nr.capabilityParams, 1.0f, ui, ui, backbuffer,
                    uiWidth, uiHeight, bbWidth, bbHeight);
 }
 
@@ -862,8 +863,7 @@ bool TuningMatchesFeature(const Config& cfg)
            g_nr.builtLocalTone == cfg.DlssNrLocalTone.value_or_default() &&
            g_nr.builtSkinStructure == cfg.DlssNrSkinStructure.value_or_default() &&
            g_nr.builtAutoMask == cfg.DlssNrAutoMask.value_or_default() &&
-           g_nr.builtUiCorrection == cfg.DlssNrUiCorrection.value_or_default() &&
-           g_nr.builtGlobalTone == cfg.DlssNrGlobalTone.value_or_default();
+           g_nr.builtUiCorrection == cfg.DlssNrUiCorrection.value_or_default();
 }
 
 void RecordBuiltTuning(const Config& cfg)
@@ -876,7 +876,6 @@ void RecordBuiltTuning(const Config& cfg)
     g_nr.builtSkinStructure = cfg.DlssNrSkinStructure.value_or_default();
     g_nr.builtAutoMask = cfg.DlssNrAutoMask.value_or_default();
     g_nr.builtUiCorrection = cfg.DlssNrUiCorrection.value_or_default();
-    g_nr.builtGlobalTone = cfg.DlssNrGlobalTone.value_or_default();
 }
 
 // Waits for every list this has submitted. Releasing the feature before that is what took the game down
@@ -1257,7 +1256,6 @@ void EvaluateHudless(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* hudless
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
-        resolveParams.restoreSkipSkin = cfg.DlssNrRestoreSkipSkin.value_or_default() ? 1.0f : 0.0f;
         resolveParams.hudDetect = 0.0f; // there is no HUD here -- that is the whole point
         resolveParams.shadowRestore = cfg.DlssNrShadowRestore.value_or_default();
 
@@ -1842,13 +1840,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         const NVSDK_NGX_Result styleResult = g_nr.capabilityParams->Get("DLSSNR.Style", &style);
         LOG_DEBUG("DLSS-NR readback DLSSNR.Style -> {} (result 0x{:X})", style, (uint32_t) styleResult);
 
-        {
-            float globalToneBack = -1.0f;
-            const NVSDK_NGX_Result gtResult = g_nr.capabilityParams->Get("DLSSNR.GlobalToneStrength", &globalToneBack);
-            LOG_INFO("DLSS-NR readback DLSSNR.GlobalToneStrength -> {} (result 0x{:X}, we wrote {})",
-                     globalToneBack, (uint32_t) gtResult, cfg.DlssNrGlobalTone.value_or_default());
-        }
-
         // The preset is the last control whose arrival has never been checked, and three of them look
         // identical in play. Either it is not landing or the presets really are alike.
         unsigned int preset = 0;
@@ -1879,7 +1870,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
-        resolveParams.restoreSkipSkin = cfg.DlssNrRestoreSkipSkin.value_or_default() ? 1.0f : 0.0f;
         resolveParams.hudDetect = 0.0f; // before the interface is drawn
         resolveParams.shadowRestore = cfg.DlssNrShadowRestore.value_or_default();
         resolveParams.passthrough = isHdrBuffer ? 0u : 1u;
@@ -2549,7 +2539,6 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
-        resolveParams.restoreSkipSkin = cfg.DlssNrRestoreSkipSkin.value_or_default() ? 1.0f : 0.0f;
         resolveParams.hudDetect = hudDetect;
         resolveParams.shadowRestore = cfg.DlssNrShadowRestore.value_or_default();
 

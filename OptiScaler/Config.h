@@ -262,12 +262,10 @@ class Config
     CustomOptional<uint32_t> DlssNrInjectPoint { 1 };
     CustomOptional<uint32_t> DlssNrPreset { 0 };
     CustomOptional<float> DlssNrIntensity { 1.0f };
+    // 0 default (standard), 1 natural, 2 cinematic -- the model's own processing profiles.
     CustomOptional<uint32_t> DlssNrStyle { 0 };
     CustomOptional<float> DlssNrLocalStructure { 1.0f };
     CustomOptional<float> DlssNrLocalTone { 1.0f };
-    // The model's global tone strength -- its overall re-exposure of the scene, as opposed to the local
-    // one. NVIDIA's own integration sets it; 1 is the model's default behaviour, 0 keeps the game's tone.
-    CustomOptional<float> DlssNrGlobalTone { 1.0f };
     // -1 means follow local structure, which is the model's own default. It is not a strength of zero.
     CustomOptional<float> DlssNrSkinStructure { -1.0f };
     CustomOptional<bool> DlssNrAutoMask { true };
@@ -335,9 +333,6 @@ class Config
     // The top fraction of the brightness range where the model's edit fades out, protecting the punch
     // of lamps and signs from the model's trained instinct to calm extreme highlights. 0 is off.
     CustomOptional<float> DlssNrProtectHighlights { 0.0f };
-
-    // Highlight restore leaves skin alone: the model's softening of a lit face is its skin work.
-    CustomOptional<bool> DlssNrRestoreSkipSkin { false };
 
     // HUD detection at the finished frame: the edit fades where a mask says interface -- exact where
     // the game tags its UI layer through Streamline, estimated elsewhere. Strength; 0 is off.
