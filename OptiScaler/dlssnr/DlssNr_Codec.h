@@ -88,6 +88,31 @@ float3 ClampAp1(float3 color)
     return mul(ap1_to_bt709, max(mul(bt709_to_ap1, color), float3(0.0, 0.0, 0.0)));
 }
 
+Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
+Texture2D<float4>   gModel    : register(t1);  // resolve: what the model returned.
+Texture2D<float4>   gOriginal : register(t2);  // resolve: the untouched frame.
+Texture2D<float4>   gMotion   : register(t3);  // resolve, accumulating: the game's motion vectors.
+Texture2D<float4>   gPrevEdit : register(t4);  // resolve, accumulating: last frame's accumulated edit.
+RWTexture2D<float4> gTarget   : register(u0);  // encode: the proxy. resolve: the frame.
+RWTexture2D<float4> gKeep     : register(u1);  // encode: the untouched copy. resolve: the edit history.
+SamplerState        gLinear   : register(s0);  // so the edit can be read at a different size
+
+static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
+
+// sRGB rather than a plain 2.2 power: it is what an SDR game buffer actually carries, and the model was
+// trained on those.
+float3 LinearToSrgb(float3 v)
+{
+    v = saturate(v);
+    return lerp(v * 12.92, 1.055 * pow(max(v, 1e-8), 1.0 / 2.4) - 0.055, step(0.0031308, v));
+}
+
+float3 SrgbToLinear(float3 v)
+{
+    v = saturate(v);
+    return lerp(v / 12.92, pow((v + 0.055) / 1.055, 2.4), step(0.04045, v));
+}
+
 // The edit at an arbitrary position, exactly as the resolve computes its own.
 float3 EditAt(float2 uvq)
 {
