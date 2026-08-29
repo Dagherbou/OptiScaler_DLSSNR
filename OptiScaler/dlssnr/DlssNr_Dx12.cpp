@@ -162,6 +162,28 @@ float g_autoWhitePoint = 2.0f;
 bool g_autoWhitePointSettled = false;
 unsigned long long g_frames = 0;
 
+// A capture requested from outside the game: when the render path has no fence of its own, the write
+// waits until this frame count, by which point the GPU is certainly past the copies.
+unsigned long long g_captureWriteAtFrame = 0;
+
+// Dropping a file named dlssnr-capture.trigger beside OptiScaler requests a capture, so a session can
+// be asked for one from outside the game -- no alt-tab, no menu. Checked once a second, effectively.
+void CheckCaptureTrigger()
+{
+    if ((g_frames % 60) != 0)
+        return;
+
+    std::error_code ec;
+    const auto trigger = Util::DllPath().remove_filename() / "dlssnr-capture.trigger";
+
+    if (std::filesystem::exists(trigger, ec))
+    {
+        std::filesystem::remove(trigger, ec);
+        DlssNr::RequestCapture(capture::kMaxFrames);
+        LOG_INFO("DLSS-NR capture requested by trigger file");
+    }
+}
+
 // The encoded mean is aimed here. Mid-grey rather than anything brighter: the model has to see both the
 // shadow detail it might lift and the highlights it must not blow out.
 constexpr float kTargetEncodedMean = 0.45f;
@@ -871,6 +893,18 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     // of the game's exposure rather than a number worth asking anyone to guess: measured means of 0.065,
     // 1.8 and 185 have all been seen in this one game.
     ++g_frames;
+    CheckCaptureTrigger();
+
+    if (g_captureWriteAtFrame != 0 && g_frames >= g_captureWriteAtFrame)
+    {
+        g_captureWriteAtFrame = 0;
+        const auto captureDir = Util::DllPath().remove_filename() / "dlssnr-capture";
+        const auto written = g_capture.write(captureDir);
+
+        if (!written.empty())
+            LOG_INFO("DLSS-NR wrote matched before/after frames to {}", written);
+    }
+
     const bool autoWhite = cfg.DlssNrAutoWhitePoint.value_or_default();
 
     if (autoWhite)
@@ -1094,6 +1128,20 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
             g_nr.editIndex = 1 - g_nr.editIndex;
             g_nr.editWarm = true;
         }
+
+        // On-demand capture works in this path too: the staging copy still holds the frame as the
+        // upscaler produced it, and the edited frame is the output itself. The write happens a few
+        // frames later, once the GPU is certainly past these copies -- this path has no fence of its
+        // own.
+        if (g_capture.isActive())
+        {
+            g_capture.record(cmdList, device, g_nr.colorCopy,
+                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, target,
+                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+            if (g_capture.readyToWrite() && g_captureWriteAtFrame == 0)
+                g_captureWriteAtFrame = g_frames + 8;
+        }
     }
     else
     {
@@ -1270,6 +1318,7 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
     }
 
     ++g_frames;
+    CheckCaptureTrigger();
 
     const unsigned int slot = backBufferIndex % kPresentAllocators;
     ID3D12CommandAllocator* allocator = g_nr.presentAllocators[slot];
