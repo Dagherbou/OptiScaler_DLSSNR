@@ -406,6 +406,31 @@ void RenderMenu(Config* config, float menuResScale)
                            "\nit works on a dark, featureless frame.");
         }
 
+        {
+            static const char* curveNames[] = { "Reinhard (white point above)", "Match the game's tonemapper" };
+            int curve = (int) config->DlssNrProxyCurve.value_or_default();
+            if (curve > 1)
+                curve = 1;
+            if (ImGui::Combo("Proxy curve", &curve, curveNames, IM_ARRAYSIZE(curveNames)))
+                config->DlssNrProxyCurve = (uint32_t) curve;
+
+            HelpMarker("How the linear frame is compressed for the model, in the split and the DX11"
+                       "\nbridge -- the arrangements where the model sees the frame before the game's"
+                       "\ntonemapper. Reinhard is a generic guess. Match learns the game's own curve"
+                       "\nby comparing the linear frame with the finished one, twice a second, so the"
+                       "\nmodel is shown the game's actual contrast and shadow depth -- the statistics"
+                       "\nit was trained on -- and the edit is sized for the curve it will pass through."
+                       "\nEncode and resolve stay exact inverses either way."
+                       "\n\nNeeds an SDR display output to learn from; falls back to Reinhard until"
+                       "\nthe first measurement lands. Does nothing at the finished-frame and hudless"
+                       "\ninject points, which are already finished pictures.");
+
+            const char* curveStatus = DlssNr::ProxyCurveStatus();
+
+            if (curveStatus[0] != 0)
+                ImGui::TextDisabled("%s", curveStatus);
+        }
+
         float wpScale = config->DlssNrWhitePointScale.value_or_default();
         if (ImGui::SliderFloat("White point scale", &wpScale, 0.5f, 2.0f, "%.2fx"))
             config->DlssNrWhitePointScale = wpScale;

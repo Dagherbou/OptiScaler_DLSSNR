@@ -73,7 +73,47 @@ cbuffer Params : register(b0)
     float gProtectHighlights; // the top fraction of the range where the edit fades out; 0 is off
     float gHudDetect;    // strength of the HUD mask carried in the original's alpha; 0 is off
     float gShadowRestore; // pulls back the brightening of dark regions; 0 is off
+    uint  gCurveMode;    // 0: Reinhard against the white point. 1: the fitted curve below.
+    float gCurveMinLog;  // log2 luminance of the curve's first entry
+    float gCurveRangeLog; // log2 span across its 32 entries
+    uint  gPad1;
+    uint  gPad2;
+    uint  gPad3;
+    float4 gCurve[8];    // 32 toned (linear-display) luminance values, log-spaced in scene luminance
 };
+
+// The fitted proxy curve: what the game's own tonemapper does to luminance, learned by matching the
+// linear frame's histogram to the finished frame's. Log-spaced in scene luminance, linear in between.
+float CurveAt(int i)
+{
+    i = clamp(i, 0, 31);
+    return gCurve[i >> 2][i & 3];
+}
+
+float CurvePos(float luma)
+{
+    float lg = log2(max(luma, 1e-6));
+    return saturate((lg - gCurveMinLog) / max(gCurveRangeLog, 1e-4)) * 31.0;
+}
+
+float CurveToned(float luma)
+{
+    float x = CurvePos(luma);
+    int i = (int) floor(x);
+    return lerp(CurveAt(i), CurveAt(i + 1), x - i);
+}
+
+// d(scene luminance) / d(toned luminance) at this luminance: the slope the resolve needs to land an
+// edit made in the toned picture as the equivalent edit in the scene.
+float CurveSlope(float luma)
+{
+    float x = CurvePos(luma);
+    int i = clamp((int) floor(x), 0, 30);
+    float l0 = exp2(gCurveMinLog + gCurveRangeLog * (i / 31.0));
+    float l1 = exp2(gCurveMinLog + gCurveRangeLog * ((i + 1) / 31.0));
+    float dT = max(CurveAt(i + 1) - CurveAt(i), 1e-5);
+    return (l1 - l0) / dT;
+}
 
 Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
 Texture2D<float4>   gModel    : register(t1);  // resolve: what the model returned.
@@ -175,7 +215,7 @@ void main(uint3 id : SV_DispatchThreadID)
         // Reinhard on luminance alone, with chroma carried along untouched. Compressing each channel
         // separately is what shifted the hue of every saturated highlight.
         float luma = dot(frame, kLuma);
-        float toned = (luma / gWhitePoint) / (1.0 + luma / gWhitePoint);
+        float toned = gCurveMode != 0 ? CurveToned(luma) : (luma / gWhitePoint) / (1.0 + luma / gWhitePoint);
         float scale = luma > 1e-6 ? toned / luma : 0.0;
 
         gTarget[id.xy] = float4(LinearToSrgb(frame * scale), source.a);
@@ -198,7 +238,8 @@ void main(uint3 id : SV_DispatchThreadID)
     // whitePoint + luminance -- bounded everywhere, unlike the inverse of the curve.
     float originalLuma = dot(original, kLuma);
     // With no curve applied there is no slope to undo: the edit lands as it is.
-    float slope = gPassthrough != 0 ? 1.0 : gWhitePoint + originalLuma;
+    float slope = gPassthrough != 0 ? 1.0
+                  : (gCurveMode != 0 ? CurveSlope(originalLuma) : gWhitePoint + originalLuma);
 
     if (gDebugView == 1)
     {
@@ -377,7 +418,17 @@ struct Params
     float protectHighlights;
     float hudDetect;
     float shadowRestore;
+    unsigned int curveMode;
+    float curveMinLog;
+    float curveRangeLog;
+    unsigned int pad1;
+    unsigned int pad2;
+    unsigned int pad3;
+    float curve[32];
 };
+
+static_assert(sizeof(Params) % 4 == 0, "root constants are dwords");
+static_assert(sizeof(Params) / 4 <= 60, "root constants must leave room for the descriptor table");
 
 // A typeless resource cannot be viewed, and the buffer the upscaler writes is occasionally declared that
 // way, so the typed member of the same family is substituted.

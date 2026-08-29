@@ -35,7 +35,7 @@ the resources passed in, which only coincides for the conventional Output Scalin
 | `DlssNr_Split.h/.cpp` | the split pipeline (RR 1:1 → NR → internal enlargement), OS absorption, native-1:1 serving |
 | `DlssNr_Menu.cpp` | the settings panel |
 | `DlssNr_Codec.h` | the compute shader: encode (Reinhard-on-luma proxy), resolve (delta composite, lighting-band accumulator, restores, hue-preserving clamp), downsample |
-| `DlssNr_Probe.h` | frame reduction for the white point meter |
+| `DlssNr_Probe.h` | frame reduction and readback for the white point meter and the proxy-curve fit |
 | `DlssNr_Capture.h` | matched before/after frame dumps |
 | `forwarder/` | the caller-gate shim, built by `dlssnr_forwarder.vcxproj` into the release layout |
 
@@ -58,6 +58,11 @@ builds with everything else.
   were paid for with device hangs.
 - **Two paths, one lock.** The render path runs on the game's render thread and the finished-frame
   path on the present thread; a mutex covers both.
+- **The proxy curve.** In arrangements where the model sees the linear frame (the split, the DX11
+  bridge), it is shown a compressed proxy. Reinhard is the generic default; "Match the game's
+  tonemapper" fits a 32-entry curve by histogram-matching the linear frame against the finished
+  frame (measured at present, SDR only) and passes it to the shader as root constants -- no extra
+  descriptors. Encode and resolve stay exact inverses through the curve's slope.
 - **Temporal filtering of the edit's detail band was measured to be a dead end** (twice, including
   with a trained DLAA pass): the model re-decides detail with the framing. Only the lighting band is
   accumulated. Detail stability comes from routing the pass through a real upscaler (the split).

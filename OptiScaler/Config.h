@@ -324,6 +324,11 @@ class Config
     // Higher means highlights sit lower on the curve and the model treats them as less extreme.
     CustomOptional<float> DlssNrWhitePointScale { 1.0f };
 
+    // The curve the linear frame is compressed through for the model. 0: Reinhard against the white
+    // point. 1: a curve fitted to the game's own tonemapper by matching the linear and finished frames'
+    // histograms, so the model sees the game's contrast and shadow depth.
+    CustomOptional<uint32_t> DlssNrProxyCurve { 0 };
+
     // The top fraction of the brightness range where the model's edit fades out, protecting the punch
     // of lamps and signs from the model's trained instinct to calm extreme highlights. 0 is off.
     CustomOptional<float> DlssNrProtectHighlights { 0.0f };

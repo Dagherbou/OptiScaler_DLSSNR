@@ -16,6 +16,8 @@
 #include <gpu_time/GpuTime_Dx12.h>
 
 #include <mutex>
+#include <algorithm>
+#include <cstring>
 
 namespace
 {
@@ -179,6 +181,93 @@ float g_autoWhitePoint = 2.0f;
 bool g_autoWhitePointSettled = false;
 float g_presentWhite = 3.0f;
 bool g_presentWhiteSettled = false;
+
+// The game-matched proxy curve. Two histograms -- the linear frame at the upscaler, the finished
+// frame at present -- matched into a 32-entry tone curve the encode uses instead of Reinhard, so the
+// model is shown the game's own contrast and shadow depth rather than a generic guess.
+struct ProxyCurve
+{
+    static constexpr unsigned int kSamples = probe::BlockReader::kSide * probe::BlockReader::kSide;
+    std::vector<float> linear = std::vector<float>(kSamples, 0.0f);
+    std::vector<float> finished = std::vector<float>(kSamples, 0.0f);
+    bool linearFresh = false;
+    bool finishedFresh = false;
+    bool ready = false;
+    unsigned int fits = 0;
+    float minLog = -8.0f;
+    float rangeLog = 12.0f;
+    float toned[32] = {};
+};
+
+ProxyCurve g_curve;
+probe::FrameReducer g_finishedReducer;
+probe::BlockReader g_finishedReader;
+
+static float SrgbToLinearCpu(float e)
+{
+    return e <= 0.04045f ? e / 12.92f : powf((e + 0.055f) / 1.055f, 2.4f);
+}
+
+// Histogram matching: the toned value for a scene luminance is the finished-frame luminance sitting
+// at the same rank. Monotone by construction; eased across fits so exposure drift never pops.
+static void FitProxyCurve()
+{
+    if (!g_curve.linearFresh || !g_curve.finishedFresh)
+        return;
+
+    g_curve.linearFresh = false;
+    g_curve.finishedFresh = false;
+
+    std::vector<float> lin = g_curve.linear;
+    std::vector<float> fin = g_curve.finished;
+    std::sort(lin.begin(), lin.end());
+    std::sort(fin.begin(), fin.end());
+
+    const size_t n = lin.size();
+    const float lo = std::max(lin[n / 200], 1e-4f);
+    const float hi = std::max(lin[n - 1 - n / 200], lo * 2.0f);
+    const float minLog = log2f(lo);
+    const float rangeLog = std::max(log2f(hi) - minLog, 0.5f);
+
+    float toned[32];
+    float last = 0.0f;
+
+    for (int k = 0; k < 32; ++k)
+    {
+        const float l = exp2f(minLog + rangeLog * (k / 31.0f));
+        const size_t rank = std::lower_bound(lin.begin(), lin.end(), l) - lin.begin();
+        const size_t idx = std::min(rank, n - 1);
+        float value = SrgbToLinearCpu(std::clamp(fin[idx], 0.0f, 1.0f));
+        value = std::max(value, last + 1e-4f);
+        toned[k] = value;
+        last = value;
+    }
+
+    const float blend = g_curve.ready ? 0.3f : 1.0f;
+    g_curve.minLog = g_curve.ready ? g_curve.minLog + (minLog - g_curve.minLog) * blend : minLog;
+    g_curve.rangeLog = g_curve.ready ? g_curve.rangeLog + (rangeLog - g_curve.rangeLog) * blend : rangeLog;
+
+    for (int k = 0; k < 32; ++k)
+        g_curve.toned[k] = g_curve.ready ? g_curve.toned[k] + (toned[k] - g_curve.toned[k]) * blend : toned[k];
+
+    if (!g_curve.ready)
+        LOG_INFO("DLSS-NR proxy curve matched to the game: scene luminance {:.4f}..{:.2f} onto the finished frame",
+                 lo, hi);
+
+    g_curve.ready = true;
+    ++g_curve.fits;
+}
+
+static void FillCurve(codec::Params& params, bool wanted)
+{
+    if (!wanted || !g_curve.ready)
+        return;
+
+    params.curveMode = 1;
+    params.curveMinLog = g_curve.minLog;
+    params.curveRangeLog = g_curve.rangeLog;
+    std::memcpy(params.curve, g_curve.toned, sizeof(params.curve));
+}
 
 
 unsigned long long g_frames = 0;
@@ -1407,11 +1496,19 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     const bool autoWhite = cfg.DlssNrAutoWhitePoint.value_or_default();
 
-    if (autoWhite)
-    {
-        const probe::Stats stats = g_reader.collect();
+    const bool curveMatch = cfg.DlssNrProxyCurve.value_or_default() == 1 && isHdrBuffer;
 
-        if (stats.valid && stats.meanLuma > 0.0f)
+    if (autoWhite || curveMatch)
+    {
+        const probe::Stats stats = g_reader.collect(curveMatch ? g_curve.linear.data() : nullptr);
+
+        if (curveMatch && stats.valid)
+        {
+            g_curve.linearFresh = true;
+            FitProxyCurve();
+        }
+
+        if (autoWhite && stats.valid && stats.meanLuma > 0.0f)
         {
             const float target = WhitePointForMean(stats.meanLuma);
 
@@ -1448,6 +1545,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     // the resolve adds the model's edit back at full scale.
     encodeParams.passthrough = isHdrBuffer ? 0u : 1u;
     encodeParams.whitePoint = whitePoint;
+    FillCurve(encodeParams, curveMatch);
     encodeParams.width = width;
     encodeParams.height = height;
 
@@ -1457,7 +1555,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     // Measuring here, while the frame is already readable, costs one dispatch every so often and no
     // extra barriers. Twice a second is far more often than an exposure meaningfully moves.
-    if (autoWhite && (g_frames % 30 == 0) && g_reducer.ensure(device))
+    if ((autoWhite || curveMatch) && (g_frames % 30 == 0) && g_reducer.ensure(device))
     {
         ID3D12Resource* reducedFrame = g_reducer.dispatch(cmdList, target, width, height);
         g_reader.capture(cmdList, reducedFrame, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -1558,6 +1656,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         codec::Params resolveParams {};
         resolveParams.mode = codec::MODE_RESOLVE;
         resolveParams.whitePoint = whitePoint;
+        FillCurve(resolveParams, curveMatch);
         resolveParams.width = width;
         resolveParams.height = height;
         resolveParams.transferStrength = cfg.DlssNrTransferStrength.value_or_default();
@@ -1690,6 +1789,103 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     device->Release();
 }
 
+// Reads the finished frame's luminance samples for the proxy curve, on this path's own list and
+// fence, without running the model. Called under the module lock.
+static void MeasureFinishedFrame(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer,
+                                 unsigned int backBufferIndex)
+{
+    if (backBuffer->GetDesc().Format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+        return;
+
+    const probe::Stats stats = g_finishedReader.collect(g_curve.finished.data());
+
+    if (stats.valid)
+    {
+        g_curve.finishedFresh = true;
+        FitProxyCurve();
+    }
+
+    if ((g_frames % 30) != 0)
+        return;
+
+    ID3D12Device* device = nullptr;
+
+    if (FAILED(backBuffer->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
+        return;
+
+    const auto desc = backBuffer->GetDesc();
+    const auto width = (unsigned int) desc.Width;
+    const auto height = desc.Height;
+
+    if (!EnsurePresentList(device) || !g_finishedReducer.ensure(device))
+    {
+        device->Release();
+        return;
+    }
+
+    // A swapchain buffer cannot be read by a shader; it is staged through a copy that the reducer
+    // reads. The copy is small potatoes next to the frame itself.
+    static ID3D12Resource* staged = nullptr;
+
+    if (staged != nullptr &&
+        ((unsigned int) staged->GetDesc().Width != width || staged->GetDesc().Height != height ||
+         staged->GetDesc().Format != codec::TypedFormat(desc.Format)))
+    {
+        ParkNrResource(staged);
+    }
+
+    if (staged == nullptr)
+        staged = CreateScratch(device, codec::TypedFormat(desc.Format), width, height);
+
+    if (staged == nullptr)
+    {
+        device->Release();
+        return;
+    }
+
+    const unsigned int slot = backBufferIndex % kPresentAllocators;
+    ID3D12CommandAllocator* allocator = g_nr.presentAllocators[slot];
+    WaitForAllSubmitted();
+
+    if (FAILED(allocator->Reset()) || FAILED(g_nr.presentList->Reset(allocator, nullptr)))
+    {
+        device->Release();
+        return;
+    }
+
+    ID3D12GraphicsCommandList* cmdList = g_nr.presentList;
+    Barrier(cmdList, backBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Barrier(cmdList, staged, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
+    cmdList->CopyResource(staged, backBuffer);
+    Barrier(cmdList, staged, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Barrier(cmdList, backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
+
+    ID3D12Resource* reducedFrame = g_finishedReducer.dispatch(cmdList, staged, width, height);
+    g_finishedReader.capture(cmdList, reducedFrame, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Barrier(cmdList, staged, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    if (SUCCEEDED(cmdList->Close()))
+    {
+        ID3D12CommandList* lists[] = { cmdList };
+        queue->ExecuteCommandLists(1, lists);
+        ++g_nr.presentFenceNext;
+
+        if (SUCCEEDED(queue->Signal(g_nr.presentFence, g_nr.presentFenceNext)))
+            g_nr.presentFenceValues[slot] = g_nr.presentFenceNext;
+    }
+
+    device->Release();
+}
+
+// What the proxy curve is doing, for the panel.
+const char* ProxyCurveStatus()
+{
+    if (Config::Instance()->DlssNrProxyCurve.value_or_default() != 1)
+        return "";
+
+    return g_curve.ready ? "matched to the game's tonemapper" : "measuring the game's tonemapper...";
+}
+
 void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, unsigned int backBufferIndex)
 {
     std::lock_guard<std::mutex> nrLock(g_nrMutex);
@@ -1697,6 +1893,15 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
 
     if (!cfg.DlssNrEnabled.value_or_default() || g_nr.failed || queue == nullptr || backBuffer == nullptr)
         return;
+
+    // The proxy curve needs the finished frame's histogram whether or not this path runs the model.
+    // An SDR backbuffer only: an scRGB frame is not in the model's world and would teach the wrong
+    // curve. Cheap -- a copy, a reduction and a readback, twice a second.
+    if (cfg.DlssNrProxyCurve.value_or_default() == 1 &&
+        (cfg.DlssNrInjectPoint.value_or_default() != INJECT_PRESENT || g_splitActive))
+    {
+        MeasureFinishedFrame(queue, backBuffer, backBufferIndex);
+    }
 
     if (cfg.DlssNrInjectPoint.value_or_default() != INJECT_PRESENT)
         return;

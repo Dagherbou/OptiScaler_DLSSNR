@@ -363,7 +363,9 @@ class BlockReader
     }
 
     // Returns a reading once one is ready, and nothing on every other frame.
-    Stats collect()
+    // lumas, when given, receives every tile's luminance (kSide * kSide values) -- the material a
+    // tone curve is fitted from.
+    Stats collect(float* lumas = nullptr)
     {
         Stats out;
 
@@ -397,6 +399,10 @@ class BlockReader
                 const float g = halfToFloat(row[x * 4 + 1]);
                 const float b = halfToFloat(row[x * 4 + 2]);
                 const float luma = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+
+                if (lumas != nullptr)
+                    lumas[y * kSide + x] = luma;
+
                 lo = luma < lo ? luma : lo;
                 hi = luma > hi ? luma : hi;
                 sum += luma;
