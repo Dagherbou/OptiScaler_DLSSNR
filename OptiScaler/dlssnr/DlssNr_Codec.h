@@ -68,8 +68,8 @@ cbuffer Params : register(b0)
     uint  gGuideWidth;   // the motion texture's valid region
     uint  gGuideHeight;
     float gStability;    // how much of the history survives each frame; 0 is off
-    float gNoiseFloor;   // edits below this are squashed toward zero; 0 is off
     float gProtectHighlights; // the top fraction of the range where the edit fades out; 0 is off
+    float gPad0;
 };
 
 Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
@@ -95,6 +95,51 @@ float3 SrgbToLinear(float3 v)
 {
     v = saturate(v);
     return lerp(v / 12.92, pow((v + 0.055) / 1.055, 2.4), step(0.04045, v));
+}
+
+// The edit at an arbitrary position, exactly as the resolve computes its own.
+float3 EditAt(float2 uvq)
+{
+    float3 p = gSource.SampleLevel(gLinear, uvq, 0).rgb;
+    float3 m = gModel.SampleLevel(gLinear, uvq, 0).rgb;
+
+    if (gPassthrough == 0)
+    {
+        p = SrgbToLinear(p);
+        m = SrgbToLinear(m);
+    }
+
+    return m - p;
+}
+
+// Catmull-Rom resampling of the edit history. Bilinear resampling every frame is a slow blur that
+// compounds; this keeps the accumulated detail crisp across hundreds of reprojections.
+float3 SampleHistoryCatmullRom(float2 uv, float2 texSize)
+{
+    float2 samplePos = uv * texSize;
+    float2 texPos1 = floor(samplePos - 0.5) + 0.5;
+    float2 f = samplePos - texPos1;
+
+    float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    float2 w3 = f * f * (-0.5 + 0.5 * f);
+    float2 w12 = w1 + w2;
+    float2 offset12 = w2 / w12;
+
+    float2 texPos0 = (texPos1 - 1.0) / texSize;
+    float2 texPos3 = (texPos1 + 2.0) / texSize;
+    float2 texPos12 = (texPos1 + offset12) / texSize;
+
+    return gPrevEdit.SampleLevel(gLinear, float2(texPos0.x, texPos0.y), 0).rgb * w0.x * w0.y +
+           gPrevEdit.SampleLevel(gLinear, float2(texPos12.x, texPos0.y), 0).rgb * w12.x * w0.y +
+           gPrevEdit.SampleLevel(gLinear, float2(texPos3.x, texPos0.y), 0).rgb * w3.x * w0.y +
+           gPrevEdit.SampleLevel(gLinear, float2(texPos0.x, texPos12.y), 0).rgb * w0.x * w12.y +
+           gPrevEdit.SampleLevel(gLinear, float2(texPos12.x, texPos12.y), 0).rgb * w12.x * w12.y +
+           gPrevEdit.SampleLevel(gLinear, float2(texPos3.x, texPos12.y), 0).rgb * w3.x * w12.y +
+           gPrevEdit.SampleLevel(gLinear, float2(texPos0.x, texPos3.y), 0).rgb * w0.x * w3.y +
+           gPrevEdit.SampleLevel(gLinear, float2(texPos12.x, texPos3.y), 0).rgb * w12.x * w3.y +
+           gPrevEdit.SampleLevel(gLinear, float2(texPos3.x, texPos3.y), 0).rgb * w3.x * w3.y;
 }
 
 [numthreads(8, 8, 1)]
@@ -171,20 +216,12 @@ void main(uint3 id : SV_DispatchThreadID)
 
     float3 edit = model - proxy;
 
-    // Coring. The churn the model re-decides every frame is small-amplitude and unstructured, while
-    // the detail worth keeping -- occlusion, contact shadows, synthesised texture -- is larger and
-    // structured. Edits below the floor are squashed toward zero, edits above it pass untouched, and
-    // the ramp between the two keeps the transition invisible. At 0 this does nothing at all.
-    if (gNoiseFloor > 0.0)
-    {
-        float editSize = max(abs(edit.r), max(abs(edit.g), abs(edit.b)));
-        edit *= smoothstep(gNoiseFloor * 0.5, gNoiseFloor * 1.5, editSize);
-    }
+    // Coring was tried here and removed: the per-frame churn's amplitude overlaps the real detail's,
+    // so an amplitude threshold cannot separate them -- it only relocated the noise to the threshold.
 
     if (gDebugView == 3)
     {
-        // Amplified and centred on grey, so both directions of the edit are visible at once. Shows the
-        // edit as it will land -- after coring -- so the Noise floor slider is judged here too.
+        // Amplified and centred on grey, so both directions of the edit are visible at once.
         float3 shown = saturate(0.5 + edit * 20.0);
         gTarget[id.xy] = float4(SrgbToLinear(shown) * gWhitePoint, originalSample.a);
         return;
@@ -206,15 +243,33 @@ void main(uint3 id : SV_DispatchThreadID)
 
             if (all(uvPrev >= 0.0) && all(uvPrev <= 1.0))
             {
-                float3 prev = gPrevEdit.SampleLevel(gLinear, uvPrev, 0).rgb;
+                float3 prev = SampleHistoryCatmullRom(uvPrev, float2(gWidth, gHeight));
 
-                // Rectified before blending: the history may not stray far from what the model says
-                // now, so a stale edit at a disocclusion is pulled in within a frame or two instead of
-                // being carried -- and then amplified -- indefinitely. The margin scales with the edit
-                // so strong legitimate detail is not clipped, with a floor so the noise floor itself
-                // can still cancel.
-                float3 bound = abs(edit) * 1.5 + 0.015;
-                prev = clamp(prev, edit - bound, edit + bound);
+                // Rectified by the statistics of the edit around this pixel, not a fixed margin. Where
+                // the model answers consistently the neighbourhood is tight, and history that disagrees
+                // -- a stale edit at a disocclusion -- is clipped away within a frame. Where the model
+                // is genuinely re-deciding, the neighbourhood is wide and the average is allowed to do
+                // its work. This is what lets high stability hold without trailing ghosts.
+                float3 m1 = float3(0.0, 0.0, 0.0);
+                float3 m2 = float3(0.0, 0.0, 0.0);
+                float2 px = 1.0 / float2(gWidth, gHeight);
+
+                [unroll]
+                for (int dy = -1; dy <= 1; ++dy)
+                {
+                    [unroll]
+                    for (int dx = -1; dx <= 1; ++dx)
+                    {
+                        float3 e = EditAt(uv + float2(dx, dy) * px);
+                        m1 += e;
+                        m2 += e * e;
+                    }
+                }
+
+                m1 /= 9.0;
+                m2 /= 9.0;
+                float3 sigma = sqrt(max(m2 - m1 * m1, float3(0.0, 0.0, 0.0)));
+                prev = clamp(prev, m1 - sigma * 1.25 - 0.004, m1 + sigma * 1.25 + 0.004);
 
                 accumulated = lerp(edit, prev, gStability);
             }
@@ -274,8 +329,8 @@ struct Params
     unsigned int guideWidth;
     unsigned int guideHeight;
     float stability;
-    float noiseFloor;
     float protectHighlights;
+    float pad0;
 };
 
 // A typeless resource cannot be viewed, and the buffer the upscaler writes is occasionally declared that

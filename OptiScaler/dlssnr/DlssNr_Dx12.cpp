@@ -1073,7 +1073,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         resolveParams.colourStrength = cfg.DlssNrColourStrength.value_or_default();
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
-        resolveParams.noiseFloor = cfg.DlssNrNoiseFloor.value_or_default();
         resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
         resolveParams.passthrough = isHdrBuffer ? 0u : 1u;
 
@@ -1572,7 +1571,6 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         resolveParams.colourStrength = cfg.DlssNrColourStrength.value_or_default();
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
-        resolveParams.noiseFloor = cfg.DlssNrNoiseFloor.value_or_default();
         resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
 
         // The same accumulator the before-frame-generation path has: the edit blended with its own

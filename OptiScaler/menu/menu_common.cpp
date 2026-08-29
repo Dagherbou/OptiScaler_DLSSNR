@@ -6003,18 +6003,6 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\n\nAbove 1 exaggerates the edit. If nothing here seems to do anything, push this"
                        "\nto 4 and watch: that answers whether the model is contributing at all.");
 
-        float noiseFloor = config->DlssNrNoiseFloor.value_or_default();
-        if (ImGui::SliderFloat("Noise floor (coring)", &noiseFloor, 0.0f, 0.05f, "%.3f"))
-            config->DlssNrNoiseFloor = noiseFloor;
-
-        ShowHelpMarker("Squashes edits smaller than this toward zero before they land. The wobble is"
-                       "\nthe model re-deciding a small, unstructured fraction of its edit every frame;"
-                       "\nreal detail -- occlusion, contact shadows, synthesised texture -- is larger"
-                       "\nand passes untouched. The cheapest stabiliser: no history, no ghosting."
-                       "\n\n0 is off and bit-identical. Raise it until the shimmer stops -- around"
-                       "\n0.01 to 0.02 -- and stop there: higher starts to eat the faintest real"
-                       "\ndetail, gentle ambient occlusion first.");
-
         float editStability = config->DlssNrEditStability.value_or_default();
         if (ImGui::SliderFloat("Temporal stability", &editStability, 0.0f, 0.95f, "%.2f"))
             config->DlssNrEditStability = editStability;

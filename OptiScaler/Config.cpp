@@ -330,7 +330,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrSplitIncludeRR.set_from_config(readBool("DlssNr", "SplitIncludeRR"));
             DlssNrSplitSrPreset.set_from_config(readUInt("DlssNr", "SplitSrPreset"));
             DlssNrSplitSrSharpness.set_from_config(readFloat("DlssNr", "SplitSrSharpness"));
-            DlssNrNoiseFloor.set_from_config(readFloat("DlssNr", "NoiseFloor"));
             DlssNrWhitePointScale.set_from_config(readFloat("DlssNr", "WhitePointScale"));
             DlssNrProtectHighlights.set_from_config(readFloat("DlssNr", "ProtectHighlights"));
             DlssNrSplitIncludeRRRatio.set_from_config(readFloat("DlssNr", "SplitIncludeRRRatio"));
@@ -1189,7 +1188,6 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "SplitSrPreset", GetIntValue(Instance()->DlssNrSplitSrPreset.value_for_config()).c_str());
     ini.SetValue("DlssNr", "SplitSrSharpness",
                  GetFloatValue(Instance()->DlssNrSplitSrSharpness.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "NoiseFloor", GetFloatValue(Instance()->DlssNrNoiseFloor.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WhitePointScale",
                  GetFloatValue(Instance()->DlssNrWhitePointScale.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ProtectHighlights",

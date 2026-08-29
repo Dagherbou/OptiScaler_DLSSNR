@@ -319,10 +319,6 @@ class Config
     CustomOptional<uint32_t> DlssNrSplitSrPreset { 0 };
     CustomOptional<float> DlssNrSplitSrSharpness { 0.0f };
 
-    // Coring: edits smaller than this are squashed toward zero in the resolve -- the measured
-    // per-frame churn is small and unstructured, real detail is larger. 0 is off and bit-identical.
-    CustomOptional<float> DlssNrNoiseFloor { 0.0f };
-
     // Multiplies the (auto or manual) white point before the encode: what the model considers "white".
     // Higher means highlights sit lower on the curve and the model treats them as less extreme.
     CustomOptional<float> DlssNrWhitePointScale { 1.0f };
