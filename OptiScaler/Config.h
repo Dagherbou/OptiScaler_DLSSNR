@@ -265,6 +265,9 @@ class Config
     CustomOptional<uint32_t> DlssNrStyle { 0 };
     CustomOptional<float> DlssNrLocalStructure { 1.0f };
     CustomOptional<float> DlssNrLocalTone { 1.0f };
+    // The model's global tone strength -- its overall re-exposure of the scene, as opposed to the local
+    // one. NVIDIA's own integration sets it; 1 is the model's default behaviour, 0 keeps the game's tone.
+    CustomOptional<float> DlssNrGlobalTone { 1.0f };
     // -1 means follow local structure, which is the model's own default. It is not a strength of zero.
     CustomOptional<float> DlssNrSkinStructure { -1.0f };
     CustomOptional<bool> DlssNrAutoMask { true };

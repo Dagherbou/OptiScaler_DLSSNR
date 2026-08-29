@@ -214,6 +214,37 @@ __declspec(dllexport) int dlssnr_call_evaluate(ID3D12GraphicsCommandList *cmd, v
     return result;
 }
 
+// Inputs NVIDIA's own Streamline plugin sets that the positional exports predate: the model's global
+// tone strength (read at create), and the interface as the game draws it -- its layer, its alpha, and
+// the composited back buffer -- which is what the model's UI correction was designed around. Called
+// before create and before every evaluate; absent resources are written as null, because the block
+// outlives everything and a stale pointer is a freed resource.
+__declspec(dllexport) void dlssnr_call_set_extras(void *capabilityParams, float globalTone,
+                                                  ID3D12Resource *ui, ID3D12Resource *uiAlpha,
+                                                  ID3D12Resource *backbuffer, unsigned int uiWidth,
+                                                  unsigned int uiHeight, unsigned int bbWidth,
+                                                  unsigned int bbHeight) {
+    if (!capabilityParams) {
+        return;
+    }
+    setFloat(capabilityParams, "DLSSNR.GlobalToneStrength", globalTone);
+    setResource(capabilityParams, "DLSSNR.UI", ui);
+    setResource(capabilityParams, "DLSSNR.UIAlpha", uiAlpha);
+    setResource(capabilityParams, "DLSSNR.Backbuffer", backbuffer);
+    setUInt(capabilityParams, "DLSSNR.UISubrectBaseX", 0);
+    setUInt(capabilityParams, "DLSSNR.UISubrectBaseY", 0);
+    setUInt(capabilityParams, "DLSSNR.UISubrectWidth", uiWidth);
+    setUInt(capabilityParams, "DLSSNR.UISubrectHeight", uiHeight);
+    setUInt(capabilityParams, "DLSSNR.UIAlphaSubrectBaseX", 0);
+    setUInt(capabilityParams, "DLSSNR.UIAlphaSubrectBaseY", 0);
+    setUInt(capabilityParams, "DLSSNR.UIAlphaSubrectWidth", uiWidth);
+    setUInt(capabilityParams, "DLSSNR.UIAlphaSubrectHeight", uiHeight);
+    setUInt(capabilityParams, "DLSSNR.BackbufferSubrectBaseX", 0);
+    setUInt(capabilityParams, "DLSSNR.BackbufferSubrectBaseY", 0);
+    setUInt(capabilityParams, "DLSSNR.BackbufferSubrectWidth", bbWidth);
+    setUInt(capabilityParams, "DLSSNR.BackbufferSubrectHeight", bbHeight);
+}
+
 __declspec(dllexport) void dlssnr_call_release(void *feature) {
     if (feature && g_snip.release) {
         volatile int result = g_snip.release(feature); // not a tail call, for the reason above

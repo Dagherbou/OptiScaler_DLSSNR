@@ -343,6 +343,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrStyle.set_from_config(readUInt("DlssNr", "Style"));
             DlssNrLocalStructure.set_from_config(readFloat("DlssNr", "LocalStructure"));
             DlssNrLocalTone.set_from_config(readFloat("DlssNr", "LocalTone"));
+            DlssNrGlobalTone.set_from_config(readFloat("DlssNr", "GlobalTone"));
             DlssNrSkinStructure.set_from_config(readFloat("DlssNr", "SkinStructure"));
             DlssNrAutoMask.set_from_config(readBool("DlssNr", "AutoMask"));
             DlssNrUiCorrection.set_from_config(readBool("DlssNr", "UiCorrection"));
@@ -1211,6 +1212,7 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "LocalStructure",
                  GetFloatValue(Instance()->DlssNrLocalStructure.value_for_config()).c_str());
     ini.SetValue("DlssNr", "LocalTone", GetFloatValue(Instance()->DlssNrLocalTone.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GlobalTone", GetFloatValue(Instance()->DlssNrGlobalTone.value_for_config()).c_str());
     ini.SetValue("DlssNr", "SkinStructure",
                  GetFloatValue(Instance()->DlssNrSkinStructure.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AutoMask", GetBoolValue(Instance()->DlssNrAutoMask.value_for_config()).c_str());

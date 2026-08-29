@@ -32,6 +32,8 @@ using PFN_NrEvaluate = int(__cdecl*) (ID3D12GraphicsCommandList*, void*, void*, 
                                       unsigned int, unsigned int, unsigned int, int, int, float, int,
                                       float, float, float, int, float, float);
 using PFN_NrRelease = void(__cdecl*) (void*);
+using PFN_NrSetExtras = void(__cdecl*) (void*, float, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*,
+                                        unsigned int, unsigned int, unsigned int, unsigned int);
 using PFN_NrSetFloatSlot = void(__cdecl*) (int);
 using PFN_NrProbeFloat = void(__cdecl*) (void*, const char*, float, int);
 
@@ -44,6 +46,7 @@ struct NrState
     PFN_NrCreate create = nullptr;
     PFN_NrEvaluate evaluate = nullptr;
     PFN_NrRelease release = nullptr;
+    PFN_NrSetExtras setExtras = nullptr;
     PFN_NrSetFloatSlot setFloatSlot = nullptr;
     PFN_NrProbeFloat probeFloat = nullptr;
     bool floatSlotKnown = false;
@@ -123,6 +126,7 @@ struct NrState
     float builtSkinStructure = 0.0f;
     bool builtAutoMask = false;
     bool builtUiCorrection = false;
+    float builtGlobalTone = 1.0f;
     unsigned long long settledAt = 0;
 
     // Once something fails there is no recovering it mid-session, and retrying every frame turns a
@@ -354,6 +358,8 @@ bool EnsureForwarder()
     g_nr.create = (PFN_NrCreate) GetProcAddress(g_nr.forwarder, "dlssnr_call_create");
     g_nr.evaluate = (PFN_NrEvaluate) GetProcAddress(g_nr.forwarder, "dlssnr_call_evaluate");
     g_nr.release = (PFN_NrRelease) GetProcAddress(g_nr.forwarder, "dlssnr_call_release");
+    // Optional: an older forwarder simply lacks it, and the model runs as before.
+    g_nr.setExtras = (PFN_NrSetExtras) GetProcAddress(g_nr.forwarder, "dlssnr_call_set_extras");
     g_nr.setFloatSlot = (PFN_NrSetFloatSlot) GetProcAddress(g_nr.forwarder, "dlssnr_call_set_float_slot");
     g_nr.probeFloat = (PFN_NrProbeFloat) GetProcAddress(g_nr.forwarder, "dlssnr_call_probe_float");
     g_nr.lastInit = (int*) GetProcAddress(g_nr.forwarder, "dlssnr_call_last_init");
@@ -679,6 +685,18 @@ ID3D12Resource* CloneGuideAlways(ID3D12Device* device, ID3D12GraphicsCommandList
 // frame, and each one would otherwise mean a new model.
 constexpr unsigned long long kSettleFrames = 30;
 
+// The extras the official integration sets: global tone (read at create) and the interface inputs.
+// Written before every create and evaluate, nulls included, so nothing stale ever sits in the block.
+void SetExtras(const Config& cfg, ID3D12Resource* ui, ID3D12Resource* backbuffer, unsigned int uiWidth,
+               unsigned int uiHeight, unsigned int bbWidth, unsigned int bbHeight)
+{
+    if (g_nr.setExtras == nullptr || g_nr.capabilityParams == nullptr)
+        return;
+
+    g_nr.setExtras(g_nr.capabilityParams, cfg.DlssNrGlobalTone.value_or_default(), ui, ui, backbuffer,
+                   uiWidth, uiHeight, bbWidth, bbHeight);
+}
+
 bool TuningMatchesFeature(const Config& cfg)
 {
     return g_nr.builtPreset == cfg.DlssNrPreset.value_or_default() &&
@@ -688,7 +706,8 @@ bool TuningMatchesFeature(const Config& cfg)
            g_nr.builtLocalTone == cfg.DlssNrLocalTone.value_or_default() &&
            g_nr.builtSkinStructure == cfg.DlssNrSkinStructure.value_or_default() &&
            g_nr.builtAutoMask == cfg.DlssNrAutoMask.value_or_default() &&
-           g_nr.builtUiCorrection == cfg.DlssNrUiCorrection.value_or_default();
+           g_nr.builtUiCorrection == cfg.DlssNrUiCorrection.value_or_default() &&
+           g_nr.builtGlobalTone == cfg.DlssNrGlobalTone.value_or_default();
 }
 
 void RecordBuiltTuning(const Config& cfg)
@@ -701,6 +720,7 @@ void RecordBuiltTuning(const Config& cfg)
     g_nr.builtSkinStructure = cfg.DlssNrSkinStructure.value_or_default();
     g_nr.builtAutoMask = cfg.DlssNrAutoMask.value_or_default();
     g_nr.builtUiCorrection = cfg.DlssNrUiCorrection.value_or_default();
+    g_nr.builtGlobalTone = cfg.DlssNrGlobalTone.value_or_default();
 }
 
 // Waits for every list this has submitted. Releasing the feature before that is what took the game down
@@ -906,6 +926,7 @@ void EvaluateHudless(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* hudless
             return;
         }
 
+        SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
         g_nr.feature =
             g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
                         device, cmdList, g_nr.capabilityParams, workWidth, workHeight,
@@ -1051,6 +1072,8 @@ void EvaluateHudless(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* hudless
 
     const float mvToWork = width != 0 ? (float) workWidth / (float) width : 1.0f;
 
+    SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
+
     const int result = g_nr.evaluate(
         cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, g_nr.depthClone, g_nr.motionClone,
         g_nr.output, workWidth, workHeight, g_nr.guideWidth, g_nr.guideHeight,
@@ -1194,7 +1217,7 @@ void NoteUiLayer(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* ui, D3D12_R
     if (!cfg.DlssNrEnabled.value_or_default() || cmdList == nullptr || ui == nullptr)
         return;
 
-    if (cfg.DlssNrInjectPoint.value_or_default() != INJECT_PRESENT || cfg.DlssNrHudDetect.value_or_default() <= 0.0f)
+    if (cfg.DlssNrInjectPoint.value_or_default() != INJECT_PRESENT)
         return;
 
     ID3D12Device* device = nullptr;
@@ -1405,6 +1428,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
             return;
         }
 
+        SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
         g_nr.feature =
             g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
                         device, cmdList, g_nr.capabilityParams, workWidth, workHeight,
@@ -1599,6 +1623,8 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     // The vectors were scaled to full-frame pixels; the image the model reprojects is the working size.
     const float mvToWork = width != 0 ? (float) workWidth / (float) width : 1.0f;
+
+    SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
 
     const int result = g_nr.evaluate(
         cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
@@ -2046,6 +2072,7 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
             return;
         }
 
+        SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
         g_nr.feature =
             g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
                         device, cmdList, g_nr.capabilityParams, workWidth, workHeight,
@@ -2282,6 +2309,16 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
     // The vectors were scaled to full-frame pixels; the image the model reprojects is the working size.
     const float mvToWork = width != 0 ? (float) workWidth / (float) width : 1.0f;
 
+    // The interface as the game draws it, when it tags its UI layer this frame -- the input the
+    // model's own UI correction was designed around -- and the composited frame as the back buffer.
+    ID3D12Resource* nrUi = g_nr.uiClone != nullptr && g_frames - g_nr.uiCloneFrame <= 2 ? g_nr.uiClone : nullptr;
+    const auto uiDesc = nrUi != nullptr ? nrUi->GetDesc() : D3D12_RESOURCE_DESC {};
+
+    if (nrUi != nullptr)
+        Barrier(cmdList, nrUi, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    SetExtras(cfg, nrUi, g_nr.colorCopy, (unsigned int) uiDesc.Width, uiDesc.Height, width, height);
+
     const int result = g_nr.evaluate(
         cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, g_nr.depthClone, g_nr.motionClone,
         g_nr.output, workWidth, workHeight, g_nr.guideWidth, g_nr.guideHeight,
@@ -2293,6 +2330,10 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         g_nr.guideMvScaleX * mvToWork, g_nr.guideMvScaleY * mvToWork);
 
     g_nr.reset = false;
+
+    if (nrUi != nullptr)
+        Barrier(cmdList, nrUi, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+
 
     // The motion clone stays readable through the resolve: the accumulator reprojects the edit's
     // history with it, in the same dispatch that applies the edit.

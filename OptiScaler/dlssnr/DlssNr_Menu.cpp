@@ -328,6 +328,15 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::SliderFloat("Local tone", &localTone, 0.0f, 2.0f, "%.2f"))
             config->DlssNrLocalTone = localTone;
 
+        float globalTone = config->DlssNrGlobalTone.value_or_default();
+        if (ImGui::SliderFloat("Global tone", &globalTone, 0.0f, 2.0f, "%.2f"))
+            config->DlssNrGlobalTone = globalTone;
+
+        HelpMarker("The model's overall re-exposure of the scene, as opposed to the local re-toning"
+                   "\nabove. A parameter NVIDIA's own integration sets that was found in their"
+                   "\nStreamline plugin; 1 is the model's default behaviour, 0 keeps the game's"
+                   "\nglobal tone and lets the model add detail only. Read when the model is built.");
+
         float skin = config->DlssNrSkinStructure.value_or_default();
         if (ImGui::SliderFloat("Skin structure", &skin, -1.0f, 2.0f, "%.2f"))
             config->DlssNrSkinStructure = skin;
