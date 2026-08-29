@@ -259,6 +259,16 @@ void main(uint3 id : SV_DispatchThreadID)
     // Coring was tried here and removed: the per-frame churn's amplitude overlaps the real detail's,
     // so an amplitude threshold cannot separate them -- it only relocated the noise to the threshold.
 
+    if (gDebugView == 4)
+    {
+        // The HUD mask as the resolve will use it: white where the edit is held off, the frame
+        // dimmed underneath so the mask reads against it. Shows exactly what HUD detection found.
+        float m = saturate(originalSample.a);
+        float3 dimmed = original * 0.25;
+        gTarget[id.xy] = float4(lerp(dimmed, float3(1.0, 1.0, 1.0), m * (gHudDetect > 0.0 ? 1.0 : 0.0)), 1.0);
+        return;
+    }
+
     if (gDebugView == 3)
     {
         // Amplified and centred on grey, so both directions of the edit are visible at once.

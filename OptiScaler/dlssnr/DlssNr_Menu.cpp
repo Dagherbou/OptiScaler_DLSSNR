@@ -518,7 +518,7 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nand each run overwrites the last.");
 
         static const char* debugNames[] = { "Off", "Proxy (what the model sees)", "Model output (raw)",
-                                            "Difference (amplified)" };
+                                            "Difference (amplified)", "HUD mask (what detection found)" };
         int debugView = (int) config->DlssNrDebugView.value_or_default();
         if (ImGui::Combo("Debug view", &debugView, debugNames, IM_ARRAYSIZE(debugNames)))
             config->DlssNrDebugView = (uint32_t) debugView;
