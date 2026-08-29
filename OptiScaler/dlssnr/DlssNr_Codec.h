@@ -213,8 +213,16 @@ void main(uint3 id : SV_DispatchThreadID)
         float2 mv = gMotion.Load(int3(uv * float2(gGuideWidth, gGuideHeight), 0)).xy *
                     float2(gMvScaleX, gMvScaleY);
         float moving = saturate((length(mv) - 0.5) / 2.0);
-        float same = 1.0 - saturate(length(cur.rgb - prev.rgb) / 0.02);
-        float detect = moving * same;
+
+        // The interface ignores the motion vectors. A world pixel matches its reprojected past --
+        // where the vectors say it came from -- while a UI pixel matches its unmoved past and
+        // mismatches the reprojected one. Demanding both keeps a uniform moving surface, which
+        // matches everywhere, from qualifying; the first version fell for exactly that.
+        float2 uvPrev = uv + mv / float2(gWidth, gHeight);
+        float3 reprojected = gSource.SampleLevel(gLinear, uvPrev, 0).rgb;
+        float inPlace = 1.0 - saturate(length(cur.rgb - prev.rgb) / 0.02);
+        float mismatch = saturate((length(cur.rgb - reprojected) - 0.03) / 0.08);
+        float detect = moving * inPlace * mismatch;
 
         if (gAccumulate == 1)
             detect = max(detect, gModel.Load(int3(id.xy, 0)).a);

@@ -647,6 +647,9 @@ static DlssNr::Split::FeatureView SplitViewOf(uint32_t handleId)
         view.changeBackendCounter = it->second.changeBackendCounter;
     }
 
+    auto kind = HandleToFeature.find(handleId);
+    view.rayReconstruction = kind == HandleToFeature.end() || kind->second == NVSDK_NGX_Feature_RayReconstruction;
+
     return view;
 }
 #endif
@@ -1207,9 +1210,10 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
         InParameters->Set("DLSSG.CameraFar", lastDlssgCameraFar.value());
 
 #if OPTI_DLSSNR
-    // The split pipeline: denoise 1:1, enhance at render resolution, enlarge once. The toggle applies
-    // live -- the feature is re-created in place at the other geometry.
-    if (feature == NVSDK_NGX_Feature_RayReconstruction)
+    // The split pipeline: denoise (or anti-alias) 1:1, enhance at render resolution, enlarge once. The
+    // toggle applies live -- the feature is re-created in place at the other geometry. Plain Super
+    // Resolution games get the same treatment with DLSS at 1:1 (DLAA) as the first stage.
+    if (feature == NVSDK_NGX_Feature_RayReconstruction || feature == NVSDK_NGX_Feature_SuperSampling)
     {
         DlssNr::Split::ManageTransition(handleId, InParameters, SplitViewOf(handleId), D3D12Device);
 

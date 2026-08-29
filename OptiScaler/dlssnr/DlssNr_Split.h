@@ -22,6 +22,7 @@ struct FeatureView
     bool found = false;
     IFeature_Dx12* feature = nullptr;
     int changeBackendCounter = 0;
+    bool rayReconstruction = true; // else a plain Super Resolution feature: re-created as DLSS, 1:1 = DLAA
 };
 
 // The seam's own evaluate for an OptiScaler-managed feature.

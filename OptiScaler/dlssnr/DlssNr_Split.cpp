@@ -443,14 +443,10 @@ void ManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params, const Feat
         params->Set(NVSDK_NGX_Parameter_OutWidth, desiredW);
         params->Set(NVSDK_NGX_Parameter_OutHeight, desiredH);
 
-        // A feature built oversized must declare the quality mode it actually is, or the driver
-        // creates it and then refuses every evaluate. The 1:1 arrangement keeps the game's own value.
-        if (desiredW > SplitDx12.displayWidth && SplitDx12.displayWidth != 0)
-            params->Set(NVSDK_NGX_Parameter_PerfQualityValue,
-                        SplitPerfQuality(f->RenderWidth(), desiredW));
-        else if (SplitDx12.origPerfQuality != 0xffffffff)
-            params->Set(NVSDK_NGX_Parameter_PerfQualityValue, SplitDx12.origPerfQuality);
-        state.newBackend = Upscaler::DLSSD;
+        // A feature must declare the quality mode it actually is, or the driver creates it and then
+        // refuses every evaluate: an oversized target its upscale mode, a 1:1 target DLAA.
+        params->Set(NVSDK_NGX_Parameter_PerfQualityValue, SplitPerfQuality(f->RenderWidth(), desiredW));
+        state.newBackend = view.rayReconstruction ? Upscaler::DLSSD : Upscaler::DLSS;
         state.changeBackend[handleId] = true;
         SplitDx12.geometryOwned = true;
 
@@ -469,7 +465,7 @@ void ManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params, const Feat
         if (SplitDx12.origPerfQuality != 0xffffffff)
             params->Set(NVSDK_NGX_Parameter_PerfQualityValue, SplitDx12.origPerfQuality);
 
-        state.newBackend = Upscaler::DLSSD;
+        state.newBackend = view.rayReconstruction ? Upscaler::DLSSD : Upscaler::DLSS;
         state.changeBackend[handleId] = true;
         SplitDx12.geometryOwned = false;
         SplitDx12.restorePending = true;
@@ -488,7 +484,8 @@ void ManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params, const Feat
 // Clamps the game's Ray Reconstruction feature at creation, for launches with the split already on.
 void OnCreate(NVSDK_NGX_Feature featureId, NVSDK_NGX_Parameter* params)
 {
-    if (featureId != NVSDK_NGX_Feature_RayReconstruction || !SplitWanted() || params == nullptr)
+    if ((featureId != NVSDK_NGX_Feature_RayReconstruction && featureId != NVSDK_NGX_Feature_SuperSampling) ||
+        !SplitWanted() || params == nullptr)
         return;
 
     unsigned int w = 0, h = 0, ow = 0, oh = 0;

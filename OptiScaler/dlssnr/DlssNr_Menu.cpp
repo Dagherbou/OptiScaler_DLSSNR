@@ -108,7 +108,7 @@ void RenderMenu(Config* config, float menuResScale)
                    "\nframe simply looks better, and the split covers the pre-tonemapper case.");
 
         bool split = config->DlssNrSplitPipeline.value_or_default();
-        if (ImGui::Checkbox("Split pipeline: RR 1:1 + NR + internal SR", &split))
+        if (ImGui::Checkbox("Split pipeline: RR/DLSS 1:1 + NR + internal SR", &split))
             config->DlssNrSplitPipeline = split;
 
         if (split)
