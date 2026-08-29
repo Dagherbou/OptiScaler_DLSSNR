@@ -345,6 +345,62 @@ void DiscoverFloatSlot(NVSDK_NGX_Parameter* params)
 // clamps linear HDR into an 8-bit texture -- wrong brightness until something forces a rebuild -- or
 // hands CopyResource mismatched formats, which fails silently and makes the whole pass appear to do
 // nothing. So the set is torn down whenever the format it was built for is not the format needed now.
+// Retired model features and surfaces are parked and freed a comfortable number of evaluates later.
+// Releasing them immediately was the device hang: with frame generation the GPU runs several frames
+// behind, the split's work rides the game's own queue that no module fence covers, and an NGX feature
+// or scratch texture freed under in-flight work kills the device. The split learned this first (its
+// trap #4); the model's own rebuild paths now obey the same rule.
+struct NrRetired
+{
+    void* feature = nullptr;
+    ID3D12Resource* resource = nullptr;
+    int framesLeft = 32;
+};
+
+std::vector<NrRetired> g_nrRetired;
+
+void ParkNrFeature(void*& feature)
+{
+    if (feature == nullptr)
+        return;
+
+    NrRetired r;
+    r.feature = feature;
+    feature = nullptr;
+    g_nrRetired.push_back(r);
+}
+
+void ParkNrResource(ID3D12Resource*& res)
+{
+    if (res == nullptr)
+        return;
+
+    NrRetired r;
+    r.resource = res;
+    res = nullptr;
+    g_nrRetired.push_back(r);
+}
+
+void TickNrRetired()
+{
+    for (size_t i = 0; i < g_nrRetired.size();)
+    {
+        if (--g_nrRetired[i].framesLeft > 0)
+        {
+            ++i;
+            continue;
+        }
+
+        if (g_nrRetired[i].feature != nullptr && g_nr.release != nullptr)
+            g_nr.release(g_nrRetired[i].feature);
+
+        if (g_nrRetired[i].resource != nullptr)
+            g_nrRetired[i].resource->Release();
+
+        g_nrRetired.erase(g_nrRetired.begin() + i);
+    }
+}
+
 void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
 {
     if (g_nr.output == nullptr || g_nr.output->GetDesc().Format == needed)
@@ -608,62 +664,6 @@ void WaitForAllocator(unsigned int index)
 
 namespace DlssNr
 {
-// Retired model features and surfaces are parked and freed a comfortable number of evaluates later.
-// Releasing them immediately was the device hang: with frame generation the GPU runs several frames
-// behind, the split's work rides the game's own queue that no module fence covers, and an NGX feature
-// or scratch texture freed under in-flight work kills the device. The split learned this first (its
-// trap #4); the model's own rebuild paths now obey the same rule.
-struct NrRetired
-{
-    void* feature = nullptr;
-    ID3D12Resource* resource = nullptr;
-    int framesLeft = 32;
-};
-
-std::vector<NrRetired> g_nrRetired;
-
-void ParkNrFeature(void*& feature)
-{
-    if (feature == nullptr)
-        return;
-
-    NrRetired r;
-    r.feature = feature;
-    feature = nullptr;
-    g_nrRetired.push_back(r);
-}
-
-void ParkNrResource(ID3D12Resource*& res)
-{
-    if (res == nullptr)
-        return;
-
-    NrRetired r;
-    r.resource = res;
-    res = nullptr;
-    g_nrRetired.push_back(r);
-}
-
-void TickNrRetired()
-{
-    for (size_t i = 0; i < g_nrRetired.size();)
-    {
-        if (--g_nrRetired[i].framesLeft > 0)
-        {
-            ++i;
-            continue;
-        }
-
-        if (g_nrRetired[i].feature != nullptr && g_nr.release != nullptr)
-            g_nr.release(g_nrRetired[i].feature);
-
-        if (g_nrRetired[i].resource != nullptr)
-            g_nrRetired[i].resource->Release();
-
-        g_nrRetired.erase(g_nrRetired.begin() + i);
-    }
-}
-
 bool g_splitActive = false;
 
 void SetSplitActive(bool active) { g_splitActive = active; }
