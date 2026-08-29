@@ -6051,7 +6051,7 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\n\nNot the same scale as the super resolution or ray reconstruction presets --"
                        "\nthe same number means something different here.");
 
-        static const char* nrStyleNames[] = { "Natural", "Cinematic" };
+        static const char* nrStyleNames[] = { "Natural (default)", "Cinematic" };
         int style = (int) config->DlssNrStyle.value_or_default();
         if (ImGui::Combo("Style", &style, nrStyleNames, IM_ARRAYSIZE(nrStyleNames)))
             config->DlssNrStyle = (uint32_t) style;
@@ -6137,6 +6137,28 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
             ShowHelpMarker("Too low and highlights flatten out before the model sees them; too high and"
                            "\nit works on a dark, featureless frame.");
         }
+
+        float wpScale = config->DlssNrWhitePointScale.value_or_default();
+        if (ImGui::SliderFloat("White point scale", &wpScale, 0.5f, 2.0f, "%.2fx"))
+            config->DlssNrWhitePointScale = wpScale;
+
+        ShowHelpMarker("Multiplies the white point above -- automatic or manual -- before the model"
+                       "\nsees the frame. Above 1, highlights sit lower on the curve and the model"
+                       "\ntreats them as less extreme, so its tone edits back off; below 1, the"
+                       "\nopposite. The encode and resolve stay exact inverses, so this only moves"
+                       "\nwhat the model is shown, never the untouched image.");
+
+        float protectHl = config->DlssNrProtectHighlights.value_or_default();
+        if (ImGui::SliderFloat("Protect highlights", &protectHl, 0.0f, 0.5f, "%.2f"))
+            config->DlssNrProtectHighlights = protectHl;
+
+        ShowHelpMarker("The model was trained to make finished, tone-mapped pictures, so its instinct"
+                       "\nat an extreme highlight -- a lamp, a neon sign -- is to calm it down. That"
+                       "\nreads as muted, missing punch. This fades the model's edit out over the top"
+                       "\nfraction of the brightness range: 0.2 means the brightest fifth keeps its"
+                       "\nfull energy while everything below still gets the model's detail."
+                       "\n\n0 is off and bit-identical. The other lever for the same complaint is"
+                       "\nLocal tone below: at 0 the model stops re-toning entirely, everywhere.");
 
         float maxRatio = config->DlssNrMaxRatio.value_or_default();
         if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))

@@ -69,6 +69,7 @@ cbuffer Params : register(b0)
     uint  gGuideHeight;
     float gStability;    // how much of the history survives each frame; 0 is off
     float gNoiseFloor;   // edits below this are squashed toward zero; 0 is off
+    float gProtectHighlights; // the top fraction of the range where the edit fades out; 0 is off
 };
 
 Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
@@ -228,6 +229,17 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 colourEdit = edit - lumaEdit;
     float3 applied = lumaEdit * gTransferStrength + colourEdit * gColourStrength;
 
+    // Protect highlights. The model was trained to produce finished, tone-mapped pictures, so its
+    // instinct at an extreme highlight -- a lamp, a neon sign -- is to calm it toward its trained
+    // statistics. Structure detail lives everywhere else; the punch of a light lives exactly there.
+    // The edit fades out over the top fraction of the range, so the model keeps its say everywhere
+    // except the peaks. 0 is off.
+    if (gProtectHighlights > 0.0)
+    {
+        float relLuma = saturate(dot(original, kLuma) / max(gWhitePoint, 1e-4));
+        applied *= 1.0 - smoothstep(1.0 - gProtectHighlights, 1.0, relLuma);
+    }
+
     // No highlight rolloff. It was a second belt after the clamp below, and it discarded the model's
     // contribution exactly where a lit scene carries its punch -- the two inject points now apply the
     // edit identically, with the clamp as the one safety in both.
@@ -263,6 +275,7 @@ struct Params
     unsigned int guideHeight;
     float stability;
     float noiseFloor;
+    float protectHighlights;
 };
 
 // A typeless resource cannot be viewed, and the buffer the upscaler writes is occasionally declared that

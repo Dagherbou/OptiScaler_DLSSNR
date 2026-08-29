@@ -931,9 +931,10 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         }
     }
 
-    const float whitePoint = autoWhite && g_autoWhitePointSettled
-                                 ? g_autoWhitePoint
-                                 : cfg.DlssNrWhitePoint.value_or_default();
+    const float whitePoint = (autoWhite && g_autoWhitePointSettled
+                                  ? g_autoWhitePoint
+                                  : cfg.DlssNrWhitePoint.value_or_default()) *
+                             cfg.DlssNrWhitePointScale.value_or_default();
 
     if (g_gpuTime == nullptr)
         g_gpuTime = std::make_unique<GpuTime_Dx12>(device);
@@ -1064,6 +1065,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.noiseFloor = cfg.DlssNrNoiseFloor.value_or_default();
+        resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
         resolveParams.passthrough = isHdrBuffer ? 0u : 1u;
 
         // The accumulator: this frame's edit blended with its own reprojected history, carried to where
@@ -1485,6 +1487,7 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.noiseFloor = cfg.DlssNrNoiseFloor.value_or_default();
+        resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
 
         // The same accumulator the before-frame-generation path has: the edit blended with its own
         // reprojected history. With frame generation, generated frames share a rendered frame's motion

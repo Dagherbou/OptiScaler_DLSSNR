@@ -323,6 +323,14 @@ class Config
     // per-frame churn is small and unstructured, real detail is larger. 0 is off and bit-identical.
     CustomOptional<float> DlssNrNoiseFloor { 0.0f };
 
+    // Multiplies the (auto or manual) white point before the encode: what the model considers "white".
+    // Higher means highlights sit lower on the curve and the model treats them as less extreme.
+    CustomOptional<float> DlssNrWhitePointScale { 1.0f };
+
+    // The top fraction of the brightness range where the model's edit fades out, protecting the punch
+    // of lamps and signs from the model's trained instinct to calm extreme highlights. 0 is off.
+    CustomOptional<float> DlssNrProtectHighlights { 0.0f };
+
     // Include-RR's own supersample ratio. 0 follows Output Scaling's Ratio; anything above 1.05 runs
     // RR at this ratio instead -- most of the reconstruction sharpness for far less of RR's cost.
     CustomOptional<float> DlssNrSplitIncludeRRRatio { 0.0f };
