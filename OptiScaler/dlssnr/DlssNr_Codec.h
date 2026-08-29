@@ -228,8 +228,11 @@ void main(uint3 id : SV_DispatchThreadID)
             detect = max(detect, gModel.Load(int3(id.xy, 0)).a);
 
         float mask = detect > prev.a ? lerp(prev.a, detect, 0.25) : prev.a * 0.98;
+
+        // The history always keeps the true frame; only what the debug view reads is replaced, so the
+        // three terms can be looked at directly instead of guessed at.
         gKeep[id.xy] = float4(cur.rgb, mask);
-        gTarget[id.xy] = float4(cur.rgb, mask);
+        gTarget[id.xy] = gDebugView == 4 ? float4(moving, inPlace, mismatch, mask) : float4(cur.rgb, mask);
         return;
     }
 
@@ -306,11 +309,11 @@ void main(uint3 id : SV_DispatchThreadID)
 
     if (gDebugView == 4)
     {
-        // The HUD mask as the resolve will use it: white where the edit is held off, the frame
-        // dimmed underneath so the mask reads against it. Shows exactly what HUD detection found.
-        float m = saturate(originalSample.a);
-        float3 dimmed = original * 0.25;
-        gTarget[id.xy] = float4(lerp(dimmed, float3(1.0, 1.0, 1.0), m * (gHudDetect > 0.0 ? 1.0 : 0.0)), 1.0);
+        // What HUD detection is thinking, term by term: red where the motion vectors say this pixel
+        // should have moved, green where it did not change, blue where it disagrees with where the
+        // vectors say it came from. White is all three at once, which is the interface; anything less
+        // says which test is failing. Needs HUD detection above zero, or the mask pass never runs.
+        gTarget[id.xy] = float4(gHudDetect > 0.0 ? original : original * 0.25, 1.0);
         return;
     }
 

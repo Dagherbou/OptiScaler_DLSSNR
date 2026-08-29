@@ -756,6 +756,40 @@ bool EvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_Handle* hand
         return true;
     }
 
+    // The enlargement: to the supersampled size when the ratio asks, straight to display otherwise.
+    const bool supersample = mult > 1.0f;
+    auto targetW = supersample ? (unsigned int) (dispW * mult + 0.5f) : dispW;
+    auto targetH = supersample ? (unsigned int) (dispH * mult + 0.5f) : dispH;
+
+    // DLSS refuses ratios beyond 4x its input, so the target is capped there.
+    targetW = targetW > renderW * 4 ? renderW * 4 : targetW;
+    targetH = targetH > renderH * 4 ? renderH * 4 : targetH;
+
+    // When that target is the size the frame already is, the enlargement changes no geometry: it is a
+    // second temporal filter running over the model's work, and a temporal filter's job is to remove
+    // high-frequency variation that disagrees with its history -- which is precisely what the model
+    // just synthesised. That is where the split's detail went. So it is skipped: the model runs in
+    // place on the game's own output, and the pass earns its place again the moment supersampling or
+    // a real upscale gives it something to do.
+    if (targetW == renderW && targetH == renderH)
+    {
+        const NVSDK_NGX_Result plainResult = evaluate(cmdList, handle, params, callback);
+
+        if (plainResult != NVSDK_NGX_Result_Success)
+        {
+            *outResult = plainResult;
+            return true;
+        }
+
+        SplitParkEnlargement();
+        DlssNr::SetSplitActive(true);
+        DlssNr::EvaluateAfterUpscale(cmdList, params, true);
+        DlssNr::SetSplitStatus("running: NR at 1:1, before the interface -- no enlargement needed "
+                               "(Output Scaling adds a supersampled one)");
+        *outResult = NVSDK_NGX_Result_Success;
+        return true;
+    }
+
     // RR 1:1: denoise at render size, enhance there, enlarge once.
     if (SplitDx12.intermediate == nullptr)
     {
@@ -783,15 +817,6 @@ bool EvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_Handle* hand
 
     DlssNr::SetSplitActive(true);
     DlssNr::EvaluateAfterUpscale(cmdList, params, true);
-
-    // The enlargement: to the supersampled size when the ratio asks, straight to display otherwise.
-    const bool supersample = mult > 1.0f;
-    auto targetW = supersample ? (unsigned int) (dispW * mult + 0.5f) : dispW;
-    auto targetH = supersample ? (unsigned int) (dispH * mult + 0.5f) : dispH;
-
-    // DLSS refuses ratios beyond 4x its input, so the target is capped there.
-    targetW = targetW > renderW * 4 ? renderW * 4 : targetW;
-    targetH = targetH > renderH * 4 ? renderH * 4 : targetH;
 
     const int srPresetWanted = (int) Config::Instance()->DlssNrSplitSrPreset.value_or_default();
 
@@ -952,11 +977,25 @@ bool EvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_Handle* hand
     params->Set(NVSDK_NGX_Parameter_Sharpness,
                 Config::Instance()->DlssNrSplitSrSharpness.value_or_default());
 
+    // The game's jitter describes where its raw samples sat. What the enlargement is handed is not
+    // raw: it has been through the denoiser, and its samples sit at pixel centres. Passing the game's
+    // offsets tells DLSS to accumulate as if the image were displaced by a fraction of a pixel that
+    // changes every frame -- a per-frame misregistration, which reads as softness and shimmer in
+    // exactly the detail the model added.
+    float gameJitterX = 0.0f;
+    float gameJitterY = 0.0f;
+    params->Get(NVSDK_NGX_Parameter_Jitter_Offset_X, &gameJitterX);
+    params->Get(NVSDK_NGX_Parameter_Jitter_Offset_Y, &gameJitterY);
+    params->Set(NVSDK_NGX_Parameter_Jitter_Offset_X, 0.0f);
+    params->Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, 0.0f);
+
     bool srOk = SplitDx12.sr->Evaluate(cmdList, params);
 
     SplitBarrier(cmdList, SplitDx12.intermediate, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     params->Set(NVSDK_NGX_Parameter_Sharpness, gameSharpness);
+    params->Set(NVSDK_NGX_Parameter_Jitter_Offset_X, gameJitterX);
+    params->Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, gameJitterY);
 
     if (srOk && useOversized)
         srOk = SplitDownscale(cmdList, SplitDx12.oversized, gameOutput);
