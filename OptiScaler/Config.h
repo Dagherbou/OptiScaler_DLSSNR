@@ -330,6 +330,10 @@ class Config
     // Fades the edit out over a screen-edge margin, protecting HUD elements at the finished frame.
     CustomOptional<float> DlssNrHudGuard { 0.0f };
 
+    // The mirror of highlight restore: pulls back the model's brightening of dark regions, which is
+    // the other half of the washed-out look. 0 is off.
+    CustomOptional<float> DlssNrShadowRestore { 0.0f };
+
     // Include-RR's own supersample ratio. 0 follows Output Scaling's Ratio; anything above 1.05 runs
     // RR at this ratio instead -- most of the reconstruction sharpness for far less of RR's cost.
     CustomOptional<float> DlssNrSplitIncludeRRRatio { 0.0f };

@@ -6171,6 +6171,18 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\nregions. The blunter lever is Local tone below: at 0 the model stops"
                        "\nre-toning entirely, everywhere, dark corners included.");
 
+        float shadowRestore = config->DlssNrShadowRestore.value_or_default();
+        if (ImGui::SliderFloat("Shadow restore", &shadowRestore, 0.0f, 1.0f, "%.2f"))
+            config->DlssNrShadowRestore = shadowRestore;
+
+        ShowHelpMarker("The mirror of Highlight restore, and the other half of the washed-out look:"
+                       "\nthe model lifts dark regions toward its trained idea of a well-exposed"
+                       "\npicture, and the scene loses its darkness -- an alley in shadow turns grey."
+                       "\nThis pulls back the brightening of dark regions, scaled by how dark they"
+                       "\nare; detail and colour pass untouched."
+                       "\n\n0 is off and bit-identical; 1 removes all lift from the darkest regions."
+                       "\nRun both restores together to keep the scene's full contrast.");
+
         float maxRatio = config->DlssNrMaxRatio.value_or_default();
         if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
             config->DlssNrMaxRatio = maxRatio;

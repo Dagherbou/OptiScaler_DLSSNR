@@ -70,6 +70,7 @@ cbuffer Params : register(b0)
     float gStability;    // how much of the history survives each frame; 0 is off
     float gProtectHighlights; // the top fraction of the range where the edit fades out; 0 is off
     float gHudGuard;     // screen-edge fraction where the edit fades out (HUD protection); 0 is off
+    float gShadowRestore; // pulls back the brightening of dark regions; 0 is off
 };
 
 Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
@@ -275,13 +276,21 @@ void main(uint3 id : SV_DispatchThreadID)
     // The achromatic darkening of bright regions is pulled back, scaled by how bright the original
     // is; colour shifts, brightening and structure pass untouched, so the model's detail stays.
     // 0 is off; 1 removes all darkening from the brightest regions.
-    if (gProtectHighlights > 0.0)
+    if (gProtectHighlights > 0.0 || gShadowRestore > 0.0)
     {
         float relLuma = saturate(dot(original, kLuma) / max(gWhitePoint, 1e-4));
         float appliedLuma = dot(applied, kLuma);
 
+        // Highlight restore: the model's darkening of bright regions is pulled back.
         if (appliedLuma < 0.0)
             applied -= appliedLuma * gProtectHighlights * smoothstep(0.25, 0.9, relLuma);
+
+        // Shadow restore, the mirror: the model lifts dark regions toward its trained idea of a
+        // well-exposed picture, and that lift is the other half of the washed-out look -- the alley
+        // that lost its darkness. Brightening is pulled back where the original is dark; detail and
+        // colour pass, and the scene keeps its drama.
+        if (appliedLuma > 0.0)
+            applied -= appliedLuma * gShadowRestore * (1.0 - smoothstep(0.05, 0.45, relLuma));
     }
 
     // No highlight rolloff. It was a second belt after the clamp below, and it discarded the model's
@@ -331,6 +340,7 @@ struct Params
     float stability;
     float protectHighlights;
     float hudGuard;
+    float shadowRestore;
 };
 
 // A typeless resource cannot be viewed, and the buffer the upscaler writes is occasionally declared that

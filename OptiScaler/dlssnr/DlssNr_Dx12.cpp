@@ -976,6 +976,7 @@ void EvaluateHudless(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* hudless
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
         resolveParams.hudGuard = 0.0f; // there is no HUD here -- that is the whole point
+        resolveParams.shadowRestore = cfg.DlssNrShadowRestore.value_or_default();
 
         const float stability = cfg.DlssNrEditStability.value_or_default();
         ID3D12Resource* historyIn = nullptr;
@@ -1519,6 +1520,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
         resolveParams.hudGuard = cfg.DlssNrHudGuard.value_or_default();
+        resolveParams.shadowRestore = cfg.DlssNrShadowRestore.value_or_default();
         resolveParams.passthrough = isHdrBuffer ? 0u : 1u;
 
         // The accumulator: this frame's edit blended with its own reprojected history, carried to where
@@ -1999,6 +2001,7 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
         resolveParams.hudGuard = cfg.DlssNrHudGuard.value_or_default();
+        resolveParams.shadowRestore = cfg.DlssNrShadowRestore.value_or_default();
 
         // The same accumulator the before-frame-generation path has: the edit blended with its own
         // reprojected history. With frame generation, generated frames share a rendered frame's motion
