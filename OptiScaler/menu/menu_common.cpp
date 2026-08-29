@@ -6079,31 +6079,24 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
         if (ImGui::Checkbox("UI correction", &uiCorrection))
             config->DlssNrUiCorrection = uiCorrection;
 
-        float hudGuard = config->DlssNrHudGuard.value_or_default();
-        if (ImGui::SliderFloat("HUD guard (screen edges)", &hudGuard, 0.0f, 0.25f, "%.2f"))
-            config->DlssNrHudGuard = hudGuard;
-
-        ShowHelpMarker("Fades the model's edit out near the screen edges, where minimaps, trackers and"
-                       "
-bars live -- the model's own UI correction below is NVIDIA's and it muddies"
-                       "
-them anyway on the finished frame. 0.1 protects a tenth of the screen from"
-                       "
-each edge; the centre keeps the full effect."
-                       "
-
-Only matters on the finished frame: before frame generation and the split"
-                       "
-run before the interface is drawn, so the model never sees it there."
-                       "
-
-0 is off and bit-identical.");
 
         ShowHelpMarker("Keeps the model off the interface."
                        "\n\nIt matters most on the finished frame, where the HUD is part of the picture"
                        "\nthe model is handed and it will otherwise synthesise detail into text and"
                        "\nicons. Before frame generation the UI has not been drawn yet, so there is"
                        "\nnothing there to protect.");
+
+        float hudGuard = config->DlssNrHudGuard.value_or_default();
+        if (ImGui::SliderFloat("HUD guard (screen edges)", &hudGuard, 0.0f, 0.25f, "%.2f"))
+            config->DlssNrHudGuard = hudGuard;
+
+        ShowHelpMarker("Fades the model's edit out near the screen edges, where minimaps, trackers and"
+                       "\nbars live -- the model's own UI correction above is NVIDIA's and it muddies"
+                       "\nthem anyway on the finished frame. 0.1 protects a tenth of the screen from"
+                       "\neach edge; the centre keeps the full effect."
+                       "\n\nOnly matters on the finished frame: before frame generation and the split"
+                       "\nrun before the interface is drawn, so the model never sees it there."
+                       "\n\n0 is off and bit-identical.");
 
         ImGui::SeparatorText("Colour");
 
