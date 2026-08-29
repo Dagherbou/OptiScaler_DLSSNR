@@ -1,7 +1,7 @@
 #include <pch.h>
 #include "IFeature_Dx11wDx12.h"
 
-#include <dlssnr/DlssNr_Dx12.h>
+#include <dlssnr/DlssNr.h>
 
 #include <Config.h>
 
@@ -407,8 +407,10 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         // of every input, the list is still recording, and the model's edit lands on the D3D12 output
         // before it is copied back to the game's D3D11 texture. This one call is what makes the pass
         // work in DirectX 11 games, whatever upscaler carried it here.
+#if OPTI_DLSSNR
         if (dx12EvalResult && Config::Instance()->DlssNrEnabled.value_or_default())
             DlssNr::EvaluateAfterUpscale(cmdList, InParameters, true);
+#endif
 
     } while (false);
 

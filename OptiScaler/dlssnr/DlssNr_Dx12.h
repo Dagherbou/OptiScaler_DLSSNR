@@ -13,6 +13,8 @@
 // NGX evaluate belongs to the upscaler and which to frame generation. Both are handed depth and motion
 // vectors, so anything guessing from the parameter block alone attaches to both and runs the model twice
 // per rendered frame. Here it is a lookup on the feature handle.
+class Config;
+
 namespace DlssNr
 {
 // Where the model runs. Two genuine trade-offs rather than one compromise: before frame generation it
@@ -41,6 +43,9 @@ void EvaluateHudless(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* hudless
                      D3D12_RESOURCE_STATES state);
 
 const char* SplitStatus();
+
+// The settings panel, drawn inside OptiScaler's menu.
+void RenderMenu(::Config* config, float menuResScale);
 
 // Clears the session failure latches -- the model's and the split's -- so a failure caused by transient
 // thrash does not cost a restart.

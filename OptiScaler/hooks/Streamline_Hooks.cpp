@@ -2,7 +2,7 @@
 
 #include "Streamline_Hooks.h"
 
-#include <dlssnr/DlssNr_Dx12.h>
+#include <dlssnr/DlssNr.h>
 
 #include <Util.h>
 #include <Config.h>
@@ -416,10 +416,12 @@ sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const
 
         // The hudless inject point: the finished look, before the interface. Recorded here so the
         // edit precedes anything frame generation copies from this buffer.
+#if OPTI_DLSSNR
         if (tags[i].type == sl::kBufferTypeHUDLessColor && cmdBuffer != nullptr)
             DlssNr::EvaluateHudless((ID3D12GraphicsCommandList*) cmdBuffer,
                                     (ID3D12Resource*) tags[i].resource->native,
                                     (D3D12_RESOURCE_STATES) tags[i].resource->state);
+#endif
 
         if (State::Instance().activeFgInput == FGInput::DLSSG &&
             (tags[i].type == sl::kBufferTypeHUDLessColor || tags[i].type == sl::kBufferTypeDepth ||
@@ -500,10 +502,12 @@ sl::Result StreamlineHooks::hkslSetTagForFrame(const sl::FrameToken& frame, cons
             continue;
         }
 
+#if OPTI_DLSSNR
         if (resources[i].type == sl::kBufferTypeHUDLessColor && cmdBuffer != nullptr)
             DlssNr::EvaluateHudless((ID3D12GraphicsCommandList*) cmdBuffer,
                                     (ID3D12Resource*) resources[i].resource->native,
                                     (D3D12_RESOURCE_STATES) resources[i].resource->state);
+#endif
 
         if (State::Instance().activeFgInput == FGInput::DLSSG &&
             (resources[i].type == sl::kBufferTypeHUDLessColor || resources[i].type == sl::kBufferTypeDepth ||

@@ -1,6 +1,8 @@
 #include "pch.h"
 
-#include "DlssNr_Dx12.h"
+#include "DlssNr.h"
+
+#if OPTI_DLSSNR
 
 #include "DlssNr_Codec.h"
 #include "DlssNr_Probe.h"
@@ -2273,3 +2275,5 @@ void Shutdown()
     g_reader.destroy();
 }
 } // namespace DlssNr
+
+#endif // OPTI_DLSSNR

@@ -2,7 +2,7 @@
 #include "menu_overlay_base.h"
 #include "menu_overlay_dx.h"
 
-#include <dlssnr/DlssNr_Dx12.h>
+#include <dlssnr/DlssNr.h>
 
 #include <Util.h>
 #include <Logger.h>
@@ -437,8 +437,10 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain)
         // the overlay's only runs when the menu is open.
         {
             UINT nrBackBufferIdx = pSwapChain->GetCurrentBackBufferIndex();
+#if OPTI_DLSSNR
             DlssNr::EvaluateAtPresent((ID3D12CommandQueue*) currentSCCommandQueue,
                                       g_mainRenderTargetResource[nrBackBufferIdx], nrBackBufferIdx);
+#endif
         }
 
         // If everything is ready render the frame
