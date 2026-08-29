@@ -21,7 +21,9 @@ namespace DlssNr
 // costs one run per rendered frame and generated frames inherit the result, but the game's tonemapper
 // has not run yet so it works on a proxy; on the finished frame it sees exactly the sort of picture it
 // was trained on, at a run per presented frame.
-constexpr unsigned int INJECT_BEFORE_FG = 0;
+// Where the pass runs. 0 was "before frame generation" (the linear frame straight after the
+// upscaler) and is retired: the finished frame is the model's trained distribution, and the hudless
+// point gives the same picture without the interface. A stored 0 reads as the finished frame.
 constexpr unsigned int INJECT_PRESENT = 1;
 constexpr unsigned int INJECT_HUDLESS = 2;
 // Runs the model over Output on the same command list, immediately after the upscaler has written it.
@@ -41,6 +43,10 @@ void SetSplitStatus(const char* status);
 // Streamline FG games. The model's trained distribution AND structural UI immunity at once.
 void EvaluateHudless(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* hudless,
                      D3D12_RESOURCE_STATES state);
+
+// Frame generation titles tag their UI layer through Streamline; a copy of it makes the HUD mask
+// exact at the finished frame. Called at tag time.
+void NoteUiLayer(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* ui, D3D12_RESOURCE_STATES state);
 
 const char* SplitStatus();
 

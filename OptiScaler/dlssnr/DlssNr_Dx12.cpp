@@ -69,6 +69,13 @@ struct NrState
     // The frame shrunk for the model, when it is working below full resolution.
     ID3D12Resource* colorSmall = nullptr;
     ID3D12Resource* presentProxy = nullptr; // scRGB finished frame: the encoded picture the model sees
+
+    // HUD detection at the finished frame: last frame with the mask in alpha (ping-pong), and the
+    // game's tagged UI layer when it offers one.
+    ID3D12Resource* hudPrev[2] = { nullptr, nullptr };
+    int hudIndex = 0;
+    ID3D12Resource* uiClone = nullptr;
+    unsigned long long uiCloneFrame = 0;
     unsigned int workWidth = 0;
     unsigned int workHeight = 0;
 
@@ -982,7 +989,7 @@ void EvaluateHudless(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* hudless
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
-        resolveParams.hudGuard = 0.0f; // there is no HUD here -- that is the whole point
+        resolveParams.hudDetect = 0.0f; // there is no HUD here -- that is the whole point
         resolveParams.shadowRestore = cfg.DlssNrShadowRestore.value_or_default();
 
         const float stability = cfg.DlssNrEditStability.value_or_default();
@@ -1090,6 +1097,49 @@ void EvaluateHudless(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* hudless
     device->Release();
 }
 
+void NoteUiLayer(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* ui, D3D12_RESOURCE_STATES state)
+{
+    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    const Config& cfg = *Config::Instance();
+
+    if (!cfg.DlssNrEnabled.value_or_default() || cmdList == nullptr || ui == nullptr)
+        return;
+
+    if (cfg.DlssNrInjectPoint.value_or_default() != INJECT_PRESENT || cfg.DlssNrHudDetect.value_or_default() <= 0.0f)
+        return;
+
+    ID3D12Device* device = nullptr;
+
+    if (FAILED(cmdList->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
+        return;
+
+    const auto desc = ui->GetDesc();
+
+    if (g_nr.uiClone != nullptr)
+    {
+        const auto have = g_nr.uiClone->GetDesc();
+
+        if (have.Width != desc.Width || have.Height != desc.Height || have.Format != desc.Format)
+        {
+            g_nr.uiClone->Release();
+            g_nr.uiClone = nullptr;
+        }
+    }
+
+    if (g_nr.uiClone == nullptr)
+        g_nr.uiClone = CreateGuideClone(device, ui);
+
+    if (g_nr.uiClone != nullptr)
+    {
+        Barrier(cmdList, ui, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        cmdList->CopyResource(g_nr.uiClone, ui);
+        Barrier(cmdList, ui, D3D12_RESOURCE_STATE_COPY_SOURCE, state);
+        g_nr.uiCloneFrame = g_frames;
+    }
+
+    device->Release();
+}
+
 const char* SplitStatus() { return g_splitStatus; }
 
 // The split's own latch lives at the seam; it registers a hook here so one button clears everything.
@@ -1186,7 +1236,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     // When the model runs on the finished frame instead, this call exists only to take a copy of the
     // guides while they are still valid and still describe this frame. The split pipeline overrides the
     // choice: it calls for the in-place pass on its own intermediate, whatever the dropdown says.
-    if (!forceInPlace && cfg.DlssNrInjectPoint.value_or_default() == INJECT_PRESENT)
+    if (!forceInPlace)
     {
         if (CloneGuideAlways(device, cmdList, depth, &g_nr.depthClone) != nullptr &&
             CloneGuideAlways(device, cmdList, motion, &g_nr.motionClone) != nullptr)
@@ -1198,17 +1248,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
         device->Release();
         return;
-    }
-
-    // Diagnostic for the format ping-pong: every full run of this path says who asked for it. A full
-    // run with forceInPlace=0 and inject=1 would be a contradiction worth seeing in writing.
-    static unsigned long long lastFullRunLog = 0;
-
-    if (g_frames - lastFullRunLog > 60)
-    {
-        lastFullRunLog = g_frames;
-        LOG_DEBUG("DLSS-NR render-path full run: forceInPlace={}, inject={}, frame {}x{}",
-                 forceInPlace ? 1 : 0, (int) cfg.DlssNrInjectPoint.value_or_default(), width, height);
     }
 
     if (!EnsureForwarder() || !EnsureCapabilityParams(device))
@@ -1526,7 +1565,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
-        resolveParams.hudGuard = cfg.DlssNrHudGuard.value_or_default();
+        resolveParams.hudDetect = 0.0f; // before the interface is drawn
         resolveParams.shadowRestore = cfg.DlssNrShadowRestore.value_or_default();
         resolveParams.passthrough = isHdrBuffer ? 0u : 1u;
 
@@ -1876,6 +1915,69 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
     Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
+    // HUD detection, when asked for: the mask is written into the frame copy's alpha before anything
+    // reads it. Exact where the game tagged its UI layer this frame; estimated from what stayed put
+    // while the world moved everywhere else.
+    const float hudDetect = cfg.DlssNrHudDetect.value_or_default();
+
+    if (hudDetect > 0.0f && g_nr.motionClone != nullptr)
+    {
+        for (auto& hp : g_nr.hudPrev)
+        {
+            if (hp != nullptr && ((unsigned int) hp->GetDesc().Width != width || hp->GetDesc().Height != height))
+            {
+                hp->Release();
+                hp = nullptr;
+            }
+
+            if (hp == nullptr)
+                hp = CreateScratch(device, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height);
+        }
+
+        if (g_nr.hudPrev[0] != nullptr && g_nr.hudPrev[1] != nullptr)
+        {
+            ID3D12Resource* prevIn = g_nr.hudPrev[g_nr.hudIndex];
+            ID3D12Resource* prevOut = g_nr.hudPrev[1 - g_nr.hudIndex];
+            const bool exact = g_nr.uiClone != nullptr && g_frames - g_nr.uiCloneFrame <= 2;
+
+            codec::Params maskParams {};
+            maskParams.mode = codec::MODE_HUDMASK;
+            maskParams.width = width;
+            maskParams.height = height;
+            maskParams.mvScaleX = g_nr.guideMvScaleX;
+            maskParams.mvScaleY = g_nr.guideMvScaleY;
+            maskParams.guideWidth = g_nr.guideWidth;
+            maskParams.guideHeight = g_nr.guideHeight;
+            maskParams.accumulate = exact ? 1u : 0u;
+
+            Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            Barrier(cmdList, prevIn, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            Barrier(cmdList, g_nr.motionClone, D3D12_RESOURCE_STATE_COPY_DEST,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+            if (exact)
+                Barrier(cmdList, g_nr.uiClone, D3D12_RESOURCE_STATE_COPY_DEST,
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+            g_codec.dispatch(cmdList, maskParams, prevIn, exact ? g_nr.uiClone : nullptr, nullptr,
+                             g_nr.colorCopy, prevOut, g_nr.motionClone, nullptr);
+
+            if (exact)
+                Barrier(cmdList, g_nr.uiClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_COPY_DEST);
+
+            Barrier(cmdList, g_nr.motionClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COPY_DEST);
+            Barrier(cmdList, prevIn, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            g_nr.hudIndex = 1 - g_nr.hudIndex;
+        }
+    }
+
     const bool scRGB = backBuffer->GetDesc().Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
     const float wpScale = cfg.DlssNrWhitePointScale.value_or_default();
     const bool proxyCurve = scRGB || wpScale < 0.99f || wpScale > 1.01f;
@@ -2009,7 +2111,7 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
-        resolveParams.hudGuard = cfg.DlssNrHudGuard.value_or_default();
+        resolveParams.hudDetect = hudDetect;
         resolveParams.shadowRestore = cfg.DlssNrShadowRestore.value_or_default();
 
         // The same accumulator the before-frame-generation path has: the edit blended with its own
@@ -2216,6 +2318,21 @@ void Shutdown()
     {
         g_nr.presentProxy->Release();
         g_nr.presentProxy = nullptr;
+    }
+
+    for (auto& hp : g_nr.hudPrev)
+    {
+        if (hp != nullptr)
+        {
+            hp->Release();
+            hp = nullptr;
+        }
+    }
+
+    if (g_nr.uiClone != nullptr)
+    {
+        g_nr.uiClone->Release();
+        g_nr.uiClone = nullptr;
     }
 
     for (auto& h : g_nr.editHistory)

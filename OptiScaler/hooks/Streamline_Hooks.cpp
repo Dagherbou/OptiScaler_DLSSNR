@@ -421,6 +421,11 @@ sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const
             DlssNr::EvaluateHudless((ID3D12GraphicsCommandList*) cmdBuffer,
                                     (ID3D12Resource*) tags[i].resource->native,
                                     (D3D12_RESOURCE_STATES) tags[i].resource->state);
+
+        if (tags[i].type == sl::kBufferTypeUIColorAndAlpha && cmdBuffer != nullptr)
+            DlssNr::NoteUiLayer((ID3D12GraphicsCommandList*) cmdBuffer,
+                                (ID3D12Resource*) tags[i].resource->native,
+                                (D3D12_RESOURCE_STATES) tags[i].resource->state);
 #endif
 
         if (State::Instance().activeFgInput == FGInput::DLSSG &&
@@ -507,6 +512,11 @@ sl::Result StreamlineHooks::hkslSetTagForFrame(const sl::FrameToken& frame, cons
             DlssNr::EvaluateHudless((ID3D12GraphicsCommandList*) cmdBuffer,
                                     (ID3D12Resource*) resources[i].resource->native,
                                     (D3D12_RESOURCE_STATES) resources[i].resource->state);
+
+        if (resources[i].type == sl::kBufferTypeUIColorAndAlpha && cmdBuffer != nullptr)
+            DlssNr::NoteUiLayer((ID3D12GraphicsCommandList*) cmdBuffer,
+                                (ID3D12Resource*) resources[i].resource->native,
+                                (D3D12_RESOURCE_STATES) resources[i].resource->state);
 #endif
 
         if (State::Instance().activeFgInput == FGInput::DLSSG &&

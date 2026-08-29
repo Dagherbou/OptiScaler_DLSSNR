@@ -43,6 +43,8 @@ constexpr int MODE_RESOLVE = 1;
 // Shrinks the frame so the model can work on fewer pixels. Filtered, not point sampled: the guidance is
 // explicit that a nearest-neighbour enlargement of this pass turns into harsh aliasing.
 constexpr int MODE_DOWNSAMPLE = 2;
+// Writes the HUD mask into the frame copy's alpha (see the shader).
+constexpr int MODE_HUDMASK = 3;
 
 // Debug views, so the model's contribution can be looked at rather than guessed at.
 constexpr int DEBUG_OFF = 0;
@@ -69,7 +71,7 @@ cbuffer Params : register(b0)
     uint  gGuideHeight;
     float gStability;    // how much of the history survives each frame; 0 is off
     float gProtectHighlights; // the top fraction of the range where the edit fades out; 0 is off
-    float gHudGuard;     // screen-edge fraction where the edit fades out (HUD protection); 0 is off
+    float gHudDetect;    // strength of the HUD mask carried in the original's alpha; 0 is off
     float gShadowRestore; // pulls back the brightening of dark regions; 0 is off
 };
 
@@ -125,6 +127,30 @@ void main(uint3 id : SV_DispatchThreadID)
     if (gMode == 2)
     {
         gTarget[id.xy] = gSource.SampleLevel(gLinear, uv, 0);
+        return;
+    }
+
+    if (gMode == 3)
+    {
+        // The HUD mask, written into the frame copy's alpha. The interface is what stays put while
+        // the world around it moves: a pixel unchanged from last frame under a motion vector that
+        // says it should have changed. Exact where the game tags its UI layer (gModel's alpha, when
+        // gAccumulate says one arrived). The estimate rises quickly and decays slowly, so it holds
+        // through pauses in movement instead of flickering the interface in and out.
+        float4 cur = gTarget[id.xy];
+        float4 prev = gSource.Load(int3(id.xy, 0));
+        float2 mv = gMotion.Load(int3(uv * float2(gGuideWidth, gGuideHeight), 0)).xy *
+                    float2(gMvScaleX, gMvScaleY);
+        float moving = saturate((length(mv) - 0.5) / 2.0);
+        float same = 1.0 - saturate(length(cur.rgb - prev.rgb) / 0.02);
+        float detect = moving * same;
+
+        if (gAccumulate == 1)
+            detect = max(detect, gModel.Load(int3(id.xy, 0)).a);
+
+        float mask = detect > prev.a ? lerp(prev.a, detect, 0.25) : prev.a * 0.98;
+        gKeep[id.xy] = float4(cur.rgb, mask);
+        gTarget[id.xy] = float4(cur.rgb, mask);
         return;
     }
 
@@ -297,16 +323,13 @@ void main(uint3 id : SV_DispatchThreadID)
     // contribution exactly where a lit scene carries its punch -- the two inject points now apply the
     // edit identically, with the clamp as the one safety in both.
 
-    // HUD guard. At the finished frame the interface is part of the picture, and the model's own UI
-    // correction is NVIDIA's to tune, not ours -- minimaps and trackers still get muddied. HUDs live
-    // at the edges, so the edit fades out over a screen-edge margin and the centre keeps everything.
-    // The before-frame-generation and split arrangements never see the UI at all; this is for the
-    // finished frame. 0 is off.
-    if (gHudGuard > 0.0)
-    {
-        float2 d = min(uv, 1.0 - uv);
-        applied *= smoothstep(0.4, 1.0, saturate(min(d.x, d.y) / gHudGuard));
-    }
+    // HUD detection. At the finished frame the interface is part of the picture, and the model's own
+    // UI correction is NVIDIA's to tune, not ours. The original's alpha carries a mask -- exact where
+    // the game tags its UI layer through Streamline, estimated elsewhere as "unchanged while the world
+    // moved" -- and the edit fades where the mask says interface. The hudless and split arrangements
+    // never see the UI at all. 0 is off.
+    if (gHudDetect > 0.0)
+        applied *= 1.0 - saturate(originalSample.a) * gHudDetect;
 
     float3 result = original + applied * slope;
 
@@ -328,7 +351,7 @@ void main(uint3 id : SV_DispatchThreadID)
         limit = (floorLuma - originalLuma) / editLuma2;
 
     result = original + applied * slope * saturate(limit);
-    gTarget[id.xy] = float4(max(result, float3(0.0, 0.0, 0.0)), originalSample.a);
+    gTarget[id.xy] = float4(max(result, float3(0.0, 0.0, 0.0)), gHudDetect > 0.0 ? 1.0 : originalSample.a);
 }
 )";
 
@@ -352,7 +375,7 @@ struct Params
     unsigned int guideHeight;
     float stability;
     float protectHighlights;
-    float hudGuard;
+    float hudDetect;
     float shadowRestore;
 };
 

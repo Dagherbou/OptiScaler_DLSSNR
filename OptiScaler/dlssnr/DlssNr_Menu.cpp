@@ -90,29 +90,22 @@ void RenderMenu(Config* config, float menuResScale)
 
         ImGui::SeparatorText("Where it runs");
 
-        static const char* injectNames[] = { "Before frame generation", "Finished frame (better image)",
-                                             "Finished look, before UI (FG games)" };
-        int injectPoint = (int) config->DlssNrInjectPoint.value_or_default();
-        if (injectPoint > 2)
-            injectPoint = 2;
-        if (ImGui::Combo("Inject point", &injectPoint, injectNames, IM_ARRAYSIZE(injectNames)))
-            config->DlssNrInjectPoint = (uint32_t) injectPoint;
+        static const char* injectNames[] = { "Finished frame", "Finished look, before UI (FG games)" };
+        // Stored values: 1 = finished frame, 2 = hudless; a stored 0 (the retired pre-tonemapper
+        // point) reads as the finished frame.
+        int injectIndex = config->DlssNrInjectPoint.value_or_default() == DlssNr::INJECT_HUDLESS ? 1 : 0;
+        if (ImGui::Combo("Inject point", &injectIndex, injectNames, IM_ARRAYSIZE(injectNames)))
+            config->DlssNrInjectPoint = injectIndex == 1 ? DlssNr::INJECT_HUDLESS : DlssNr::INJECT_PRESENT;
 
-        HelpMarker("Finished look, before UI: the best of both, where a game offers it. Frame"
-                       "\ngeneration titles hand Streamline a finished image before the interface is"
-                       "\ndrawn -- the model sees its trained distribution AND never touches the HUD,"
-                       "\nand generated frames inherit the result. Does nothing in games that do not"
-                       "\ntag that buffer; the log says when it engages."
-                       "\n\nFinished frame: the model sees the picture after the game's own tonemapper,"
-                       "\nwhich is exactly what it was trained on, and its answer is used as it comes."
-                       "\nCosts a run per presented frame, so roughly double with frame generation, and"
-                       "\neach generated frame is enhanced on its own."
-                       "\n\nBefore frame generation: one run per rendered frame and generated frames"
-                       "\ninherit the result, but the tonemapper has not run yet, so the model works on"
-                       "\nan approximation of it and the answer has to be applied carefully. Cheaper,"
-                       "\nand less detail."
-                       "\n\nTakes effect on restart: only one model may exist at a time, and swapping it"
-                       "\nmid-session is not worth the crash it caused every time it was tried.");
+        HelpMarker("Finished frame: the model sees the picture after the game's own tonemapper --"
+                   "\nexactly what it was trained on -- and its answer is used as it comes. The"
+                   "\ninterface is part of that picture; HUD detection below keeps the model off it."
+                   "\n\nFinished look, before UI: the same picture before the interface is drawn,"
+                   "\nwhich frame generation titles hand Streamline every frame. The model never"
+                   "\ntouches the HUD, and generated frames inherit the result. Does nothing in"
+                   "\ngames that do not tag that buffer; the log says when it engages."
+                   "\n\nBoth apply live. The old pre-tonemapper point is retired: the finished"
+                   "\nframe simply looks better, and the split covers the pre-tonemapper case.");
 
         bool split = config->DlssNrSplitPipeline.value_or_default();
         if (ImGui::Checkbox("Split pipeline: RR 1:1 + NR + internal SR", &split))
@@ -359,17 +352,18 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nicons. Before frame generation the UI has not been drawn yet, so there is"
                        "\nnothing there to protect.");
 
-        float hudGuard = config->DlssNrHudGuard.value_or_default();
-        if (ImGui::SliderFloat("HUD guard (screen edges)", &hudGuard, 0.0f, 0.25f, "%.2f"))
-            config->DlssNrHudGuard = hudGuard;
+        float hudDetect = config->DlssNrHudDetect.value_or_default();
+        if (ImGui::SliderFloat("HUD detection", &hudDetect, 0.0f, 1.0f, "%.2f"))
+            config->DlssNrHudDetect = hudDetect;
 
-        HelpMarker("Fades the model's edit out near the screen edges, where minimaps, trackers and"
-                       "\nbars live -- the model's own UI correction above is NVIDIA's and it muddies"
-                       "\nthem anyway on the finished frame. 0.1 protects a tenth of the screen from"
-                       "\neach edge; the centre keeps the full effect."
-                       "\n\nOnly matters on the finished frame: before frame generation and the split"
-                       "\nrun before the interface is drawn, so the model never sees it there."
-                       "\n\n0 is off and bit-identical.");
+        HelpMarker("Keeps the model off the interface at the finished frame, by finding it. Where"
+                   "\nthe game tags its UI layer through Streamline (frame generation titles) the"
+                   "\nmask is exact. Elsewhere the interface is what stays put while the world"
+                   "\nmoves: a pixel unchanged from last frame under a motion vector that says it"
+                   "\nshould have changed. The estimate rises fast and fades slowly, so it holds"
+                   "\nthrough pauses; standing perfectly still long enough lets it lapse."
+                   "\n\nThe strength is how completely the model is kept off what was found."
+                   "\n0 is off and bit-identical. The hudless inject point needs none of this.");
 
         ImGui::SeparatorText("Colour");
 
