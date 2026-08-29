@@ -119,18 +119,6 @@ float CurveToned(float luma)
     return lerp(CurveAt(i), CurveAt(i + 1), x - i);
 }
 
-// d(scene luminance) / d(toned luminance) at this luminance: the slope the resolve needs to land an
-// edit made in the toned picture as the equivalent edit in the scene.
-float CurveSlope(float luma)
-{
-    float x = CurvePos(luma);
-    int i = clamp((int) floor(x), 0, 22);
-    float l0 = exp2(gCurveMinLog + gCurveRangeLog * (i / 23.0));
-    float l1 = exp2(gCurveMinLog + gCurveRangeLog * ((i + 1) / 23.0));
-    float dT = max(CurveAt(i + 1) - CurveAt(i), 1e-5);
-    return (l1 - l0) / dT;
-}
-
 Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
 Texture2D<float4>   gModel    : register(t1);  // resolve: what the model returned.
 Texture2D<float4>   gOriginal : register(t2);  // resolve: the untouched frame.
@@ -268,13 +256,17 @@ void main(uint3 id : SV_DispatchThreadID)
     float4 originalSample = gOriginal.Load(int3(id.xy, 0));
     float3 original = originalSample.rgb;
 
-    // The slope of the encode at this pixel, so an edit made in the compressed picture lands as the
-    // equivalent edit in the original. For Reinhard against a white point this is exactly
-    // whitePoint + luminance -- bounded everywhere, unlike the inverse of the curve.
+    // How an edit made in the compressed picture lands in the original. This is measured rather than
+    // derived: the proxy is what the model was shown, the original is what that pixel really is, so
+    // their ratio is the compression at this exact pixel -- whatever curve produced it. Where the
+    // original already sits above what the proxy could represent, the headroom is the frame's own and
+    // the edit lands unscaled; scaling it there is what mutes highlights, because an analytic slope
+    // grows without bound exactly where the picture has its punch.
     float originalLuma = dot(original, kLuma);
-    // With no curve applied there is no slope to undo: the edit lands as it is.
-    float slope = gPassthrough != 0 ? 1.0
-                  : (gCurveMode != 0 ? CurveSlope(originalLuma) : gWhitePoint + originalLuma);
+    float proxyLuma = dot(proxy, kLuma);
+    float slope = (gPassthrough != 0 || proxyLuma <= 1e-4 || originalLuma >= proxyLuma)
+                      ? 1.0
+                      : originalLuma / proxyLuma;
 
     if (gDebugView == 1)
     {
