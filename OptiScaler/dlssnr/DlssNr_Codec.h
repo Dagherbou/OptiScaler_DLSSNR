@@ -244,11 +244,11 @@ void main(uint3 id : SV_DispatchThreadID)
         float2 px = 1.0 / float2(gWidth, gHeight);
         float lowNow = dot(edit, kLuma);
 
-        {
-            const float2 kWide[8] = { float2(-0.7, -0.2), float2(0.6, -0.6), float2(0.2, 0.7),
-                                      float2(-0.5, 0.5),  float2(0.9, 0.1),  float2(-0.9, -0.6),
-                                      float2(0.1, -0.9),  float2(0.5, 0.3) };
+        const float2 kWide[8] = { float2(-0.7, -0.2), float2(0.6, -0.6), float2(0.2, 0.7),
+                                  float2(-0.5, 0.5),  float2(0.9, 0.1),  float2(-0.9, -0.6),
+                                  float2(0.1, -0.9),  float2(0.5, 0.3) };
 
+        {
             [unroll]
             for (int i = 0; i < 8; ++i)
                 lowNow += dot(EditAt(uv + kWide[i] * 12.0 * px), kLuma);
@@ -300,9 +300,29 @@ void main(uint3 id : SV_DispatchThreadID)
                 // The low band: plain bilinear history (crispness is meaningless at this frequency), a
                 // generous clamp so a genuine lighting change still arrives promptly, and a floor on
                 // the blend -- whatever the slider says, the lighting must not pump.
+                //
+                // Unless the motion field disagrees with itself across this band's own footprint: a
+                // car against a streaming road means the wide taps span surfaces moving differently,
+                // and a hard-held low band drags a halo of tone along the road behind the vehicle.
+                // Where the field is coherent -- a camera panning over a static world, the pumping
+                // case -- the strong hold stays; where it diverges, the hold falls back to the slider.
+                float divergence = 0.0;
+
+                [unroll]
+                for (int k = 0; k < 4; ++k)
+                {
+                    float2 tapUv = uv + kWide[k * 2] * 12.0 * px;
+                    float2 mvTap = gMotion.Load(int3(tapUv * float2(gGuideWidth, gGuideHeight), 0)).xy *
+                                   float2(gMvScaleX, gMvScaleY);
+                    divergence = max(divergence, length(mvTap - mv));
+                }
+
+                float coherent = 1.0 - saturate(divergence / 4.0);
+                float lowHold = lerp(gStability, max(gStability, 0.9), coherent);
+
                 float prevLow = gPrevEdit.SampleLevel(gLinear, uvPrev, 0).a;
                 prevLow = clamp(prevLow, lowNow - 0.10, lowNow + 0.10);
-                accumulatedLow = lerp(lowNow, prevLow, max(gStability, 0.9));
+                accumulatedLow = lerp(lowNow, prevLow, lowHold);
             }
         }
 

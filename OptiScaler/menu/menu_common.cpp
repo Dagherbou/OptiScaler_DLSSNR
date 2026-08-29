@@ -6048,22 +6048,22 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\nmatched the observation that most of its positions did nothing.");
 
         float intensity = config->DlssNrIntensity.value_or_default();
-        if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 1.0f, "%.2f"))
+        if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 2.0f, "%.2f"))
             config->DlssNrIntensity = intensity;
 
         ShowHelpMarker("The model's own strength control, applied inside it. Distinct from detail"
                        "\nstrength above, which scales the result afterwards.");
 
         float localStructure = config->DlssNrLocalStructure.value_or_default();
-        if (ImGui::SliderFloat("Local structure", &localStructure, 0.0f, 1.0f, "%.2f"))
+        if (ImGui::SliderFloat("Local structure", &localStructure, 0.0f, 2.0f, "%.2f"))
             config->DlssNrLocalStructure = localStructure;
 
         float localTone = config->DlssNrLocalTone.value_or_default();
-        if (ImGui::SliderFloat("Local tone", &localTone, 0.0f, 1.0f, "%.2f"))
+        if (ImGui::SliderFloat("Local tone", &localTone, 0.0f, 2.0f, "%.2f"))
             config->DlssNrLocalTone = localTone;
 
         float skin = config->DlssNrSkinStructure.value_or_default();
-        if (ImGui::SliderFloat("Skin structure", &skin, -1.0f, 1.0f, "%.2f"))
+        if (ImGui::SliderFloat("Skin structure", &skin, -1.0f, 2.0f, "%.2f"))
             config->DlssNrSkinStructure = skin;
 
         ShowHelpMarker("-1 means follow local structure, and is the model's own default -- it is not a"
