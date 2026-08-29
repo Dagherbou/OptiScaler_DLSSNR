@@ -168,14 +168,6 @@ void main(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    if (gDebugView == 3)
-    {
-        // Amplified and centred on grey, so both directions of the edit are visible at once.
-        float3 shown = saturate(0.5 + (model - proxy) * 20.0);
-        gTarget[id.xy] = float4(SrgbToLinear(shown) * gWhitePoint, originalSample.a);
-        return;
-    }
-
     float3 edit = model - proxy;
 
     // Coring. The churn the model re-decides every frame is small-amplitude and unstructured, while
@@ -186,6 +178,15 @@ void main(uint3 id : SV_DispatchThreadID)
     {
         float editSize = max(abs(edit.r), max(abs(edit.g), abs(edit.b)));
         edit *= smoothstep(gNoiseFloor * 0.5, gNoiseFloor * 1.5, editSize);
+    }
+
+    if (gDebugView == 3)
+    {
+        // Amplified and centred on grey, so both directions of the edit are visible at once. Shows the
+        // edit as it will land -- after coring -- so the Noise floor slider is judged here too.
+        float3 shown = saturate(0.5 + edit * 20.0);
+        gTarget[id.xy] = float4(SrgbToLinear(shown) * gWhitePoint, originalSample.a);
+        return;
     }
 
     // The edit, averaged over time. The model re-decides a measurable fraction of its answer every

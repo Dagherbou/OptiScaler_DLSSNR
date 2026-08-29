@@ -83,6 +83,18 @@ class FrameCapture
         if (!ready_)
             return {};
 
+        // A dark frame -- a menu, a loading screen -- measures nothing. Discard the run and quietly
+        // re-arm for the same length, so the set that finally lands is of actual gameplay.
+        if (captured_ > 0 && isDark(beforeShots_[0]))
+        {
+            const unsigned int frames = wanted_;
+            release();
+            ready_ = false;
+            active_ = false;
+            request(frames);
+            return {};
+        }
+
         std::error_code ec;
         std::filesystem::create_directories(directory, ec);
 
@@ -194,6 +206,34 @@ class FrameCapture
             b.Transition.StateAfter = state;
             cmd->ResourceBarrier(1, &b);
         }
+    }
+
+    // Mean byte value across the image, sampled sparsely. Correct for 8-bit and 10-bit surfaces;
+    // float surfaces of dark content read higher, which only means a float capture is never discarded.
+    static bool isDark(Shot& shot)
+    {
+        if (shot.readback == nullptr || shot.bytes == 0)
+            return false;
+
+        void* mapped = nullptr;
+        D3D12_RANGE range = { 0, (SIZE_T) shot.bytes };
+
+        if (FAILED(shot.readback->Map(0, &range, &mapped)) || mapped == nullptr)
+            return false;
+
+        const unsigned char* p = (const unsigned char*) mapped;
+        unsigned long long total = 0;
+        unsigned long long count = 0;
+
+        for (unsigned long long i = 0; i < shot.bytes; i += 1021)
+        {
+            total += p[i];
+            ++count;
+        }
+
+        D3D12_RANGE written = { 0, 0 };
+        shot.readback->Unmap(0, &written);
+        return count > 0 && total / count < 4;
     }
 
     static void dump(const std::filesystem::path& dir, const char* which, unsigned int index, Shot& shot)
