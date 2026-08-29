@@ -327,6 +327,9 @@ class Config
     // of lamps and signs from the model's trained instinct to calm extreme highlights. 0 is off.
     CustomOptional<float> DlssNrProtectHighlights { 0.0f };
 
+    // Fades the edit out over a screen-edge margin, protecting HUD elements at the finished frame.
+    CustomOptional<float> DlssNrHudGuard { 0.0f };
+
     // Include-RR's own supersample ratio. 0 follows Output Scaling's Ratio; anything above 1.05 runs
     // RR at this ratio instead -- most of the reconstruction sharpness for far less of RR's cost.
     CustomOptional<float> DlssNrSplitIncludeRRRatio { 0.0f };

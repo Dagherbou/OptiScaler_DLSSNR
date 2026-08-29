@@ -332,6 +332,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrSplitSrSharpness.set_from_config(readFloat("DlssNr", "SplitSrSharpness"));
             DlssNrWhitePointScale.set_from_config(readFloat("DlssNr", "WhitePointScale"));
             DlssNrProtectHighlights.set_from_config(readFloat("DlssNr", "ProtectHighlights"));
+            DlssNrHudGuard.set_from_config(readFloat("DlssNr", "HudGuard"));
             DlssNrSplitIncludeRRRatio.set_from_config(readFloat("DlssNr", "SplitIncludeRRRatio"));
             DlssNrPreset.set_from_config(readUInt("DlssNr", "Preset"));
             DlssNrIntensity.set_from_config(readFloat("DlssNr", "Intensity"));
@@ -1192,6 +1193,7 @@ bool Config::SaveIni()
                  GetFloatValue(Instance()->DlssNrWhitePointScale.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ProtectHighlights",
                  GetFloatValue(Instance()->DlssNrProtectHighlights.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "HudGuard", GetFloatValue(Instance()->DlssNrHudGuard.value_for_config()).c_str());
     ini.SetValue("DlssNr", "SplitIncludeRRRatio",
                  GetFloatValue(Instance()->DlssNrSplitIncludeRRRatio.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Preset", GetIntValue(Instance()->DlssNrPreset.value_for_config()).c_str());

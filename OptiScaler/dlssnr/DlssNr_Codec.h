@@ -69,7 +69,7 @@ cbuffer Params : register(b0)
     uint  gGuideHeight;
     float gStability;    // how much of the history survives each frame; 0 is off
     float gProtectHighlights; // the top fraction of the range where the edit fades out; 0 is off
-    float gPad0;
+    float gHudGuard;     // screen-edge fraction where the edit fades out (HUD protection); 0 is off
 };
 
 Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
@@ -288,6 +288,17 @@ void main(uint3 id : SV_DispatchThreadID)
     // contribution exactly where a lit scene carries its punch -- the two inject points now apply the
     // edit identically, with the clamp as the one safety in both.
 
+    // HUD guard. At the finished frame the interface is part of the picture, and the model's own UI
+    // correction is NVIDIA's to tune, not ours -- minimaps and trackers still get muddied. HUDs live
+    // at the edges, so the edit fades out over a screen-edge margin and the centre keeps everything.
+    // The before-frame-generation and split arrangements never see the UI at all; this is for the
+    // finished frame. 0 is off.
+    if (gHudGuard > 0.0)
+    {
+        float2 d = min(uv, 1.0 - uv);
+        applied *= smoothstep(0.4, 1.0, saturate(min(d.x, d.y) / gHudGuard));
+    }
+
     float3 result = original + applied * slope;
 
     // A detail pass should not be able to restyle anything, whatever comes back. The small constant
@@ -319,7 +330,7 @@ struct Params
     unsigned int guideHeight;
     float stability;
     float protectHighlights;
-    float pad0;
+    float hudGuard;
 };
 
 // A typeless resource cannot be viewed, and the buffer the upscaler writes is occasionally declared that
