@@ -419,7 +419,7 @@ void RenderMenu(Config* config, float menuResScale)
         }
 
         {
-            static const char* curveNames[] = { "Reinhard (white point above)", "Match the game's tonemapper" };
+            static const char* curveNames[] = { "Reinhard (white point above)", "Match the game's tonemapper and grade" };
             int curve = (int) config->DlssNrProxyCurve.value_or_default();
             if (curve > 1)
                 curve = 1;
@@ -428,11 +428,12 @@ void RenderMenu(Config* config, float menuResScale)
 
             HelpMarker("How the linear frame is compressed for the model, in the split and the DX11"
                        "\nbridge -- the arrangements where the model sees the frame before the game's"
-                       "\ntonemapper. Reinhard is a generic guess. Match learns the game's own curve"
-                       "\nby comparing the linear frame with the finished one, twice a second, so the"
-                       "\nmodel is shown the game's actual contrast and shadow depth -- the statistics"
-                       "\nit was trained on -- and the edit is sized for the curve it will pass through."
-                       "\nEncode and resolve stay exact inverses either way."
+                       "\ntonemapper. Reinhard is a generic guess. Match learns the game's own tone"
+                       "\ncurve AND its colour grade by comparing the same frame before and after the"
+                       "\ngame's post chain, twice a second, so the model is shown the game's actual"
+                       "\ncontrast, shadow depth and palette -- the statistics it was trained on --"
+                       "\nand its edit is brought back through the exact inverse. Bloom and grain are"
+                       "\nspatial and cannot be learned this way; the model does not see the glow."
                        "\n\nNeeds an SDR display output to learn from; falls back to Reinhard until"
                        "\nthe first measurement lands. Does nothing at the finished-frame and hudless"
                        "\ninject points, which are already finished pictures.");

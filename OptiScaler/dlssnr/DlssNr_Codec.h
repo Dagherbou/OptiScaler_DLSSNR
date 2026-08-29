@@ -73,15 +73,30 @@ cbuffer Params : register(b0)
     float gProtectHighlights; // the top fraction of the range where the edit fades out; 0 is off
     float gHudDetect;    // strength of the HUD mask carried in the original's alpha; 0 is off
     float gShadowRestore; // pulls back the brightening of dark regions; 0 is off
-    uint  gCurveMode;    // 0: Reinhard against the white point. 1: the fitted curve below.
+    uint  gCurveMode;    // 0: Reinhard against the white point. 1: the fitted curve and matrix below.
     float gCurveMinLog;  // log2 luminance of the curve's first entry
-    float gCurveRangeLog; // log2 span across its 32 entries
-    uint  gPad1;
+    float gCurveRangeLog; // log2 span across its 24 entries
+    float gRestoreSkipSkin; // 1: highlight restore leaves skin alone; 0: applies everywhere
     uint  gPad2;
     uint  gPad3;
-    float4 gCurve[8];    // 32 toned (linear-display) luminance values, log-spaced in scene luminance
-    float gRestoreSkipSkin; // 1: highlight restore leaves skin alone; 0: applies everywhere
+    float4 gCurve[6];    // 24 toned (linear-display) luminance values, log-spaced in scene luminance
+    float4 gMat[3];      // the game's colour transform after the curve, rows (w unused)
 };
+
+float3x3 CurveMatrix()
+{
+    return float3x3(gMat[0].xyz, gMat[1].xyz, gMat[2].xyz);
+}
+
+float3x3 Inverse3(float3x3 m)
+{
+    float3 c0 = cross(m[1], m[2]);
+    float3 c1 = cross(m[2], m[0]);
+    float3 c2 = cross(m[0], m[1]);
+    float det = dot(m[0], c0);
+    float3x3 adj = float3x3(c0.x, c1.x, c2.x, c0.y, c1.y, c2.y, c0.z, c1.z, c2.z);
+    return abs(det) > 1e-6 ? adj / det : float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
+}
 
 // A soft skin-tone classifier on gamma-space colour: the classic YCbCr region skin occupies. Not a
 // person detector -- wood and sand can qualify -- but for deciding where a restore should hold back it
@@ -101,14 +116,14 @@ float SkinWeight(float3 rgb)
 // linear frame's histogram to the finished frame's. Log-spaced in scene luminance, linear in between.
 float CurveAt(int i)
 {
-    i = clamp(i, 0, 31);
+    i = clamp(i, 0, 23);
     return gCurve[i >> 2][i & 3];
 }
 
 float CurvePos(float luma)
 {
     float lg = log2(max(luma, 1e-6));
-    return saturate((lg - gCurveMinLog) / max(gCurveRangeLog, 1e-4)) * 31.0;
+    return saturate((lg - gCurveMinLog) / max(gCurveRangeLog, 1e-4)) * 23.0;
 }
 
 float CurveToned(float luma)
@@ -123,9 +138,9 @@ float CurveToned(float luma)
 float CurveSlope(float luma)
 {
     float x = CurvePos(luma);
-    int i = clamp((int) floor(x), 0, 30);
-    float l0 = exp2(gCurveMinLog + gCurveRangeLog * (i / 31.0));
-    float l1 = exp2(gCurveMinLog + gCurveRangeLog * ((i + 1) / 31.0));
+    int i = clamp((int) floor(x), 0, 22);
+    float l0 = exp2(gCurveMinLog + gCurveRangeLog * (i / 23.0));
+    float l1 = exp2(gCurveMinLog + gCurveRangeLog * ((i + 1) / 23.0));
     float dT = max(CurveAt(i + 1) - CurveAt(i), 1e-5);
     return (l1 - l0) / dT;
 }
@@ -233,8 +248,15 @@ void main(uint3 id : SV_DispatchThreadID)
         float luma = dot(frame, kLuma);
         float toned = gCurveMode != 0 ? CurveToned(luma) : (luma / gWhitePoint) / (1.0 + luma / gWhitePoint);
         float scale = luma > 1e-6 ? toned / luma : 0.0;
+        float3 display = frame * scale;
 
-        gTarget[id.xy] = float4(LinearToSrgb(frame * scale), source.a);
+        // The game's colour grade, learned: after the luminance map the fitted matrix turns the
+        // picture into what the game would have made of it -- the model then sees the game's palette
+        // as well as its contrast.
+        if (gCurveMode != 0)
+            display = max(mul(CurveMatrix(), display), float3(0.0, 0.0, 0.0));
+
+        gTarget[id.xy] = float4(LinearToSrgb(display), source.a);
         return;
     }
 
@@ -421,8 +443,11 @@ void main(uint3 id : SV_DispatchThreadID)
         // pulls every colour toward grey, and the game's per-channel tone curve then bends whatever
         // remains. That was the split's colour drift. The luminance part of the edit is applied as a
         // ratio instead, which preserves chromaticity exactly; the colour part stays additive.
-        float appliedLuma = dot(applied, kLuma);
-        float3 appliedChroma = applied - appliedLuma;
+        // An edit made in the game's colour space is brought back through the inverse of the fitted
+        // matrix before the luminance slope lands it in the scene.
+        float3 appliedScene = gCurveMode != 0 ? mul(Inverse3(CurveMatrix()), applied) : applied;
+        float appliedLuma = dot(appliedScene, kLuma);
+        float3 appliedChroma = appliedScene - appliedLuma;
         float gain = max(1.0 + appliedLuma * slope / originalLuma, 0.0);
         result = original * gain + appliedChroma * slope;
     }
@@ -474,11 +499,11 @@ struct Params
     unsigned int curveMode;
     float curveMinLog;
     float curveRangeLog;
-    unsigned int pad1;
+    float restoreSkipSkin;
     unsigned int pad2;
     unsigned int pad3;
-    float curve[32];
-    float restoreSkipSkin;
+    float curve[24];
+    float mat[12]; // three rows of four; the fourth is unused
 };
 
 static_assert(sizeof(Params) % 4 == 0, "root constants are dwords");
