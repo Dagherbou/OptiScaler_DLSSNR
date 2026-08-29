@@ -233,7 +233,32 @@ void main(uint3 id : SV_DispatchThreadID)
     // motion vectors carry the history to where the surface is now.
     if (gAccumulate != 0)
     {
-        float3 accumulated = edit;
+        // The edit is split into two bands, because its two artefacts fail in opposite ways. The
+        // low-frequency band is the model re-lighting the scene -- large, smooth, and re-decided
+        // constantly, which reads as the whole room's lighting pumping. It is spatially smooth, so
+        // reprojection errors of a few pixels are irrelevant to it and it can be stabilised HARD --
+        // and it must be, because the variance clip below sees a smooth field, makes a razor-thin
+        // window, and under camera motion clips away exactly the history this band needs. The
+        // high-frequency band is the structure detail, where trailing ghosts would actually show:
+        // it keeps the variance-clipped treatment. History: rgb = high band, alpha = low band.
+        float2 px = 1.0 / float2(gWidth, gHeight);
+        float lowNow = dot(edit, kLuma);
+
+        {
+            const float2 kWide[8] = { float2(-0.7, -0.2), float2(0.6, -0.6), float2(0.2, 0.7),
+                                      float2(-0.5, 0.5),  float2(0.9, 0.1),  float2(-0.9, -0.6),
+                                      float2(0.1, -0.9),  float2(0.5, 0.3) };
+
+            [unroll]
+            for (int i = 0; i < 8; ++i)
+                lowNow += dot(EditAt(uv + kWide[i] * 12.0 * px), kLuma);
+
+            lowNow /= 9.0;
+        }
+
+        float3 highNow = edit - lowNow;
+        float3 accumulatedHigh = highNow;
+        float accumulatedLow = lowNow;
 
         if (gAccumulate == 1)
         {
@@ -243,16 +268,15 @@ void main(uint3 id : SV_DispatchThreadID)
 
             if (all(uvPrev >= 0.0) && all(uvPrev <= 1.0))
             {
-                float3 prev = SampleHistoryCatmullRom(uvPrev, float2(gWidth, gHeight));
+                float3 prevHigh = SampleHistoryCatmullRom(uvPrev, float2(gWidth, gHeight));
 
                 // Rectified by the statistics of the edit around this pixel, not a fixed margin. Where
                 // the model answers consistently the neighbourhood is tight, and history that disagrees
                 // -- a stale edit at a disocclusion -- is clipped away within a frame. Where the model
                 // is genuinely re-deciding, the neighbourhood is wide and the average is allowed to do
-                // its work. This is what lets high stability hold without trailing ghosts.
+                // its work.
                 float3 m1 = float3(0.0, 0.0, 0.0);
                 float3 m2 = float3(0.0, 0.0, 0.0);
-                float2 px = 1.0 / float2(gWidth, gHeight);
 
                 [unroll]
                 for (int dy = -1; dy <= 1; ++dy)
@@ -269,14 +293,21 @@ void main(uint3 id : SV_DispatchThreadID)
                 m1 /= 9.0;
                 m2 /= 9.0;
                 float3 sigma = sqrt(max(m2 - m1 * m1, float3(0.0, 0.0, 0.0)));
-                prev = clamp(prev, m1 - sigma * 1.25 - 0.004, m1 + sigma * 1.25 + 0.004);
+                float3 m1High = m1 - lowNow;
+                prevHigh = clamp(prevHigh, m1High - sigma * 1.25 - 0.004, m1High + sigma * 1.25 + 0.004);
+                accumulatedHigh = lerp(highNow, prevHigh, gStability);
 
-                accumulated = lerp(edit, prev, gStability);
+                // The low band: plain bilinear history (crispness is meaningless at this frequency), a
+                // generous clamp so a genuine lighting change still arrives promptly, and a floor on
+                // the blend -- whatever the slider says, the lighting must not pump.
+                float prevLow = gPrevEdit.SampleLevel(gLinear, uvPrev, 0).a;
+                prevLow = clamp(prevLow, lowNow - 0.10, lowNow + 0.10);
+                accumulatedLow = lerp(lowNow, prevLow, max(gStability, 0.9));
             }
         }
 
-        gKeep[id.xy] = float4(accumulated, 1.0);
-        edit = accumulated;
+        gKeep[id.xy] = float4(accumulatedHigh, accumulatedLow);
+        edit = accumulatedHigh + accumulatedLow;
     }
 
     // Split so the detail the model synthesised and any colour it shifted can be dialled apart.
