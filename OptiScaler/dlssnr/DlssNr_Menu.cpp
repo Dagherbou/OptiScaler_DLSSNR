@@ -349,19 +349,6 @@ void RenderMenu(Config* config, float menuResScale)
 
         ImGui::TextDisabled("%s", DlssNr::UiLayerStatus());
 
-        float hudDetect = config->DlssNrHudDetect.value_or_default();
-        if (ImGui::SliderFloat("HUD detection", &hudDetect, 0.0f, 1.0f, "%.2f"))
-            config->DlssNrHudDetect = hudDetect;
-
-        HelpMarker("Keeps the model off the interface at the finished frame, by finding it. Where"
-                   "\nthe game tags its UI layer through Streamline (frame generation titles) the"
-                   "\nmask is exact. Elsewhere the interface is what stays put while the world"
-                   "\nmoves: a pixel unchanged from last frame under a motion vector that says it"
-                   "\nshould have changed. The estimate rises fast and fades slowly, so it holds"
-                   "\nthrough pauses; standing perfectly still long enough lets it lapse."
-                   "\n\nThe strength is how completely the model is kept off what was found."
-                   "\n0 is off and bit-identical. The hudless inject point needs none of this.");
-
         ImGui::SeparatorText("Colour");
 
         ImGui::TextDisabled("On the finished frame an SDR picture goes over unconverted and an scRGB\n"
@@ -479,7 +466,7 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nand each run overwrites the last.");
 
         static const char* debugNames[] = { "Off", "Proxy (what the model sees)", "Model output (raw)",
-                                            "Difference (amplified)", "HUD detection terms (R/G/B)" };
+                                            "Difference (amplified)" };
         int debugView = (int) config->DlssNrDebugView.value_or_default();
         if (ImGui::Combo("Debug view", &debugView, debugNames, IM_ARRAYSIZE(debugNames)))
             config->DlssNrDebugView = (uint32_t) debugView;

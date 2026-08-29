@@ -326,9 +326,6 @@ class Config
     // of lamps and signs from the model's trained instinct to calm extreme highlights. 0 is off.
     CustomOptional<float> DlssNrProtectHighlights { 0.0f };
 
-    // HUD detection at the finished frame: the edit fades where a mask says interface -- exact where
-    // the game tags its UI layer through Streamline, estimated elsewhere. Strength; 0 is off.
-    CustomOptional<float> DlssNrHudDetect { 0.0f };
 
     // The mirror of highlight restore: pulls back the model's brightening of dark regions, which is
     // the other half of the washed-out look. 0 is off.

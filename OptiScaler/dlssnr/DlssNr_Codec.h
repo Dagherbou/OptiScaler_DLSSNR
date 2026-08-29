@@ -43,9 +43,6 @@ constexpr int MODE_RESOLVE = 1;
 // Shrinks the frame so the model can work on fewer pixels. Filtered, not point sampled: the guidance is
 // explicit that a nearest-neighbour enlargement of this pass turns into harsh aliasing.
 constexpr int MODE_DOWNSAMPLE = 2;
-// Writes the HUD mask into the frame copy's alpha (see the shader).
-constexpr int MODE_HUDMASK = 3;
-
 // Debug views, so the model's contribution can be looked at rather than guessed at.
 constexpr int DEBUG_OFF = 0;
 constexpr int DEBUG_PROXY = 1;      // the picture the model was shown
@@ -71,7 +68,6 @@ cbuffer Params : register(b0)
     uint  gGuideHeight;
     float gStability;    // how much of the history survives each frame; 0 is off
     float gProtectHighlights; // the top fraction of the range where the edit fades out; 0 is off
-    float gHudDetect;    // strength of the HUD mask carried in the original's alpha; 0 is off
     float gShadowRestore; // pulls back the brightening of dark regions; 0 is off
 };
 
@@ -143,42 +139,6 @@ void main(uint3 id : SV_DispatchThreadID)
         gTarget[id.xy] = gSource.SampleLevel(gLinear, uv, 0);
         return;
     }
-
-    if (gMode == 3)
-    {
-        // The HUD mask, written into the frame copy's alpha. The interface is what stays put while
-        // the world around it moves: a pixel unchanged from last frame under a motion vector that
-        // says it should have changed. Exact where the game tags its UI layer (gModel's alpha, when
-        // gAccumulate says one arrived). The estimate rises quickly and decays slowly, so it holds
-        // through pauses in movement instead of flickering the interface in and out.
-        float4 cur = gTarget[id.xy];
-        float4 prev = gSource.Load(int3(id.xy, 0));
-        float2 mv = gMotion.Load(int3(uv * float2(gGuideWidth, gGuideHeight), 0)).xy *
-                    float2(gMvScaleX, gMvScaleY);
-        float moving = saturate((length(mv) - 0.5) / 2.0);
-
-        // The interface ignores the motion vectors. A world pixel matches its reprojected past --
-        // where the vectors say it came from -- while a UI pixel matches its unmoved past and
-        // mismatches the reprojected one. Demanding both keeps a uniform moving surface, which
-        // matches everywhere, from qualifying; the first version fell for exactly that.
-        float2 uvPrev = uv + mv / float2(gWidth, gHeight);
-        float3 reprojected = gSource.SampleLevel(gLinear, uvPrev, 0).rgb;
-        float inPlace = 1.0 - saturate(length(cur.rgb - prev.rgb) / 0.02);
-        float mismatch = saturate((length(cur.rgb - reprojected) - 0.03) / 0.08);
-        float detect = moving * inPlace * mismatch;
-
-        if (gAccumulate == 1)
-            detect = max(detect, gModel.Load(int3(id.xy, 0)).a);
-
-        float mask = detect > prev.a ? lerp(prev.a, detect, 0.25) : prev.a * 0.98;
-
-        // The history always keeps the true frame; only what the debug view reads is replaced, so the
-        // three terms can be looked at directly instead of guessed at.
-        gKeep[id.xy] = float4(cur.rgb, mask);
-        gTarget[id.xy] = gDebugView == 4 ? float4(moving, inPlace, mismatch, mask) : float4(cur.rgb, mask);
-        return;
-    }
-
 
     if (gMode == 0)
     {
@@ -262,16 +222,6 @@ void main(uint3 id : SV_DispatchThreadID)
 
     // Coring was tried here and removed: the per-frame churn's amplitude overlaps the real detail's,
     // so an amplitude threshold cannot separate them -- it only relocated the noise to the threshold.
-
-    if (gDebugView == 4)
-    {
-        // What HUD detection is thinking, term by term: red where the motion vectors say this pixel
-        // should have moved, green where it did not change, blue where it disagrees with where the
-        // vectors say it came from. White is all three at once, which is the interface; anything less
-        // says which test is failing. Needs HUD detection above zero, or the mask pass never runs.
-        gTarget[id.xy] = float4(gHudDetect > 0.0 ? original : original * 0.25, 1.0);
-        return;
-    }
 
     if (gDebugView == 3)
     {
@@ -383,14 +333,6 @@ void main(uint3 id : SV_DispatchThreadID)
     // contribution exactly where a lit scene carries its punch -- the two inject points now apply the
     // edit identically, with the clamp as the one safety in both.
 
-    // HUD detection. At the finished frame the interface is part of the picture, and the model's own
-    // UI correction is NVIDIA's to tune, not ours. The original's alpha carries a mask -- exact where
-    // the game tags its UI layer through Streamline, estimated elsewhere as "unchanged while the world
-    // moved" -- and the edit fades where the mask says interface. The hudless and split arrangements
-    // never see the UI at all. 0 is off.
-    if (gHudDetect > 0.0)
-        applied *= 1.0 - saturate(originalSample.a) * gHudDetect;
-
     float3 result;
 
     if (originalLuma < 0.002)
@@ -435,7 +377,7 @@ void main(uint3 id : SV_DispatchThreadID)
     // this line used to do -- silently threw the ratio away and made every path additive again.
     result = original + (result - original) * saturate(limit);
     result = ClampAp1(result);
-    gTarget[id.xy] = float4(max(result, float3(0.0, 0.0, 0.0)), gHudDetect > 0.0 ? 1.0 : originalSample.a);
+    gTarget[id.xy] = float4(max(result, float3(0.0, 0.0, 0.0)), originalSample.a);
 }
 )";
 
@@ -459,7 +401,6 @@ struct Params
     unsigned int guideHeight;
     float stability;
     float protectHighlights;
-    float hudDetect;
     float shadowRestore;
 
 };
