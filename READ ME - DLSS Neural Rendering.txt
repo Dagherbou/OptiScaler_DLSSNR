@@ -1,5 +1,6 @@
 DLSS 5 Neural Rendering for OptiScaler
 ======================================
+edited by daglander, for all mortals
 
 This is OptiScaler with an extra pass: NVIDIA's Neural Rendering model, run over the finished frame to
 synthesise detail. NVIDIA ships no public integration for it, so it is driven directly. Nothing here is
@@ -39,7 +40,8 @@ needs depth and motion vectors, and rather than hunting for them in the game's o
 reads the ones the game already hands to DLSS every frame. That is what makes it work in any DLSS title
 without per-game work -- and why it does nothing in a game that has no DLSS to intercept.
 
-Vulkan and DirectX 11 are not wired up yet.
+DirectX 11 games work through the same interception -- the pass rides the D3D11-on-D3D12 bridge that
+already carries their upscaler, so nothing extra is needed. Vulkan is not wired up yet.
 
 
 If it does not run
@@ -75,7 +77,21 @@ With the split off, Output Scaling works as it always did. With the split on, th
 the enlargement renders above display size at the Output Scaling Ratio and is carried back down by
 OptiScaler's own downscaler -- and hands it back the moment the split is turned off. A second checkbox,
 "Include Ray Reconstruction in the supersample", moves the supersampling to RR itself (the conventional
-Output Scaling look, at RR cost rising with the ratio squared).
+Output Scaling look, at RR cost rising with the ratio squared). Its "Include-RR ratio" slider decouples
+that from the Output Scaling Ratio: most of the reconstruction sharpness arrives well below the full
+ratio, so 1.25 buys most of the look for a fraction of the cost.
+
+The split also serves games whose Ray Reconstruction is already 1:1 -- DLAA, or engines that upscale
+elsewhere -- without touching their geometry: the model runs on the 1:1 frame and the internal
+enlargement follows as a DLAA pass, a real temporal accumulator behind the model.
+
+The plain split shows the model the frame before the game's tonemapper, compressed through a curve
+of ours. "Proxy curve: Match the game's tonemapper" learns the game's own curve so the model sees
+the real contrast and shadow depth; "Enlargement preset" picks the Super Resolution model for the
+final step (the transformer presets, J and K, are strongest on an already-resolved image); and
+"Enlargement sharpening" applies an explicit RCAS amount (0 is off).
+
+A failure never costs the session: both failure lines carry a Retry button that clears them in place.
 
 
 The controls
@@ -86,20 +102,30 @@ Most of them are the model's own and are undocumented; the tooltips say which on
 Three are worth knowing about:
 
   Inject point       Where the pass runs. "Finished frame" shows the model the picture after the game's
-                     own tonemapper, which is what it was trained on, and gives the better image at a
-                     cost of one run per presented frame -- roughly double with frame generation.
-                     "Before frame generation" runs once per rendered frame and generated frames inherit
-                     the result, but the tonemapper has not run at that point, so the model works from an
-                     approximation and the result is applied more cautiously. Takes effect on restart.
+                     own tonemapper -- exactly what it was trained on -- at one run per presented frame,
+                     roughly double with frame generation. "Finished look, before UI" is the same picture
+                     before the interface is drawn, which frame generation titles hand Streamline every
+                     frame: the model never touches the HUD, generated frames inherit the result, and it
+                     costs one run per rendered frame. Games that do not tag that buffer fall back to the
+                     finished frame. Both apply live.
+
+  HUD detection      Keeps the model off the interface at the finished frame by finding it: exact where
+                     the game tags its UI layer (frame generation titles), estimated elsewhere as what
+                     stays put while the world moves. 0 is off; the hudless inject point needs none of it.
+
+  Highlight restore  How the highlights look. The model's instinct is to calm bright things; this pulls
+  Shadow restore     back the darkening of bright regions, and its sibling pulls back the lifting of dark
+                     ones -- together they keep the scene's light-to-dark drama. 0 is off for each.
 
   Detail strength    How much of the model's edit reaches the frame. 0 gives back exactly what the game
                      rendered. Above 1 exaggerates it, which is the quickest way to see what the model is
                      actually contributing.
 
-  Temporal stability  Averages the model's edit across frames, carried by the game's own motion
-                     vectors. The model re-decides about a fifth of its edit every frame even on a
-                     static scene -- measured directly -- and this cancels that at the cost of slight
-                     softness under fast motion. 0 is off and bit-identical.
+  Temporal stability  Steadies the model's re-lighting of the scene -- the low-frequency part of its
+                     edit, which otherwise pumps visibly -- carried by the game's own motion vectors and
+                     standing down at motion boundaries so nothing trails. Detail is deliberately not
+                     accumulated: measured twice, history on the detail band only trades shimmer for
+                     ghosts. Detail stability comes from the split pipeline. 0 is off and bit-identical.
 
 There is also a debug view. "Difference" shows what the model changed, amplified: a flat grey frame there
 means it is doing nothing. And the pass writes a set of matched before/after frames to a dlssnr-capture
