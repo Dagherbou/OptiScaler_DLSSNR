@@ -633,28 +633,6 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
                                                NVSDK_NGX_Parameter* InParameters,
                                                PFN_NVSDK_NGX_ProgressCallback InCallback);
 
-#if OPTI_DLSSNR
-// What the split pipeline needs to know about the feature behind a handle.
-static DlssNr::Split::FeatureView SplitViewOf(uint32_t handleId)
-{
-    DlssNr::Split::FeatureView view {};
-    auto it = Dx12Contexts.find(handleId);
-
-    if (it != Dx12Contexts.end())
-    {
-        view.found = true;
-        view.feature = it->second.feature.get();
-        view.changeBackendCounter = it->second.changeBackendCounter;
-    }
-
-    auto kind = HandleToFeature.find(handleId);
-    view.rayReconstruction = kind == HandleToFeature.end() || kind->second == NVSDK_NGX_Feature_RayReconstruction;
-
-    return view;
-}
-#endif
-
-
 static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdList, NVSDK_NGX_Feature InFeatureID,
                                              NVSDK_NGX_Parameter* InParameters, NVSDK_NGX_Handle** OutHandle)
 {
@@ -824,10 +802,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
     }
 
     // OptiScaler internal handling (SuperSampling or RayReconstruction)
-#if OPTI_DLSSNR
-    DlssNr::Split::OnCreate(InFeatureID, InParameters);
-#endif
-
     auto tryResult = TryCreateOptiFeature(InCmdList, InFeatureID, InParameters, OutHandle);
 
     if (tryResult == NVSDK_NGX_Result_Success)
@@ -1208,23 +1182,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
 
     if (lastDlssgCameraFar.has_value())
         InParameters->Set("DLSSG.CameraFar", lastDlssgCameraFar.value());
-
-#if OPTI_DLSSNR
-    // The split pipeline: denoise (or anti-alias) 1:1, enhance at render resolution, enlarge once. The
-    // toggle applies live -- the feature is re-created in place at the other geometry. Plain Super
-    // Resolution games get the same treatment with DLSS at 1:1 (DLAA) as the first stage.
-    if (feature == NVSDK_NGX_Feature_RayReconstruction || feature == NVSDK_NGX_Feature_SuperSampling)
-    {
-        DlssNr::Split::ManageTransition(handleId, InParameters, SplitViewOf(handleId), D3D12Device);
-
-        NVSDK_NGX_Result splitResult = NVSDK_NGX_Result_Success;
-
-        if (DlssNr::Split::EvaluateRR(InCmdList, InFeatureHandle, InParameters, InCallback,
-                                      SplitViewOf(handleId), D3D12Device, &TryEvaluateOptiFeature,
-                                      &splitResult))
-            return splitResult;
-    }
-#endif
 
     // OptiScaler internal handling
     const NVSDK_NGX_Result optiResult = TryEvaluateOptiFeature(InCmdList, InFeatureHandle, InParameters, InCallback);

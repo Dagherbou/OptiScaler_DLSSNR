@@ -27,15 +27,10 @@ namespace DlssNr
 // anything fails, rather than retrying into a crash.
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params);
 
-// The split pipeline runs the model itself; the present-time pass stands down while it is active.
-void SetSplitActive(bool active);
 
-// One line of truth about the split pipeline, for the overlay. Set from the seam with string literals.
-void SetSplitStatus(const char* status);
 // Frame generation titles tag their UI layer through Streamline; a copy of it makes the HUD mask
 // exact at the finished frame. Called at tag time.
 
-const char* SplitStatus();
 
 
 
@@ -46,8 +41,6 @@ void RenderMenu(::Config* config, float menuResScale);
 // thrash does not cost a restart.
 void RetryAfterFailure();
 
-// The split's own failure latch registers its clearing here, so one Retry clears everything.
-extern void (*g_splitRetryHook)();
 
 // Whether the model is loaded and running, for the overlay.
 bool IsRunning();

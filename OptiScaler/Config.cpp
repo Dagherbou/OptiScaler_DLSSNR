@@ -327,13 +327,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrWorkingScale.set_from_config(readFloat("DlssNr", "WorkingScale"));
             DlssNrAutoCapture.set_from_config(readBool("DlssNr", "AutoCapture"));
             DlssNrEditStability.set_from_config(readFloat("DlssNr", "EditStability"));
-            DlssNrSplitPipeline.set_from_config(readBool("DlssNr", "SplitPipeline"));
-            DlssNrSplitIncludeRR.set_from_config(readBool("DlssNr", "SplitIncludeRR"));
-            DlssNrSplitSrPreset.set_from_config(readUInt("DlssNr", "SplitSrPreset"));
-            DlssNrSplitSrSharpness.set_from_config(readFloat("DlssNr", "SplitSrSharpness"));
             DlssNrWhitePointScale.set_from_config(readFloat("DlssNr", "WhitePointScale"));
-            DlssNrSplitIncludeRRRatio.set_from_config(readFloat("DlssNr", "SplitIncludeRRRatio"));
-            // --- end DLSS 5 Neural Rendering ---
             DlssNrPreset.set_from_config(readUInt("DlssNr", "Preset"));
             DlssNrIntensity.set_from_config(readFloat("DlssNr", "Intensity"));
             DlssNrStyle.set_from_config(readUInt("DlssNr", "Style"));
@@ -1185,16 +1179,8 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "WorkingScale", GetFloatValue(Instance()->DlssNrWorkingScale.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AutoCapture", GetBoolValue(Instance()->DlssNrAutoCapture.value_for_config()).c_str());
     ini.SetValue("DlssNr", "EditStability", GetFloatValue(Instance()->DlssNrEditStability.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "SplitPipeline", GetBoolValue(Instance()->DlssNrSplitPipeline.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "SplitIncludeRR", GetBoolValue(Instance()->DlssNrSplitIncludeRR.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "SplitSrPreset", GetIntValue(Instance()->DlssNrSplitSrPreset.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "SplitSrSharpness",
-                 GetFloatValue(Instance()->DlssNrSplitSrSharpness.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WhitePointScale",
                  GetFloatValue(Instance()->DlssNrWhitePointScale.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "SplitIncludeRRRatio",
-                 GetFloatValue(Instance()->DlssNrSplitIncludeRRRatio.value_for_config()).c_str());
-    // --- end DLSS 5 Neural Rendering ---
     ini.SetValue("DlssNr", "Preset", GetIntValue(Instance()->DlssNrPreset.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Intensity", GetFloatValue(Instance()->DlssNrIntensity.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Style", GetIntValue(Instance()->DlssNrStyle.value_for_config()).c_str());

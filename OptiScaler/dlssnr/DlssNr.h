@@ -17,5 +17,4 @@
 
 #if OPTI_DLSSNR
 #include "DlssNr_Dx12.h"
-#include "DlssNr_Split.h"
 #endif

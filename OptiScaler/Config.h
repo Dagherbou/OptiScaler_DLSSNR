@@ -301,21 +301,8 @@ class Config
     // consistent detail and cancels the re-randomised part. 0 is off and bit-identical to before.
     CustomOptional<float> DlssNrEditStability { 0.0f };
 
-    // The split pipeline: Ray Reconstruction runs 1:1 as a pure denoiser, the model runs at render
-    // resolution, and an internal second Super Resolution feature does the one enlargement. Applies
-    // live -- the feature is re-created in place -- and needs a render scale below native to gain
-    // anything.
-    CustomOptional<bool> DlssNrSplitPipeline { false };
 
-    // Supersampling in the split is automatic, from the Output Scaling Ratio. This chooses who does it:
-    // off, the internal SR renders oversized while RR stays 1:1 (cheapest); on, RR itself upscales to
-    // the oversized size and the model works on that image, with RR's cost rising as the ratio squared.
-    CustomOptional<bool> DlssNrSplitIncludeRR { false };
 
-    // The internal enlargement's model preset (0 = driver default; otherwise the NGX render-preset
-    // number: 5 = E, 6 = F, 10 = J, 11 = K) and its sharpening (0 = off; needs RCAS enabled).
-    CustomOptional<uint32_t> DlssNrSplitSrPreset { 0 };
-    CustomOptional<float> DlssNrSplitSrSharpness { 0.0f };
 
     // Multiplies the (auto or manual) white point before the encode: what the model considers "white".
     // Higher means highlights sit lower on the curve and the model treats them as less extreme.
@@ -325,9 +312,6 @@ class Config
 
 
 
-    // Include-RR's own supersample ratio. 0 follows Output Scaling's Ratio; anything above 1.05 runs
-    // RR at this ratio instead -- most of the reconstruction sharpness for far less of RR's cost.
-    CustomOptional<float> DlssNrSplitIncludeRRRatio { 0.0f };
 #endif // OPTI_DLSSNR
     // --- end DLSS 5 Neural Rendering -------------------------------------------------------------
 

@@ -592,34 +592,12 @@ namespace DlssNr
 // CPU-side lock on a path that already records command lists.
 std::mutex g_nrMutex;
 
-bool g_splitActive = false;
-
-void SetSplitActive(bool active) { g_splitActive = active; }
-
-char g_splitStatus[192] = "";
-
-void SetSplitStatus(const char* status)
-{
-    if (status == nullptr)
-        status = "";
-
-    strncpy_s(g_splitStatus, status, _TRUNCATE);
-}
-
-
-const char* SplitStatus() { return g_splitStatus; }
-
-// The split's own latch lives at the seam; it registers a hook here so one button clears everything.
-void (*g_splitRetryHook)() = nullptr;
-
 void RetryAfterFailure()
 {
     g_nr.failed = false;
     g_nr.reason = "";
     g_nr.reset = true;
 
-    if (g_splitRetryHook != nullptr)
-        g_splitRetryHook();
 }
 
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params)
