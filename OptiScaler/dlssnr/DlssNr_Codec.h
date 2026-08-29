@@ -157,6 +157,15 @@ void main(uint3 id : SV_DispatchThreadID)
         return;
     }
 
+    if (gMode == 4)
+    {
+        // The edit as a picture: grey is zero, negatives below it, positives above -- so a trained
+        // video model can be handed the edit and asked to stabilise it like footage.
+        float3 e = EditAt(uv);
+        gTarget[id.xy] = float4(saturate(0.5 + e * 0.5), 1.0);
+        return;
+    }
+
     if (gMode == 0)
     {
         float4 source = gSource.Load(int3(id.xy, 0));
@@ -216,6 +225,11 @@ void main(uint3 id : SV_DispatchThreadID)
 
     float3 edit = model - proxy;
 
+    // The stabilised edit, when a trained temporal model did the accumulating: decoded from the
+    // grey-centred picture it was given. The hand-made accumulator below is bypassed.
+    if (gAccumulate == 3)
+        edit = (gPrevEdit.SampleLevel(gLinear, uv, 0).rgb - 0.5) * 2.0;
+
     // Coring was tried here and removed: the per-frame churn's amplitude overlaps the real detail's,
     // so an amplitude threshold cannot separate them -- it only relocated the noise to the threshold.
 
@@ -231,7 +245,7 @@ void main(uint3 id : SV_DispatchThreadID)
     // frame even on a static scene; blending each frame's edit with its own reprojected history keeps
     // the consistent part -- the detail -- and cancels the part that re-randomises. NVIDIA's own
     // motion vectors carry the history to where the surface is now.
-    if (gAccumulate != 0)
+    if (gAccumulate == 1 || gAccumulate == 2)
     {
         // The edit is split into two bands, because its two artefacts fail in opposite ways. The
         // low-frequency band is the model re-lighting the scene -- large, smooth, and re-decided

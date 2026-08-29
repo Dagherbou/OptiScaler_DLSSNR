@@ -12,6 +12,7 @@
 
 #include <proxies/NVNGX_Proxy.h>
 #include <gpu_time/GpuTime_Dx12.h>
+#include <upscalers/dlss/DLSSFeature_Dx12.h>
 
 namespace
 {
@@ -65,6 +66,13 @@ struct NrState
     // The frame shrunk for the model, when it is working below full resolution.
     ID3D12Resource* colorSmall = nullptr;
     ID3D12Resource* presentProxy = nullptr; // scRGB finished frame: the encoded picture the model sees
+
+    // DLAA-on-the-edit: NVIDIA's own temporal model stabilising the edit, as an experiment toggle.
+    std::unique_ptr<DLSSFeatureDx12> dlaa;
+    ID3D12Resource* editImage = nullptr;  // the edit, grey-centred, as a picture
+    ID3D12Resource* editStable = nullptr; // what the model made of it
+    unsigned int dlaaWidth = 0;
+    bool dlaaJustCreated = false;
     unsigned int workWidth = 0;
     unsigned int workHeight = 0;
 
@@ -168,6 +176,38 @@ float g_autoWhitePoint = 2.0f;
 bool g_autoWhitePointSettled = false;
 float g_presentWhite = 3.0f;
 bool g_presentWhiteSettled = false;
+
+// DLAA-on-the-edit support: a session latch, and a private creation kit so the feature is never
+// created in the command list that evaluates it.
+bool g_dlaaFailed = false;
+ID3D12CommandQueue* g_dlaaQueue = nullptr;
+ID3D12CommandAllocator* g_dlaaAlloc = nullptr;
+ID3D12GraphicsCommandList* g_dlaaList = nullptr;
+ID3D12Fence* g_dlaaFence = nullptr;
+UINT64 g_dlaaFenceValue = 0;
+HANDLE g_dlaaEvent = nullptr;
+
+bool EnsureDlaaKit(ID3D12Device* device)
+{
+    if (g_dlaaQueue != nullptr)
+        return true;
+
+    D3D12_COMMAND_QUEUE_DESC qd {};
+    qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+
+    if (FAILED(device->CreateCommandQueue(&qd, IID_PPV_ARGS(&g_dlaaQueue))))
+        return false;
+
+    if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_dlaaAlloc))) ||
+        FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_dlaaAlloc, nullptr,
+                                         IID_PPV_ARGS(&g_dlaaList))) ||
+        FAILED(g_dlaaList->Close()) ||
+        FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_dlaaFence))))
+        return false;
+
+    g_dlaaEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    return g_dlaaEvent != nullptr;
+}
 unsigned long long g_frames = 0;
 
 // A capture requested from outside the game: when the render path has no fence of its own, the write
@@ -645,6 +685,222 @@ void RetryAfterFailure()
         g_splitRetryHook();
 }
 
+// The wildcard: the edit is encoded as a grey-centred picture, an internal DLAA-mode DLSS feature
+// stabilises it with the same depth and motion guides, and the resolve decodes the result. Returns
+// true with g_nr.editStable holding the stabilised edit, shader-readable; false means the hand-made
+// accumulator serves this frame.
+static bool EvaluateDlaaOnEdit(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device,
+                               NVSDK_NGX_Parameter* params, ID3D12Resource* proxyTex,
+                               ID3D12Resource* depthTex, ID3D12Resource* motionTex, unsigned int width,
+                               unsigned int height, unsigned int guideWidth, unsigned int guideHeight,
+                               float mvScaleX, float mvScaleY, unsigned int passthrough)
+{
+    if (g_dlaaFailed || device == nullptr || depthTex == nullptr || motionTex == nullptr)
+        return false;
+
+    // DLSS wants its guides at the input resolution. In the split (and in DLAA games) they match the
+    // edit's size; at other arrangements the hand-made path serves.
+    if (guideWidth != width || guideHeight != height)
+    {
+        static bool saidSize = false;
+
+        if (!saidSize)
+        {
+            saidSize = true;
+            LOG_INFO("DLSS-NR: DLAA-on-the-edit needs guides at the edit's size (the split pipeline "
+                     "has that); the hand-made accumulator serves here");
+        }
+
+        return false;
+    }
+
+    if (g_nr.editImage != nullptr && g_nr.dlaaWidth != width)
+    {
+        g_nr.editImage->Release();
+        g_nr.editImage = nullptr;
+        g_nr.editStable->Release();
+        g_nr.editStable = nullptr;
+        g_nr.dlaa.reset();
+    }
+
+    if (g_nr.editImage == nullptr)
+    {
+        g_nr.editImage = CreateScratch(device, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height);
+        g_nr.editStable = CreateScratch(device, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height);
+        g_nr.dlaaWidth = width;
+
+        if (g_nr.editImage == nullptr || g_nr.editStable == nullptr)
+        {
+            g_dlaaFailed = true;
+            LOG_ERROR("DLSS-NR: DLAA-on-the-edit surfaces could not be created");
+            return false;
+        }
+    }
+
+    // The edit picture. The model output must be readable for the sample; it is restored to the state
+    // the resolve's own barriers expect.
+    codec::Params ep {};
+    ep.mode = 4;
+    ep.width = width;
+    ep.height = height;
+    ep.passthrough = passthrough;
+
+    Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    g_codec.dispatch(cmdList, ep, proxyTex, g_nr.output, nullptr, g_nr.editImage, g_nr.editStable);
+    Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Barrier(cmdList, g_nr.editImage, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    if (g_nr.dlaa == nullptr)
+    {
+        // The block describes the game's feature; it is borrowed for the creation parse and restored.
+        unsigned int svW = 0, svH = 0, svOw = 0, svOh = 0, svPq = 0, svFlags = 0;
+        params->Get(NVSDK_NGX_Parameter_Width, &svW);
+        params->Get(NVSDK_NGX_Parameter_Height, &svH);
+        params->Get(NVSDK_NGX_Parameter_OutWidth, &svOw);
+        params->Get(NVSDK_NGX_Parameter_OutHeight, &svOh);
+        params->Get(NVSDK_NGX_Parameter_PerfQualityValue, &svPq);
+        params->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &svFlags);
+
+        params->Set(NVSDK_NGX_Parameter_Width, width);
+        params->Set(NVSDK_NGX_Parameter_Height, height);
+        params->Set(NVSDK_NGX_Parameter_OutWidth, width);
+        params->Set(NVSDK_NGX_Parameter_OutHeight, height);
+        params->Set(NVSDK_NGX_Parameter_PerfQualityValue, NVSDK_NGX_PerfQuality_Value_DLAA);
+
+        // The edit picture is LDR and unjittered, whatever the game's frame is; only the depth
+        // convention carries over.
+        unsigned int flags = (svFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) |
+                             NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+        params->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, flags);
+
+        bool inited = false;
+
+        if (EnsureDlaaKit(device) && SUCCEEDED(g_dlaaAlloc->Reset()) &&
+            SUCCEEDED(g_dlaaList->Reset(g_dlaaAlloc, nullptr)))
+        {
+            auto feature = std::make_unique<DLSSFeatureDx12>(IFeature::GetNextHandleId(), params);
+            inited = feature->Init(device, g_dlaaList, params) && feature->IsInited();
+
+            if (SUCCEEDED(g_dlaaList->Close()))
+            {
+                ID3D12CommandList* lists[] = { g_dlaaList };
+                g_dlaaQueue->ExecuteCommandLists(1, lists);
+                ++g_dlaaFenceValue;
+
+                if (SUCCEEDED(g_dlaaQueue->Signal(g_dlaaFence, g_dlaaFenceValue)) &&
+                    g_dlaaFence->GetCompletedValue() < g_dlaaFenceValue)
+                {
+                    g_dlaaFence->SetEventOnCompletion(g_dlaaFenceValue, g_dlaaEvent);
+                    WaitForSingleObject(g_dlaaEvent, 2000);
+                }
+            }
+            else
+            {
+                inited = false;
+            }
+
+            if (inited)
+                g_nr.dlaa = std::move(feature);
+        }
+
+        params->Set(NVSDK_NGX_Parameter_Width, svW);
+        params->Set(NVSDK_NGX_Parameter_Height, svH);
+        params->Set(NVSDK_NGX_Parameter_OutWidth, svOw);
+        params->Set(NVSDK_NGX_Parameter_OutHeight, svOh);
+        params->Set(NVSDK_NGX_Parameter_PerfQualityValue, svPq);
+        params->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, svFlags);
+
+        if (!inited)
+        {
+            g_dlaaFailed = true;
+            LOG_ERROR("DLSS-NR: the DLAA-on-the-edit feature would not initialise; hand-made "
+                      "accumulator serving");
+            Barrier(cmdList, g_nr.editImage, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            return false;
+        }
+
+        g_nr.dlaaJustCreated = true;
+        LOG_INFO("DLSS-NR: DLAA-on-the-edit running at {}x{}", width, height);
+    }
+
+    if (g_nr.dlaaJustCreated)
+    {
+        // The creation was executed and fenced on its own queue, but the first evaluate still waits a
+        // frame, matching every other feature this build creates.
+        g_nr.dlaaJustCreated = false;
+        Barrier(cmdList, g_nr.editImage, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        return false;
+    }
+
+    // Borrow the block for the evaluate, and put back everything touched.
+    ID3D12Resource* svColor = nullptr;
+    ID3D12Resource* svOutput = nullptr;
+    ID3D12Resource* svDepth = nullptr;
+    ID3D12Resource* svMv = nullptr;
+    float svJx = 0.0f, svJy = 0.0f, svMsx = 1.0f, svMsy = 1.0f, svSharp = 0.0f;
+    int svReset = 0;
+    unsigned int svW = 0, svH = 0;
+    params->Get(NVSDK_NGX_Parameter_Color, &svColor);
+    params->Get(NVSDK_NGX_Parameter_Output, &svOutput);
+    params->Get(NVSDK_NGX_Parameter_Depth, &svDepth);
+    params->Get(NVSDK_NGX_Parameter_MotionVectors, &svMv);
+    params->Get(NVSDK_NGX_Parameter_Jitter_Offset_X, &svJx);
+    params->Get(NVSDK_NGX_Parameter_Jitter_Offset_Y, &svJy);
+    params->Get(NVSDK_NGX_Parameter_MV_Scale_X, &svMsx);
+    params->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &svMsy);
+    params->Get(NVSDK_NGX_Parameter_Sharpness, &svSharp);
+    params->Get(NVSDK_NGX_Parameter_Reset, &svReset);
+    params->Get(NVSDK_NGX_Parameter_Width, &svW);
+    params->Get(NVSDK_NGX_Parameter_Height, &svH);
+
+    params->Set(NVSDK_NGX_Parameter_Color, g_nr.editImage);
+    params->Set(NVSDK_NGX_Parameter_Output, g_nr.editStable);
+    params->Set(NVSDK_NGX_Parameter_Depth, depthTex);
+    params->Set(NVSDK_NGX_Parameter_MotionVectors, motionTex);
+    params->Set(NVSDK_NGX_Parameter_Jitter_Offset_X, 0.0f);
+    params->Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, 0.0f);
+    params->Set(NVSDK_NGX_Parameter_MV_Scale_X, mvScaleX);
+    params->Set(NVSDK_NGX_Parameter_MV_Scale_Y, mvScaleY);
+    params->Set(NVSDK_NGX_Parameter_Sharpness, 0.0f);
+    params->Set(NVSDK_NGX_Parameter_Reset, g_nr.reset ? 1 : 0);
+    params->Set(NVSDK_NGX_Parameter_Width, width);
+    params->Set(NVSDK_NGX_Parameter_Height, height);
+
+    const bool ok = g_nr.dlaa->Evaluate(cmdList, params);
+
+    params->Set(NVSDK_NGX_Parameter_Color, svColor);
+    params->Set(NVSDK_NGX_Parameter_Output, svOutput);
+    params->Set(NVSDK_NGX_Parameter_Depth, svDepth);
+    params->Set(NVSDK_NGX_Parameter_MotionVectors, svMv);
+    params->Set(NVSDK_NGX_Parameter_Jitter_Offset_X, svJx);
+    params->Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, svJy);
+    params->Set(NVSDK_NGX_Parameter_MV_Scale_X, svMsx);
+    params->Set(NVSDK_NGX_Parameter_MV_Scale_Y, svMsy);
+    params->Set(NVSDK_NGX_Parameter_Sharpness, svSharp);
+    params->Set(NVSDK_NGX_Parameter_Reset, svReset);
+    params->Set(NVSDK_NGX_Parameter_Width, svW);
+    params->Set(NVSDK_NGX_Parameter_Height, svH);
+
+    Barrier(cmdList, g_nr.editImage, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    if (!ok)
+    {
+        g_dlaaFailed = true;
+        LOG_ERROR("DLSS-NR: the DLAA-on-the-edit evaluate failed; hand-made accumulator serving");
+        return false;
+    }
+
+    Barrier(cmdList, g_nr.editStable, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    return true;
+}
+
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
                           bool forceInPlace)
 {
@@ -1061,6 +1317,15 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     if (result == NVSDK_NGX_Result_Success)
     {
+        // The wildcard first, when asked: a trained temporal model stabilises the edit, and the
+        // hand-made accumulator below stands down for the frame.
+        bool dlaaEdit = false;
+
+        if (cfg.DlssNrDlaaEdit.value_or_default())
+            dlaaEdit = EvaluateDlaaOnEdit(cmdList, device, params, modelInput, depthIn, motionIn, width,
+                                          height, guideWidth, guideHeight, g_nr.guideMvScaleX,
+                                          g_nr.guideMvScaleY, isHdrBuffer ? 0u : 1u);
+
         // Resolve takes the difference between what the model returned and what it was shown, and adds
         // that back to the frame. At strength zero the result is what the upscaler produced, exactly, and
         // anything the model left alone is untouched rather than round-tripped through the curve.
@@ -1084,7 +1349,10 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         ID3D12Resource* historyIn = nullptr;
         ID3D12Resource* historyOut = nullptr;
 
-        if (stability > 0.0f && motionIn != nullptr)
+        if (dlaaEdit)
+            resolveParams.accumulate = 3u;
+
+        if (!dlaaEdit && stability > 0.0f && motionIn != nullptr)
         {
             if (g_nr.editHistory[0] != nullptr &&
                 ((unsigned int) g_nr.editHistory[0]->GetDesc().Width != width ||
@@ -1127,9 +1395,13 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         g_codec.dispatch(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, target,
-                         historyOut, motionIn, historyIn);
+                         historyOut, motionIn, dlaaEdit ? g_nr.editStable : historyIn);
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        if (dlaaEdit)
+            Barrier(cmdList, g_nr.editStable, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
         if (historyIn != nullptr)
         {
@@ -1764,6 +2036,20 @@ void Shutdown()
     {
         g_nr.presentProxy->Release();
         g_nr.presentProxy = nullptr;
+    }
+
+    g_nr.dlaa.reset();
+
+    if (g_nr.editImage != nullptr)
+    {
+        g_nr.editImage->Release();
+        g_nr.editImage = nullptr;
+    }
+
+    if (g_nr.editStable != nullptr)
+    {
+        g_nr.editStable->Release();
+        g_nr.editStable = nullptr;
     }
 
     for (auto& h : g_nr.editHistory)

@@ -6018,6 +6018,20 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\ncomposes with Ray Reconstruction. Before the upscaler, DLSS's own accumulator"
                        "\nalready does this.");
 
+        bool dlaaEdit = config->DlssNrDlaaEdit.value_or_default();
+        if (ImGui::Checkbox("Stabilise with DLAA (experimental)", &dlaaEdit))
+            config->DlssNrDlaaEdit = dlaaEdit;
+
+        ShowHelpMarker("The wildcard: the edit is encoded as a grey-centred picture and handed to an"
+                       "\ninternal DLAA-mode DLSS feature with the same depth and motion guides --"
+                       "\nNVIDIA's trained temporal machinery does the stabilising, and the slider"
+                       "\nabove is bypassed while this is on."
+                       "\n\nHonest expectations: the edit is unusual input for it, so this may hold"
+                       "\nbetter than the hand-made filter or smear in trained-but-wrong ways -- that"
+                       "\nis what the toggle is for. Needs the guides at the edit's size: the split"
+                       "\npipeline (or a DLAA game). Elsewhere the hand-made filter quietly serves."
+                       "\nCosts roughly a DLAA pass at render resolution.");
+
         float colour = config->DlssNrColourStrength.value_or_default();
         if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 4.0f, "%.2f"))
             config->DlssNrColourStrength = colour;
