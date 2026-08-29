@@ -46,6 +46,9 @@ const char* SplitStatus();
 // thrash does not cost a restart.
 void RetryAfterFailure();
 
+// The split's own failure latch registers its clearing here, so one Retry clears everything.
+extern void (*g_splitRetryHook)();
+
 // Runs the model over the finished frame, on a command list of its own, and submits it. Called every
 // present; does nothing unless that inject point is selected.
 void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, unsigned int backBufferIndex);
