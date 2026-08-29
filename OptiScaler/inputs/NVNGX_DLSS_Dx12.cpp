@@ -919,6 +919,17 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
     else
         SplitRestoreOs();
 
+    // The moment the split stops serving -- unchecked, model disabled, or failed -- the model's normal
+    // inject point must see that. The native-1:1 serve never disarms, so without this the flag it
+    // raised stayed up forever and the finished-frame path was muted for the rest of the session.
+    if (!want)
+    {
+        DlssNr::SetSplitActive(false);
+
+        if (SplitDx12.lastWant)
+            DlssNr::SetSplitStatus("");
+    }
+
     // A recreation is mid-flight -- the old feature may already be destroyed, and ChangeFeature's first
     // phase stamps the block's output size back to the old feature's. Keep the block aimed at the
     // destination every frame until the new feature exists, or the parse reads the stamped size and the
