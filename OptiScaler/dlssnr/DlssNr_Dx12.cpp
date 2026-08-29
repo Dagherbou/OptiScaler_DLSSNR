@@ -1829,6 +1829,25 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
 
     if (result == NVSDK_NGX_Result_Success)
     {
+        // The wildcard works here too -- and the finished frame at DLAA is its best case, since the
+        // guides sit exactly at the frame's size.
+        bool dlaaEdit = false;
+
+        if (cfg.DlssNrDlaaEdit.value_or_default() && g_nr.capabilityParams != nullptr)
+        {
+            // No game parameter block exists at present time; the forwarder's capability block serves
+            // -- parameter blocks are generic driver containers, as the float-slot probing proved.
+            // The depth clone is already parked for the next frame's copy; borrow it briefly.
+            Barrier(cmdList, g_nr.depthClone, D3D12_RESOURCE_STATE_COPY_DEST,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            dlaaEdit = EvaluateDlaaOnEdit(cmdList, device, g_nr.capabilityParams, modelInput,
+                                          g_nr.depthClone, g_nr.motionClone, width, height,
+                                          g_nr.guideWidth, g_nr.guideHeight, g_nr.guideMvScaleX,
+                                          g_nr.guideMvScaleY, hdrEncoded ? 0u : 1u);
+            Barrier(cmdList, g_nr.depthClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COPY_DEST);
+        }
+
         // For SDR the frame the model was shown and the frame as it was are the same thing, and the
         // resolve adds the edit at full scale. For an encoded scRGB frame the resolve decodes with the
         // same white point the encode used -- exact inverses, so at strength zero the result is the
@@ -1852,7 +1871,10 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         ID3D12Resource* historyIn = nullptr;
         ID3D12Resource* historyOut = nullptr;
 
-        if (stability > 0.0f && g_nr.motionClone != nullptr)
+        if (dlaaEdit)
+            resolveParams.accumulate = 3u;
+
+        if (!dlaaEdit && stability > 0.0f && g_nr.motionClone != nullptr)
         {
             if (g_nr.editHistory[0] != nullptr &&
                 ((unsigned int) g_nr.editHistory[0]->GetDesc().Width != width ||
@@ -1894,9 +1916,13 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         g_codec.dispatch(cmdList, resolveParams, modelInput, g_nr.output, g_nr.colorCopy, g_nr.hdrCopy,
-                         historyOut, g_nr.motionClone, historyIn);
+                         historyOut, g_nr.motionClone, dlaaEdit ? g_nr.editStable : historyIn);
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        if (dlaaEdit)
+            Barrier(cmdList, g_nr.editStable, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
         if (historyIn != nullptr)
         {

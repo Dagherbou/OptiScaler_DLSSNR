@@ -331,11 +331,15 @@ void main(uint3 id : SV_DispatchThreadID)
                     divergence = max(divergence, length(mvTap - mv));
                 }
 
-                float coherent = 1.0 - saturate(divergence / 4.0);
-                float lowHold = lerp(gStability, max(gStability, 0.9), coherent);
+                // At a boundary the history dies completely, not gently: a small patch of pumping
+                // where a car meets the road is invisible, a smeared trail behind the car is not.
+                // Both the hold and the clamp collapse with coherence.
+                float coherent = 1.0 - saturate(divergence / 2.0);
+                float lowHold = coherent * max(gStability, 0.9);
+                float clampWidth = lerp(0.015, 0.10, coherent);
 
                 float prevLow = gPrevEdit.SampleLevel(gLinear, uvPrev, 0).a;
-                prevLow = clamp(prevLow, lowNow - 0.10, lowNow + 0.10);
+                prevLow = clamp(prevLow, lowNow - clampWidth, lowNow + clampWidth);
                 accumulatedLow = lerp(lowNow, prevLow, lowHold);
             }
         }
