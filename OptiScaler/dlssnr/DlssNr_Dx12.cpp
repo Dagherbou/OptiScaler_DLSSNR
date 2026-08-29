@@ -13,6 +13,8 @@
 #include <proxies/NVNGX_Proxy.h>
 #include <gpu_time/GpuTime_Dx12.h>
 
+#include <mutex>
+
 namespace
 {
 // Everything the model is reached through. The snippet refuses callers whose module path does not
@@ -664,6 +666,12 @@ void WaitForAllocator(unsigned int index)
 
 namespace DlssNr
 {
+// The render path runs on the game's render thread, the finished-frame path on the present thread,
+// and both mutate the same state -- features, surfaces, the parking list. They ran unsynchronised
+// since the beginning, and the inject/split transitions that rebuild surfaces turned that race into
+// crashes-by-lottery. One lock, both bodies; the GPU never waits, only CPU-side recording serialises.
+std::mutex g_nrMutex;
+
 bool g_splitActive = false;
 
 void SetSplitActive(bool active) { g_splitActive = active; }
@@ -696,6 +704,7 @@ void RetryAfterFailure()
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
                           bool forceInPlace)
 {
+    std::lock_guard<std::mutex> nrLock(g_nrMutex);
     const Config& cfg = *Config::Instance();
 
     if (!cfg.DlssNrEnabled.value_or_default() || g_nr.failed || cmdList == nullptr || params == nullptr)
@@ -785,6 +794,17 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
         device->Release();
         return;
+    }
+
+    // Diagnostic for the format ping-pong: every full run of this path says who asked for it. A full
+    // run with forceInPlace=0 and inject=1 would be a contradiction worth seeing in writing.
+    static unsigned long long lastFullRunLog = 0;
+
+    if (g_frames - lastFullRunLog > 60)
+    {
+        lastFullRunLog = g_frames;
+        LOG_INFO("DLSS-NR render-path full run: forceInPlace={}, inject={}, frame {}x{}",
+                 forceInPlace ? 1 : 0, (int) cfg.DlssNrInjectPoint.value_or_default(), width, height);
     }
 
     if (!EnsureForwarder() || !EnsureCapabilityParams(device))
@@ -1227,6 +1247,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
 void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, unsigned int backBufferIndex)
 {
+    std::lock_guard<std::mutex> nrLock(g_nrMutex);
     const Config& cfg = *Config::Instance();
 
     if (!cfg.DlssNrEnabled.value_or_default() || g_nr.failed || queue == nullptr || backBuffer == nullptr)
@@ -1739,6 +1760,8 @@ bool CaptureInProgress() { return g_capture.isActive(); }
 
 void Shutdown()
 {
+    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+
     for (auto& r : g_nrRetired)
     {
         if (r.feature != nullptr && g_nr.release != nullptr)
