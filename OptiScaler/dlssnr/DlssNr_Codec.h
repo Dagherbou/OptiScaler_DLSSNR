@@ -83,6 +83,19 @@ cbuffer Params : register(b0)
     float4 gMat[3];      // the game's colour transform after the curve, rows (w unused)
 };
 
+// Colours outside the AP1 gamut are impossible on any display and read as sparkle where a bright
+// saturated pixel is pushed further. Clamping inside AP1 and coming back keeps everything reachable.
+float3 ClampAp1(float3 color)
+{
+    const float3x3 bt709_to_ap1 = { 0.613097, 0.339523, 0.047379,
+                                    0.070194, 0.916354, 0.013452,
+                                    0.020616, 0.109570, 0.869815 };
+    const float3x3 ap1_to_bt709 = { 1.705051, -0.621792, -0.083259,
+                                    -0.130256, 1.140805, -0.010548,
+                                    -0.024003, -0.128969, 1.152972 };
+    return mul(ap1_to_bt709, max(mul(bt709_to_ap1, color), float3(0.0, 0.0, 0.0)));
+}
+
 float3x3 CurveMatrix()
 {
     return float3x3(gMat[0].xyz, gMat[1].xyz, gMat[2].xyz);
@@ -240,6 +253,18 @@ void main(uint3 id : SV_DispatchThreadID)
         // as well as its contrast.
         if (gCurveMode != 0)
             display = max(mul(CurveMatrix(), display), float3(0.0, 0.0, 0.0));
+
+        // A soft knee instead of a hard ceiling. Anything the curve leaves above 0.75 is rolled off
+        // rather than clipped, so the model is never shown a field of flat white whose blown pixels
+        // flip between frames -- unstable input is unstable output, and this is where a bright scene
+        // would produce it.
+        float displayLuma = dot(display, kLuma);
+
+        if (displayLuma > 0.75)
+        {
+            float rolled = 0.75 + 0.25 * (1.0 - exp(-(displayLuma - 0.75) / 0.25));
+            display *= rolled / displayLuma;
+        }
 
         gTarget[id.xy] = float4(LinearToSrgb(display), source.a);
         return;
@@ -415,19 +440,20 @@ void main(uint3 id : SV_DispatchThreadID)
 
     float3 result;
 
-    if (gPassthrough != 0 || originalLuma < 0.002)
+    if (originalLuma < 0.002)
     {
-        // Display space (or near black): an offset lands as an offset.
+        // A ratio cannot lift black, so at the very bottom the edit lands as an offset.
         result = original + applied * slope;
     }
     else
     {
-        // Linear light: an achromatic offset is a colour change -- adding equal amounts to R, G and B
-        // pulls every colour toward grey, and the game's per-channel tone curve then bends whatever
-        // remains. That was the split's colour drift. The luminance part of the edit is applied as a
-        // ratio instead, which preserves chromaticity exactly; the colour part stays additive.
-        // An edit made in the game's colour space is brought back through the inverse of the fitted
-        // matrix before the luminance slope lands it in the scene.
+        // The model's answer is applied as a ratio, not as a difference -- everywhere, display space
+        // included. "Make this pixel twelve percent brighter" moves with the content: in a dark area
+        // it stays small, and if the model's answer shifts a little between frames the shift is
+        // proportional and invisible. "Add 0.03" does not: in shadow that is an enormous relative
+        // change and it crawls, and in a highlight it has to be scaled up to survive, which is how a
+        // detail pass turns into a wobble generator. This is the single largest difference between a
+        // stable pass and an unstable one.
         float3 appliedScene = gCurveMode != 0 ? mul(Inverse3(CurveMatrix()), applied) : applied;
         float appliedLuma = dot(appliedScene, kLuma);
         float3 appliedChroma = appliedScene - appliedLuma;
@@ -452,7 +478,10 @@ void main(uint3 id : SV_DispatchThreadID)
     else if (resultLuma < floorLuma && editLuma2 < -1e-6)
         limit = (floorLuma - originalLuma) / editLuma2;
 
-    result = original + applied * slope * saturate(limit);
+    // Scale the deviation that was actually composed. Rebuilding it additively here -- which is what
+    // this line used to do -- silently threw the ratio away and made every path additive again.
+    result = original + (result - original) * saturate(limit);
+    result = ClampAp1(result);
     gTarget[id.xy] = float4(max(result, float3(0.0, 0.0, 0.0)), gHudDetect > 0.0 ? 1.0 : originalSample.a);
 }
 )";
