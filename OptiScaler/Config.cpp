@@ -316,6 +316,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DLSSEnabled.set_from_config(readBool("DLSS", "Enabled"));
 
             // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
+#if OPTI_DLSSNR
             DlssNrEnabled.set_from_config(readBool("DlssNr", "Enabled"));
             DlssNrTransferStrength.set_from_config(readFloat("DlssNr", "TransferStrength"));
             DlssNrColourStrength.set_from_config(readFloat("DlssNr", "ColourStrength"));
@@ -343,6 +344,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrSkinStructure.set_from_config(readFloat("DlssNr", "SkinStructure"));
             DlssNrAutoMask.set_from_config(readBool("DlssNr", "AutoMask"));
             DlssNrUiCorrection.set_from_config(readBool("DlssNr", "UiCorrection"));
+#endif // OPTI_DLSSNR
             UseGenericAppIdWithDlss.set_from_config(readBool("DLSS", "UseGenericAppIdWithDlss"));
 
             RenderPresetOverride.set_from_config(readBool("DLSS", "RenderPresetOverride"));
@@ -1172,6 +1174,7 @@ bool Config::SaveIni()
         ini.SetValue("DLSS", "Enabled", GetBoolValue(Instance()->DLSSEnabled.value_for_config()).c_str());
 
     // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
+#if OPTI_DLSSNR
     ini.SetValue("DlssNr", "Enabled", GetBoolValue(Instance()->DlssNrEnabled.value_for_config()).c_str());
     ini.SetValue("DlssNr", "TransferStrength",
                  GetFloatValue(Instance()->DlssNrTransferStrength.value_for_config()).c_str());
@@ -1209,6 +1212,7 @@ bool Config::SaveIni()
                  GetFloatValue(Instance()->DlssNrSkinStructure.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AutoMask", GetBoolValue(Instance()->DlssNrAutoMask.value_for_config()).c_str());
     ini.SetValue("DlssNr", "UiCorrection", GetBoolValue(Instance()->DlssNrUiCorrection.value_for_config()).c_str());
+#endif // OPTI_DLSSNR
         ini.SetValue("DLSS", "RenderPresetOverride",
                      GetBoolValue(Instance()->RenderPresetOverride.value_for_config()).c_str());
         ini.SetValue("DLSS", "RenderPresetForAll",

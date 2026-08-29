@@ -14,9 +14,7 @@
 //   upscalers/IFeature_Dx11wDx12.cpp  the pass inside the D3D11-on-D3D12 bridge
 //   menu/menu_common.cpp              the settings panel
 
-#ifndef OPTI_DLSSNR
-#define OPTI_DLSSNR 1
-#endif
+#include "DlssNr_Switch.h"
 
 #if OPTI_DLSSNR
 #include "DlssNr_Dx12.h"
