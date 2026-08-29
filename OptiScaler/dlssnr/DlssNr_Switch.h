@@ -3,7 +3,7 @@
 // The one switch that turns DLSS 5 Neural Rendering off.
 //
 // Set it to 0 -- here, or as a project-wide preprocessor definition -- and the feature compiles out
-// completely: the nine guarded call sites in OptiScaler's own code vanish, the three module sources
+// completely: the eight guarded call sites in OptiScaler's own code vanish, the three module sources
 // become empty translation units, the menu section disappears and the [DlssNr] config block is not
 // even declared. The resulting build carries no trace of it.
 //

@@ -16,13 +16,12 @@ declared. Verified by building it both ways — the resulting `OptiScaler.dll` c
 occurrences of `DlssNr`, `dlssnr` or `Neural Rendering`, and is 117 KB smaller.
 
 To remove the *source* as well: delete this directory, drop `dlssnr_forwarder.vcxproj` from the
-solution, and delete the `#if OPTI_DLSSNR` blocks listed below. Nothing else refers to it.
+solution, and delete the eight `#if OPTI_DLSSNR` blocks listed below. Nothing else refers to it.
 
 | File | Blocks | What the calls do |
 |---|---|---|
-| `inputs/NVNGX_DLSS_Dx12.cpp` | 5 | the pass after an upscale (render path), and the split pipeline's entry points |
+| `inputs/NVNGX_DLSS_Dx12.cpp` | 2 | the pass after an upscale, on each of the two evaluate routes |
 | `menu/menu_common.cpp` | 2 | the settings panel, and the cost row in the timing table |
-| `menu/menu_overlay_dx.cpp` | 1 | the finished-frame pass at present |
 | `upscalers/IFeature_Dx11wDx12.cpp` | 1 | the pass inside the D3D11-on-D3D12 bridge |
 | `Config.h` / `Config.cpp` | 3 | the `[DlssNr]` declarations and their read/write runs |
 
@@ -37,10 +36,9 @@ Scaling chain, so the bug stayed invisible until something else called it.
 |---|---|
 | `DlssNr_Switch.h` | the `OPTI_DLSSNR` macro, and nothing else |
 | `DlssNr.h` | umbrella header; documents the call sites |
-| `DlssNr_Dx12.h/.cpp` | the model: forwarder loading, feature lifetime, the evaluate paths, encode/resolve orchestration, white point metering, capture |
-| `DlssNr_Split.h/.cpp` | the split pipeline (RR/DLSS 1:1 → NR → internal enlargement), Output Scaling absorption, native-1:1 serving |
+| `DlssNr_Dx12.h/.cpp` | the model: forwarder loading, feature lifetime, the single evaluate path, encode/resolve orchestration, white point metering, capture |
 | `DlssNr_Menu.cpp` | the settings panel |
-| `DlssNr_Codec.h` | the compute shader: encode (scale and sRGB-encode with a soft knee), resolve (ratio composition against a measured slope, temporal accumulator, restores, AP1 clamp), downsample |
+| `DlssNr_Codec.h` | the compute shader: encode (scale and sRGB-encode with a soft knee), resolve (RenoDX's two-branch composition, OkLab hue correction, AP1 clamp), downsample |
 | `DlssNr_Probe.h` | frame reduction and readback for the white point meter |
 | `DlssNr_Capture.h` | matched before/after frame dumps |
 | `forwarder/` | the caller-gate shim, built by `dlssnr_forwarder.vcxproj` into the release layout |
@@ -78,12 +76,13 @@ part of the solution, and builds with everything else.
 - **Never free under the GPU.** Every retired feature or surface is parked and freed 32 evaluates
   later; every internal feature is created on a private queue and fenced before use. Both rules were
   paid for with device hangs.
-- **Two paths, one lock.** The render path runs on the game's render thread and the finished-frame
-  path on the present thread; a mutex covers both. Removing it produces crashes that look random and
-  are not.
-- **Temporal filtering of the edit's detail band was measured to be a dead end** (twice, including
-  with a trained DLAA pass): the model re-decides detail with the framing. Only the lighting band is
-  accumulated. Detail stability comes from routing the pass through a real upscaler — the split.
+- **One lock.** Every caller is on the game's render thread now, but the D3D11-on-D3D12 bridge
+  enters from its own call site, and the lock is CPU-side on a path that already records command
+  lists. It was added after a period of crashes that looked random and were not.
+- **Temporal filtering of the model's answer was measured to be a dead end** (twice, including with
+  a trained DLAA pass): the model re-decides detail with the framing, so old answers do not belong
+  to new frames. There is no accumulator; the composition is re-anchored to the model every frame
+  instead, which is what makes it steady.
 - **The model's own UI correction went with it.** It only ever acted on a UI layer the game tagged
   through Streamline, which almost no title does, and it could not be shown to change anything when
   one did. Removing it removed the Streamline tag hook as well, so the module no longer touches that
@@ -91,4 +90,10 @@ part of the solution, and builds with everything else.
 - **HUD detection was tried and removed.** Measured with grain, chromatic aberration and depth of
   field all off, a static HUD pixel still scored 0.31 on the "did not change" test, because game
   interfaces are translucent and animated. Separation from the world was 2.5:1 — not a detector at
-  any threshold. The split is the answer to the interface, because it never sees it.
+  any threshold. The interface is safe because the pass runs before it is drawn, not because
+  anything looks for it.
+- **The split pipeline was removed.** It ran Ray Reconstruction at 1:1, the model on that frame,
+  then an internal Super Resolution pass to the target size, to give the model a real temporal
+  accumulator behind it. It was removed once the plain path did the same job — but note that the
+  plain path had a bug that stopped it running the model at all, so the split was never fairly
+  compared. If detail shimmers in motion, that is the thing to look at again; it is in the history.
