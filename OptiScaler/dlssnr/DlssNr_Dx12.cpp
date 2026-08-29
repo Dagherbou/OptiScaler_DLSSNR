@@ -1587,6 +1587,8 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
             maskParams.guideWidth = g_nr.guideWidth;
             maskParams.guideHeight = g_nr.guideHeight;
             maskParams.accumulate = exact ? 1u : 0u;
+            // Without this the pass never packs its three terms and the terms view shows the frame.
+            maskParams.debugView = cfg.DlssNrDebugView.value_or_default();
 
             Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
