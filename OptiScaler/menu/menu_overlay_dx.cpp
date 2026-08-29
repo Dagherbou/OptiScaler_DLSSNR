@@ -2,7 +2,6 @@
 #include "menu_overlay_base.h"
 #include "menu_overlay_dx.h"
 
-#include <dlssnr/DlssNr.h>
 
 #include <Util.h>
 #include <Logger.h>
@@ -430,17 +429,6 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain)
             CreateRenderTargetDx12(device, pSwapChain);
             pSwapChain->Release();
             return;
-        }
-
-        // Neural Rendering over the finished frame, before the overlay is drawn on top of it -- the
-        // model should be enhancing the game, not the menu. It records and submits its own list, since
-        // the overlay's only runs when the menu is open.
-        {
-            UINT nrBackBufferIdx = pSwapChain->GetCurrentBackBufferIndex();
-#if OPTI_DLSSNR
-            DlssNr::EvaluateAtPresent((ID3D12CommandQueue*) currentSCCommandQueue,
-                                      g_mainRenderTargetResource[nrBackBufferIdx], nrBackBufferIdx);
-#endif
         }
 
         // If everything is ready render the frame

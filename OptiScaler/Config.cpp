@@ -332,8 +332,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrSplitSrPreset.set_from_config(readUInt("DlssNr", "SplitSrPreset"));
             DlssNrSplitSrSharpness.set_from_config(readFloat("DlssNr", "SplitSrSharpness"));
             DlssNrWhitePointScale.set_from_config(readFloat("DlssNr", "WhitePointScale"));
-            DlssNrProtectHighlights.set_from_config(readFloat("DlssNr", "ProtectHighlights"));
-            DlssNrShadowRestore.set_from_config(readFloat("DlssNr", "ShadowRestore"));
             DlssNrSplitIncludeRRRatio.set_from_config(readFloat("DlssNr", "SplitIncludeRRRatio"));
             // --- end DLSS 5 Neural Rendering ---
             DlssNrPreset.set_from_config(readUInt("DlssNr", "Preset"));
@@ -1194,10 +1192,6 @@ bool Config::SaveIni()
                  GetFloatValue(Instance()->DlssNrSplitSrSharpness.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WhitePointScale",
                  GetFloatValue(Instance()->DlssNrWhitePointScale.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "ProtectHighlights",
-                 GetFloatValue(Instance()->DlssNrProtectHighlights.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "ShadowRestore",
-                 GetFloatValue(Instance()->DlssNrShadowRestore.value_for_config()).c_str());
     ini.SetValue("DlssNr", "SplitIncludeRRRatio",
                  GetFloatValue(Instance()->DlssNrSplitIncludeRRRatio.value_for_config()).c_str());
     // --- end DLSS 5 Neural Rendering ---

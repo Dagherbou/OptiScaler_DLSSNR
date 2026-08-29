@@ -242,13 +242,16 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::SeparatorText("How much of it lands");
 
         float transfer = config->DlssNrTransferStrength.value_or_default();
-        if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 4.0f, "%.2f"))
+        if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 1.0f, "%.2f"))
             config->DlssNrTransferStrength = transfer;
 
-        HelpMarker("How much of the model's luminance edit reaches the frame."
-                       "\n\n0 gives back exactly what the upscaler produced -- the encode and decode are"
-                       "\nexact inverses, so this is a true bypass, not an approximation of one."
-                       "\n\nAbove 1 exaggerates the edit. If nothing here seems to do anything, push this"
+        HelpMarker("How far the frame moves toward the model's picture."
+                       "\n\nThe model's answer is not added to the frame -- it is a complete picture of its"
+                       "\nown, rescaled so its luminance sits where the original says it should. This"
+                       "\nblends between the two, so both ends are real pictures and everything between"
+                       "\nthem is one too."
+                       "\n\n0 gives back exactly what the upscaler produced. 1 is the model's picture."
+                       "\n\nIf nothing here seems to do anything, push this"
                        "\nto 4 and watch: that answers whether the model is contributing at all.");
 
         float editStability = config->DlssNrEditStability.value_or_default();
@@ -267,12 +270,17 @@ void RenderMenu(Config* config, float menuResScale)
 
 
         float colour = config->DlssNrColourStrength.value_or_default();
-        if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 4.0f, "%.2f"))
+        if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 1.0f, "%.2f"))
             config->DlssNrColourStrength = colour;
 
-        HelpMarker("The same, for the colour part of the edit, which is separated out because it is"
-                       "\nusually the part you do not want. Detail synthesis is a luminance change; a"
-                       "\ncolour shift is mostly the model drifting.");
+        HelpMarker("Whether the model's colour arrives with its light."
+                       "\n\n0 keeps the game's own hue exactly -- every pixel is the original colour with"
+                       "\nonly its brightness carrying the model's verdict. Game-accurate colour, with"
+                       "\nthe detail. 1 brings the model's colour as well, in its own hue, clamped into"
+                       "\nAP1 so nothing unreachable is asked for."
+                       "\n\nThis cannot shift hue on its own: it interpolates between two finished"
+                       "\npictures rather than adding a colour difference to one, which is what used to"
+                       "\nlet a warm subject come back green.");
 
         ImGui::SeparatorText("Model");
 
@@ -391,34 +399,6 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nnothing changes. Lower makes it treat your lights as more extreme (and"
                        "\nleave them alone more); higher, the opposite. At exactly 1.00x SDR frames"
                        "\ngo over untouched, as before.");
-
-        float protectHl = config->DlssNrProtectHighlights.value_or_default();
-        if (ImGui::SliderFloat("Highlight restore", &protectHl, 0.0f, 2.0f, "%.2f"))
-            config->DlssNrProtectHighlights = protectHl;
-
-        HelpMarker("How the highlights look. The model's trained instinct is to calm bright things"
-                       "\n-- not only the peak of a lamp but the whole glow around it -- and that reads"
-                       "\nas muted, in SDR as much as HDR. This pulls back the darkening of bright"
-                       "\nregions, scaled by how bright they are; colour, brightening and structure"
-                       "\ndetail pass untouched, so nothing else changes."
-                       "\n\n0 is off and bit-identical; 1 removes all darkening from the brightest"
-                       "\nregions. Above 1 it flips into a boost: what the model tried to dim gets"
-                       "\nbrightened past the original instead -- extra punch, bounded by the"
-                       "\nHighlight guard clamp. The blunter lever is Local tone below: at 0 the"
-                       "\nmodel stops re-toning entirely, everywhere, dark corners included.");
-
-
-        float shadowRestore = config->DlssNrShadowRestore.value_or_default();
-        if (ImGui::SliderFloat("Shadow restore", &shadowRestore, 0.0f, 1.0f, "%.2f"))
-            config->DlssNrShadowRestore = shadowRestore;
-
-        HelpMarker("The mirror of Highlight restore, and the other half of the washed-out look:"
-                       "\nthe model lifts dark regions toward its trained idea of a well-exposed"
-                       "\npicture, and the scene loses its darkness -- an alley in shadow turns grey."
-                       "\nThis pulls back the brightening of dark regions, scaled by how dark they"
-                       "\nare; detail and colour pass untouched."
-                       "\n\n0 is off and bit-identical; 1 removes all lift from the darkest regions."
-                       "\nRun both restores together to keep the scene's full contrast.");
 
         float maxRatio = config->DlssNrMaxRatio.value_or_default();
         if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))

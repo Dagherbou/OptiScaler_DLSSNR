@@ -38,7 +38,6 @@ using PFN_NrSetFloatSlot = void(__cdecl*) (int);
 using PFN_NrProbeFloat = void(__cdecl*) (void*, const char*, float, int);
 
 // One per back buffer, so an allocator is never reset while its frame is still in flight.
-constexpr unsigned int kPresentAllocators = 3;
 
 struct NrState
 {
@@ -73,7 +72,6 @@ struct NrState
 
     // The frame shrunk for the model, when it is working below full resolution.
     ID3D12Resource* colorSmall = nullptr;
-    ID3D12Resource* presentProxy = nullptr; // scRGB finished frame: the encoded picture the model sees
 
     unsigned int workWidth = 0;
     unsigned int workHeight = 0;
@@ -85,19 +83,6 @@ struct NrState
     unsigned int width = 0;
     unsigned int height = 0;
     bool reset = true;
-
-    // The present path records its own work: the overlay's command list only runs when the menu is
-    // open, so it cannot be borrowed for something that has to happen every frame.
-    ID3D12CommandAllocator* presentAllocators[kPresentAllocators] = {};
-    ID3D12GraphicsCommandList* presentList = nullptr;
-
-    // An allocator cannot be reset while the GPU is still reading the commands recorded into it, and
-    // there is nothing else here to serialise against -- this list is submitted independently of the
-    // game's own work.
-    ID3D12Fence* presentFence = nullptr;
-    HANDLE presentFenceEvent = nullptr;
-    unsigned long long presentFenceValues[kPresentAllocators] = {};
-    unsigned long long presentFenceNext = 0;
 
     // Dimensions of the guides as the upscaler handed them over, kept for the present path, which runs
     // long after that call has returned.
@@ -140,7 +125,6 @@ probe::BlockReader g_reader;
 
 // The finished-frame path measures its own white point: an scRGB backbuffer lives in display-referred
 // linear (paper white sits well above 1.0), a different world from the game's internal buffer.
-probe::FrameReducer g_presentReducer;
 probe::BlockReader g_presentReader;
 
 // Writes matched before/after frames on request, so comparisons stop depending on video.
@@ -175,8 +159,6 @@ void ClearCaptureDirectory()
 }
 float g_autoWhitePoint = 2.0f;
 bool g_autoWhitePointSettled = false;
-float g_presentWhite = 3.0f;
-bool g_presentWhiteSettled = false;
 
 unsigned long long g_frames = 0;
 
@@ -422,7 +404,7 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
     ParkNrFeature(g_nr.feature);
 
     for (ID3D12Resource** r :
-         { &g_nr.output, &g_nr.colorCopy, &g_nr.hdrCopy, &g_nr.colorSmall, &g_nr.presentProxy })
+         { &g_nr.output, &g_nr.colorCopy, &g_nr.hdrCopy, &g_nr.colorSmall })
         ParkNrResource(*r);
 
     g_nr.reset = true;
@@ -625,71 +607,14 @@ void RecordBuiltTuning(const Config& cfg)
     g_nr.builtAutoMask = cfg.DlssNrAutoMask.value_or_default();
 }
 
-// Waits for every list this has submitted. Releasing the feature before that is what took the game down
-// each of the previous times, and this is the first place with the means to avoid it.
-void WaitForAllSubmitted()
-{
-    if (g_nr.presentFence == nullptr || g_nr.presentFenceNext == 0)
-        return;
-
-    if (g_nr.presentFence->GetCompletedValue() >= g_nr.presentFenceNext)
-        return;
-
-    if (SUCCEEDED(g_nr.presentFence->SetEventOnCompletion(g_nr.presentFenceNext, g_nr.presentFenceEvent)))
-        WaitForSingleObject(g_nr.presentFenceEvent, 1000);
-}
-
-void WaitForAllSubmitted();
-
-bool EnsurePresentList(ID3D12Device* device)
-{
-    if (g_nr.presentList != nullptr)
-        return true;
-
-    for (unsigned int i = 0; i < kPresentAllocators; ++i)
-    {
-        if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                  IID_PPV_ARGS(&g_nr.presentAllocators[i]))))
-            return false;
-    }
-
-    if (FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_nr.presentAllocators[0],
-                                         nullptr, IID_PPV_ARGS(&g_nr.presentList))))
-        return false;
-
-    g_nr.presentList->Close();
-
-    if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_nr.presentFence))))
-        return false;
-
-    g_nr.presentFenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-
-    if (g_nr.presentFenceEvent == nullptr)
-        return false;
-
-    return true;
-}
-
-// Blocks until the work last recorded into this allocator has finished. In the steady state the GPU is
-// already well past it and this returns immediately.
-void WaitForAllocator(unsigned int index)
-{
-    const unsigned long long target = g_nr.presentFenceValues[index];
-
-    if (target == 0 || g_nr.presentFence->GetCompletedValue() >= target)
-        return;
-
-    if (SUCCEEDED(g_nr.presentFence->SetEventOnCompletion(target, g_nr.presentFenceEvent)))
-        WaitForSingleObject(g_nr.presentFenceEvent, 1000);
-}
 } // namespace
 
 namespace DlssNr
 {
-// The render path runs on the game's render thread, the finished-frame path on the present thread,
-// and both mutate the same state -- features, surfaces, the parking list. They ran unsynchronised
-// since the beginning, and the inject/split transitions that rebuild surfaces turned that race into
-// crashes-by-lottery. One lock, both bodies; the GPU never waits, only CPU-side recording serialises.
+// Guards the module's state. With the finished-frame pass gone every remaining caller is on the
+// game's render thread, so this is no longer holding two threads apart -- but the D3D11-on-D3D12
+// bridge and the split's internal features enter from their own call sites, and the cost is a
+// CPU-side lock on a path that already records command lists.
 std::mutex g_nrMutex;
 
 bool g_splitActive = false;
@@ -832,11 +757,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     const auto workWidth = (unsigned int) (width * workScale + 0.5f);
     const auto workHeight = (unsigned int) (height * workScale + 0.5f);
     const bool reduced = workWidth != width || workHeight != height;
-
-    // The surfaces being replaced may last have been used by the present path, whose command lists this
-    // pass did not record -- wait on its fence before touching them.
-    if (g_nr.output != nullptr && g_nr.output->GetDesc().Format != desc.Format)
-        WaitForAllSubmitted();
 
     ReleaseSurfacesIfFormatChanged(desc.Format);
 
@@ -1148,8 +1068,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         resolveParams.colourStrength = cfg.DlssNrColourStrength.value_or_default();
         resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
-        resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
-        resolveParams.shadowRestore = cfg.DlssNrShadowRestore.value_or_default();
         resolveParams.passthrough = isHdrBuffer ? 0u : 1u;
 
         // The accumulator: this frame's edit blended with its own reprojected history, carried to where
@@ -1273,510 +1191,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     device->Release();
 }
 
-void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, unsigned int backBufferIndex)
-{
-    std::lock_guard<std::mutex> nrLock(g_nrMutex);
-    const Config& cfg = *Config::Instance();
-
-    if (!cfg.DlssNrEnabled.value_or_default() || g_nr.failed || queue == nullptr || backBuffer == nullptr)
-        return;
-
-    // The split pipeline already ran the model this frame, on its own intermediate.
-    if (g_splitActive)
-        return;
-
-    // Nothing to work from until the upscaler has run at least once and left its guides behind.
-    if (!g_nr.guidesReady || g_nr.depthClone == nullptr || g_nr.motionClone == nullptr)
-        return;
-
-    ID3D12Device* device = nullptr;
-
-    if (FAILED(backBuffer->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
-        return;
-
-    const D3D12_RESOURCE_DESC desc = backBuffer->GetDesc();
-    const auto width = (unsigned int) desc.Width;
-    const auto height = desc.Height;
-
-    // A swapchain buffer is not generally usable as a shader resource, so the frame is staged through
-    // textures this owns. The scratch format drops any sRGB view, which cannot be bound as a typed UAV;
-    // the bits are the same and the model wants them exactly as they are.
-    const DXGI_FORMAT scratchFormat = codec::TypedFormat(desc.Format);
-
-    if (!EnsureForwarder() || !EnsureCapabilityParams(device) || !EnsurePresentList(device) ||
-        !g_codec.ensure(device))
-    {
-        g_nr.failed = true;
-        LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
-        device->Release();
-        return;
-    }
-
-    // What the model works at. The frame is never reduced; only this is.
-    float scale = cfg.DlssNrWorkingScale.value_or_default();
-    scale = scale < 0.25f ? 0.25f : (scale > 1.0f ? 1.0f : scale);
-    const auto workWidth = (unsigned int) (width * scale + 0.5f);
-    const auto workHeight = (unsigned int) (height * scale + 0.5f);
-    const bool reduced = workWidth != width || workHeight != height;
-
-    if (g_nr.output != nullptr && g_nr.output->GetDesc().Format != scratchFormat)
-        WaitForAllSubmitted();
-
-    ReleaseSurfacesIfFormatChanged(scratchFormat);
-
-    if (g_nr.feature != nullptr &&
-        (g_nr.width != width || g_nr.height != height || g_nr.workWidth != workWidth ||
-         g_nr.workHeight != workHeight))
-    {
-        // The fence covers this path's own submissions; the park covers everyone else's.
-        WaitForAllSubmitted();
-        ParkNrFeature(g_nr.feature);
-        ParkNrResource(g_nr.output);
-        ParkNrResource(g_nr.colorCopy);
-        ParkNrResource(g_nr.hdrCopy);
-        ParkNrResource(g_nr.colorSmall);
-    }
-
-    if (g_nr.output == nullptr)
-    {
-        // The model's own images are the working size; the frame's copies stay full size.
-        g_nr.output = CreateScratch(device, scratchFormat, workWidth, workHeight);
-        g_nr.colorCopy = CreateScratch(device, scratchFormat, width, height);
-        // The resolve cannot write the back buffer directly: a swapchain buffer is not created for
-        // unordered access. It writes here and this is copied over the frame.
-        g_nr.hdrCopy = CreateScratch(device, scratchFormat, width, height);
-
-        if (reduced)
-            g_nr.colorSmall = CreateScratch(device, scratchFormat, workWidth, workHeight);
-
-        g_nr.workWidth = workWidth;
-        g_nr.workHeight = workHeight;
-    }
-
-    if (g_nr.output == nullptr || g_nr.colorCopy == nullptr || g_nr.hdrCopy == nullptr)
-    {
-        g_nr.failed = true;
-        g_nr.reason = "the staging textures could not be created";
-        device->Release();
-        return;
-    }
-
-    // A tuning change means a new model, since the values are only read when one is built.
-    if (g_nr.feature != nullptr && !TuningMatchesFeature(cfg))
-    {
-        if (g_nr.settledAt == 0)
-            g_nr.settledAt = g_frames;
-
-        if (g_frames - g_nr.settledAt >= kSettleFrames)
-        {
-            WaitForAllSubmitted();
-            ParkNrFeature(g_nr.feature);
-            g_nr.settledAt = 0;
-            LOG_INFO("DLSS-NR rebuilding for changed tuning");
-        }
-    }
-    else
-    {
-        g_nr.settledAt = 0;
-    }
-
-    ++g_frames;
-    TickNrRetired();
-    CheckCaptureTrigger();
-
-    const unsigned int slot = backBufferIndex % kPresentAllocators;
-    ID3D12CommandAllocator* allocator = g_nr.presentAllocators[slot];
-
-    // Waits for the previous run of this pass, not merely for this allocator's own last use. One set of
-    // scratch textures and one model feature are shared across every frame, so letting three run at once
-    // meant one frame's evaluate could still be reading the staging copy while the next overwrote it --
-    // and the feature carries temporal history, which is not something to run three copies of.
-    WaitForAllSubmitted();
-
-    if (FAILED(allocator->Reset()) || FAILED(g_nr.presentList->Reset(allocator, nullptr)))
-    {
-        device->Release();
-        return;
-    }
-
-    ID3D12GraphicsCommandList* cmdList = g_nr.presentList;
-
-    if (g_gpuTime == nullptr)
-        g_gpuTime = std::make_unique<GpuTime_Dx12>(device);
-
-    if (g_nr.feature == nullptr)
-    {
-        auto snippet = Util::FindFilePath(g_dllDir, "nvngx_dlssnr.dll");
-
-        if (!snippet.has_value())
-            snippet = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssnr.dll");
-
-        if (!snippet.has_value())
-        {
-            g_nr.failed = true;
-            g_nr.reason = "nvngx_dlssnr.dll was not found beside OptiScaler or the game";
-            LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
-            cmdList->Close();
-            device->Release();
-            return;
-        }
-
-        SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
-        g_nr.feature =
-            g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                        device, cmdList, g_nr.capabilityParams, workWidth, workHeight,
-                        (int) cfg.DlssNrPreset.value_or_default(),
-                        cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
-                        cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
-                        cfg.DlssNrSkinStructure.value_or_default(),
-                        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0,
-                        // UI correction at the model's own default: with no UI layer fed to it there
-                        // is nothing for it to correct.
-                        1);
-
-        if (g_nr.feature == nullptr)
-        {
-            g_nr.failed = true;
-            g_nr.reason = "the model would not initialise";
-            LOG_ERROR("DLSS-NR create failed at present: init 0x{:X}, create 0x{:X}",
-                      g_nr.lastInit != nullptr ? *g_nr.lastInit : 0,
-                      g_nr.lastCreate != nullptr ? *g_nr.lastCreate : 0);
-            cmdList->Close();
-            device->Release();
-            return;
-        }
-
-        g_nr.width = width;
-        g_nr.height = height;
-        g_nr.reset = true;
-        RecordBuiltTuning(cfg);
-
-        {
-            unsigned int presetBack = 0;
-            const NVSDK_NGX_Result r =
-                g_nr.capabilityParams->Get("DLSSNR.Hint.Render.Preset", &presetBack);
-            LOG_DEBUG("DLSS-NR readback DLSSNR.Hint.Render.Preset -> {} (result 0x{:X}, we wrote {})",
-                     presetBack, (uint32_t) r, cfg.DlssNrPreset.value_or_default());
-        }
-
-        LOG_INFO("DLSS-NR running on the finished frame at {}x{}, guides {}x{} (preset {}, intensity {}, "
-                 "style {}, local structure {}, local tone {}, skin {})",
-                 width, height, g_nr.guideWidth, g_nr.guideHeight, g_nr.builtPreset, g_nr.builtIntensity,
-                 g_nr.builtStyle, g_nr.builtLocalStructure, g_nr.builtLocalTone, g_nr.builtSkinStructure);
-
-        // Same dice-roll as the render-path creation: the creation commands are submitted and fenced
-        // on their own, and the first evaluate happens on the next pass.
-        if (SUCCEEDED(cmdList->Close()))
-        {
-            ID3D12CommandList* lists[] = { cmdList };
-            queue->ExecuteCommandLists(1, lists);
-            ++g_nr.presentFenceNext;
-
-            if (SUCCEEDED(queue->Signal(g_nr.presentFence, g_nr.presentFenceNext)))
-                g_nr.presentFenceValues[slot] = g_nr.presentFenceNext;
-        }
-
-        device->Release();
-        return;
-    }
-
-    // Timed across the whole pass: the staging copies and the resolve are part of what this costs, and
-    // timing only the model would flatter the number.
-    if (g_gpuTime != nullptr)
-        g_gpuTime->Start(cmdList);
-
-    // An SDR frame is already in the model's world -- finished and display-referred -- and goes over
-    // exactly as it is. An scRGB HDR frame is not: its linear values run far past 1.0 at every bright
-    // light, and the model, trained on finished tone-mapped pictures, reads a blazing lamp as an error
-    // to calm down. That is the muted-highlights complaint. The same encode the render path uses maps
-    // it into the model's world; the resolve maps the edit back, exactly inverted.
-    Barrier(cmdList, backBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_COPY_DEST);
-    cmdList->CopyResource(g_nr.colorCopy, backBuffer);
-    Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-    const bool scRGB = backBuffer->GetDesc().Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
-    const float wpScale = cfg.DlssNrWhitePointScale.value_or_default();
-    const bool proxyCurve = scRGB || wpScale < 0.99f || wpScale > 1.01f;
-    float presentWhite = 1.0f;
-    bool hdrEncoded = false;
-
-    // Shrink the frame for the model, when it is working below full resolution. The copy above stays at
-    // full size and is what the edit is finally added to.
-    ID3D12Resource* modelInput = g_nr.colorCopy;
-
-    if (proxyCurve)
-    {
-        // The latest white point reading, eased exactly like the render path's.
-        const probe::Stats stats = g_presentReader.collect();
-
-        if (scRGB && stats.valid && stats.meanLuma > 0.0f)
-        {
-            const float targetWhite = WhitePointForMean(stats.meanLuma);
-
-            if (!g_presentWhiteSettled)
-            {
-                g_presentWhite = targetWhite;
-                g_presentWhiteSettled = true;
-                LOG_INFO("DLSS-NR finished-frame white point settled at {:.3f} (frame mean {:.4f})",
-                         g_presentWhite, stats.meanLuma);
-            }
-            else
-            {
-                g_presentWhite += (targetWhite - g_presentWhite) * kWhitePointBlend;
-            }
-        }
-
-        if (g_nr.presentProxy != nullptr &&
-            ((unsigned int) g_nr.presentProxy->GetDesc().Width != width ||
-             g_nr.presentProxy->GetDesc().Height != height))
-        {
-            g_nr.presentProxy->Release();
-            g_nr.presentProxy = nullptr;
-        }
-
-        if (g_nr.presentProxy == nullptr)
-            g_nr.presentProxy = CreateScratch(device, backBuffer->GetDesc().Format, width, height);
-    }
-
-    if (proxyCurve && g_nr.presentProxy != nullptr)
-    {
-        presentWhite = scRGB ? g_presentWhite * wpScale : wpScale;
-        hdrEncoded = true;
-
-        codec::Params encodeParams {};
-        encodeParams.mode = codec::MODE_ENCODE;
-        encodeParams.passthrough = 0;
-        encodeParams.whitePoint = presentWhite;
-        encodeParams.width = width;
-        encodeParams.height = height;
-
-        // colorCopy is the source and stays the untouched original the resolve reads; the keep output
-        // is pointed at hdrCopy, which the resolve overwrites as its target later anyway.
-        g_codec.dispatch(cmdList, encodeParams, g_nr.colorCopy, nullptr, nullptr, g_nr.presentProxy,
-                         g_nr.hdrCopy);
-
-        D3D12_RESOURCE_BARRIER keepHazard {};
-        keepHazard.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-        keepHazard.UAV.pResource = g_nr.hdrCopy;
-        cmdList->ResourceBarrier(1, &keepHazard);
-
-        // Measure for the white point on the render path's cadence.
-        if (scRGB && (g_frames % 30 == 0) && g_presentReducer.ensure(device))
-        {
-            ID3D12Resource* reducedFrame =
-                g_presentReducer.dispatch(cmdList, g_nr.colorCopy, width, height);
-            g_presentReader.capture(cmdList, reducedFrame, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        }
-
-        Barrier(cmdList, g_nr.presentProxy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        modelInput = g_nr.presentProxy;
-    }
-
-    if (reduced && g_nr.colorSmall != nullptr)
-    {
-        codec::Params down {};
-        down.mode = codec::MODE_DOWNSAMPLE;
-        down.width = workWidth;
-        down.height = workHeight;
-        g_codec.dispatch(cmdList, down, g_nr.colorCopy, nullptr, nullptr, g_nr.colorSmall, nullptr);
-        Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        modelInput = g_nr.colorSmall;
-    }
-
-    Barrier(cmdList, g_nr.depthClone, D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    Barrier(cmdList, g_nr.motionClone, D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-    // The vectors were scaled to full-frame pixels; the image the model reprojects is the working size.
-    const float mvToWork = width != 0 ? (float) workWidth / (float) width : 1.0f;
-
-    // The interface as the game draws it, when it tags its UI layer this frame -- the input the
-    // model's own UI correction was designed around -- and the composited frame as the back buffer.
-    SetExtras(cfg, nullptr, g_nr.colorCopy, 0, 0, width, height);
-
-    const int result = g_nr.evaluate(
-        cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, g_nr.depthClone, g_nr.motionClone,
-        g_nr.output, workWidth, workHeight, g_nr.guideWidth, g_nr.guideHeight,
-        g_nr.guideDepthInverted ? 1 : 0,
-        g_nr.reset ? 1 : 0,
-        cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
-        cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
-        cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0,
-        g_nr.guideMvScaleX * mvToWork, g_nr.guideMvScaleY * mvToWork);
-
-    g_nr.reset = false;
-
-
-    // The motion clone stays readable through the resolve: the accumulator reprojects the edit's
-    // history with it, in the same dispatch that applies the edit.
-    Barrier(cmdList, g_nr.depthClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_COPY_DEST);
-
-    if (result == NVSDK_NGX_Result_Success)
-    {
-        // For SDR the frame the model was shown and the frame as it was are the same thing, and the
-        // resolve adds the edit at full scale. For an encoded scRGB frame the resolve decodes with the
-        // same white point the encode used -- exact inverses, so at strength zero the result is the
-        // original, bit for bit, in both worlds.
-        codec::Params resolveParams {};
-        resolveParams.mode = codec::MODE_RESOLVE;
-        resolveParams.passthrough = hdrEncoded ? 0u : 1u;
-        resolveParams.whitePoint = hdrEncoded ? presentWhite : 1.0f;
-        resolveParams.width = width;
-        resolveParams.height = height;
-        resolveParams.transferStrength = cfg.DlssNrTransferStrength.value_or_default();
-        resolveParams.colourStrength = cfg.DlssNrColourStrength.value_or_default();
-        resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
-        resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
-        resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
-        resolveParams.shadowRestore = cfg.DlssNrShadowRestore.value_or_default();
-
-        // The same accumulator the before-frame-generation path has: the edit blended with its own
-        // reprojected history. With frame generation, generated frames share a rendered frame's motion
-        // vectors, which is close enough for an edit this small.
-        const float stability = cfg.DlssNrEditStability.value_or_default();
-        ID3D12Resource* historyIn = nullptr;
-        ID3D12Resource* historyOut = nullptr;
-
-        if (stability > 0.0f && g_nr.motionClone != nullptr)
-        {
-            if (g_nr.editHistory[0] != nullptr &&
-                ((unsigned int) g_nr.editHistory[0]->GetDesc().Width != width ||
-                 g_nr.editHistory[0]->GetDesc().Height != height))
-            {
-                for (auto& h : g_nr.editHistory)
-                {
-                    h->Release();
-                    h = nullptr;
-                }
-
-                g_nr.editWarm = false;
-            }
-
-            if (g_nr.editHistory[0] == nullptr)
-            {
-                g_nr.editHistory[0] = CreateScratch(device, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height);
-                g_nr.editHistory[1] = CreateScratch(device, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height);
-                g_nr.editWarm = false;
-            }
-
-            if (g_nr.editHistory[0] != nullptr && g_nr.editHistory[1] != nullptr)
-            {
-                historyIn = g_nr.editHistory[g_nr.editIndex];
-                historyOut = g_nr.editHistory[1 - g_nr.editIndex];
-
-                resolveParams.accumulate = g_nr.editWarm ? 1u : 2u;
-                resolveParams.stability = stability > 0.95f ? 0.95f : stability;
-                resolveParams.mvScaleX = g_nr.guideMvScaleX;
-                resolveParams.mvScaleY = g_nr.guideMvScaleY;
-                resolveParams.guideWidth = g_nr.guideWidth;
-                resolveParams.guideHeight = g_nr.guideHeight;
-
-                Barrier(cmdList, historyIn, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            }
-        }
-
-        Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        g_codec.dispatch(cmdList, resolveParams, modelInput, g_nr.output, g_nr.colorCopy, g_nr.hdrCopy,
-                         historyOut, g_nr.motionClone, historyIn);
-        Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-        if (historyIn != nullptr)
-        {
-            Barrier(cmdList, historyIn, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            g_nr.editIndex = 1 - g_nr.editIndex;
-            g_nr.editWarm = true;
-        }
-
-        Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-        if (!g_autoCaptureDone && cfg.DlssNrAutoCapture.value_or_default() &&
-            g_frames > kAutoCaptureAfterFrames)
-        {
-            g_autoCaptureDone = true;
-            ClearCaptureDirectory();
-            g_capture.request(capture::kMaxFrames);
-        }
-
-        // The frame as the upscaler produced it, and the same frame after the edit. Both are here, this
-        // instant, for the same frame -- which is the whole point.
-        if (g_capture.isActive())
-            g_capture.record(cmdList, device, g_nr.colorCopy,
-                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, g_nr.hdrCopy,
-                             D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-        Barrier(cmdList, backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
-        cmdList->CopyResource(backBuffer, g_nr.hdrCopy);
-        Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        Barrier(cmdList, backBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
-    }
-    else
-    {
-        Barrier(cmdList, backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
-        g_nr.failed = true;
-        g_nr.reason = "the model refused to run";
-        LOG_ERROR("DLSS-NR evaluate at present returned 0x{:X}, disabling for this session",
-                  (uint32_t) result);
-    }
-
-    Barrier(cmdList, g_nr.motionClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_COPY_DEST);
-
-    Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-    if (reduced && g_nr.colorSmall != nullptr)
-        Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-    if (g_gpuTime != nullptr)
-        g_gpuTime->End(cmdList);
-
-    if (SUCCEEDED(cmdList->Close()))
-    {
-        ID3D12CommandList* lists[] = { cmdList };
-        queue->ExecuteCommandLists(1, lists);
-
-        // Read after submitting: the result is from an earlier frame, which is what the upscaler's own
-        // timings do too.
-        if (g_gpuTime != nullptr)
-        {
-            if (auto ms = g_gpuTime->ReadGpuTime(queue); ms.has_value())
-                g_lastGpuTime = ms;
-        }
-
-        // Recorded against this allocator, so the next pass round the ring knows what to wait for.
-        ++g_nr.presentFenceNext;
-
-        if (SUCCEEDED(queue->Signal(g_nr.presentFence, g_nr.presentFenceNext)))
-            g_nr.presentFenceValues[slot] = g_nr.presentFenceNext;
-
-        if (g_capture.readyToWrite())
-        {
-            WaitForAllSubmitted();
-            const auto dir = Util::DllPath().remove_filename() / "dlssnr-capture";
-            const auto written = g_capture.write(dir);
-
-            if (!written.empty())
-                LOG_INFO("DLSS-NR wrote matched before/after frames to {}", written);
-        }
-    }
-
-    device->Release();
-}
-
 bool IsRunning() { return g_nr.feature != nullptr && !g_nr.failed; }
 
 const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
@@ -1837,12 +1251,6 @@ void Shutdown()
         g_nr.colorSmall = nullptr;
     }
 
-    if (g_nr.presentProxy != nullptr)
-    {
-        g_nr.presentProxy->Release();
-        g_nr.presentProxy = nullptr;
-    }
-
     for (auto& h : g_nr.editHistory)
     {
         if (h != nullptr)
@@ -1862,33 +1270,6 @@ void Shutdown()
     {
         g_nr.motionClone->Release();
         g_nr.motionClone = nullptr;
-    }
-
-    if (g_nr.presentList != nullptr)
-    {
-        g_nr.presentList->Release();
-        g_nr.presentList = nullptr;
-    }
-
-    if (g_nr.presentFence != nullptr)
-    {
-        g_nr.presentFence->Release();
-        g_nr.presentFence = nullptr;
-    }
-
-    if (g_nr.presentFenceEvent != nullptr)
-    {
-        CloseHandle(g_nr.presentFenceEvent);
-        g_nr.presentFenceEvent = nullptr;
-    }
-
-    for (unsigned int i = 0; i < kPresentAllocators; ++i)
-    {
-        if (g_nr.presentAllocators[i] != nullptr)
-        {
-            g_nr.presentAllocators[i]->Release();
-            g_nr.presentAllocators[i] = nullptr;
-        }
     }
 
     g_capture.release();

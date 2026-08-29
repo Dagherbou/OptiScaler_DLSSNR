@@ -22,7 +22,7 @@
 //
 // So nothing is reconstructed by inversion any more. The encode maps luminance and carries chroma along
 // unchanged, so hue survives. The resolve keeps the original frame and adds the model's edit to it,
-// scaled by the local slope of the curve -- which for Reinhard against a white point works out to the
+// rescaled to the original's own luminance -- which is what the composition below does, and the
 // tidy (whitePoint + luminance), so a one percent edit on a bright light stays a one percent edit. At
 // zero edit the frame is bit-for-bit what the upscaler produced.
 //
@@ -67,8 +67,6 @@ cbuffer Params : register(b0)
     uint  gGuideWidth;   // the motion texture's valid region
     uint  gGuideHeight;
     float gStability;    // how much of the history survives each frame; 0 is off
-    float gProtectHighlights; // the top fraction of the range where the edit fades out; 0 is off
-    float gShadowRestore; // pulls back the brightening of dark regions; 0 is off
 };
 
 // Colours outside the AP1 gamut are impossible on any display and read as sparkle where a bright
@@ -82,6 +80,48 @@ float3 ClampAp1(float3 color)
                                     -0.130256, 1.140805, -0.010548,
                                     -0.024003, -0.128969, 1.152972 };
     return mul(ap1_to_bt709, max(mul(bt709_to_ap1, color), float3(0.0, 0.0, 0.0)));
+}
+
+// OkLab, so the model's colour can be reached without its hue being invented on the way. A ratio
+// applied to an RGB triple does not move hue, but a difference added to one does -- which is what the
+// old composition did, and why a warm subject could come back green. Here the result's chroma is
+// rebuilt in the model's own hue direction and only its magnitude is taken from the scaled colour.
+float3 CbrtSigned(float3 v) { return sign(v) * pow(abs(v), 1.0 / 3.0); }
+
+float3 ToOkLab(float3 color)
+{
+    const float3x3 rgb_to_lms = { 0.4122214708, 0.5363325363, 0.0514459929,
+                                  0.2119034982, 0.6806995451, 0.1073969566,
+                                  0.0883024619, 0.2817188376, 0.6299787005 };
+    const float3x3 lms_to_lab = { 0.2104542553, 0.7936177850, -0.0040720468,
+                                  1.9779984951, -2.4285922050, 0.4505937099,
+                                  0.0259040371, 0.7827717662, -0.8086757660 };
+    return mul(lms_to_lab, CbrtSigned(mul(rgb_to_lms, color)));
+}
+
+float3 FromOkLab(float3 lab)
+{
+    const float3x3 lab_to_lms = { 1.0, 0.3963377774, 0.2158037573,
+                                  1.0, -0.1055613458, -0.0638541728,
+                                  1.0, -0.0894841775, -1.2914855480 };
+    const float3x3 lms_to_rgb = { 4.0767416621, -3.3077115913, 0.2309699292,
+                                  -1.2684380046, 2.6097574011, -0.3413193965,
+                                  -0.0041960863, -0.7034186147, 1.7076147010 };
+    float3 lms = mul(lab_to_lms, lab);
+    return mul(lms_to_rgb, lms * lms * lms);
+}
+
+// Takes the hue and the chroma direction from `correct`, and only the chroma magnitude from
+// `incorrect`. Scaling a colour by a luminance ratio changes how saturated it reads; this puts the
+// saturation back where the model meant it without letting the hue drift.
+float3 HueOkLab(float3 incorrect, float3 correct)
+{
+    float3 incorrectLab = ToOkLab(incorrect);
+    const float3 correctLab = ToOkLab(correct);
+    const float incorrectChroma = length(incorrectLab.yz);
+    const float correctChroma = length(correctLab.yz);
+    incorrectLab.yz = correctLab.yz * (correctChroma == 0.0 ? 1.0 : incorrectChroma / correctChroma);
+    return ClampAp1(FromOkLab(incorrectLab));
 }
 
 Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
@@ -194,17 +234,8 @@ void main(uint3 id : SV_DispatchThreadID)
     float4 originalSample = gOriginal.Load(int3(id.xy, 0));
     float3 original = originalSample.rgb;
 
-    // How an edit made in the compressed picture lands in the original. This is measured rather than
-    // derived: the proxy is what the model was shown, the original is what that pixel really is, so
-    // their ratio is the compression at this exact pixel -- whatever curve produced it. Where the
-    // original already sits above what the proxy could represent, the headroom is the frame's own and
-    // the edit lands unscaled; scaling it there is what mutes highlights, because an analytic slope
-    // grows without bound exactly where the picture has its punch.
     float originalLuma = dot(original, kLuma);
     float proxyLuma = dot(proxy, kLuma);
-    float slope = (gPassthrough != 0 || proxyLuma <= 1e-4 || originalLuma >= proxyLuma)
-                      ? 1.0
-                      : originalLuma / proxyLuma;
 
     if (gDebugView == 1)
     {
@@ -299,84 +330,47 @@ void main(uint3 id : SV_DispatchThreadID)
         edit += accumulatedLow - lowNow;
     }
 
-    // Split so the detail the model synthesised and any colour it shifted can be dialled apart.
-    float lumaEdit = dot(edit, kLuma);
-    float3 colourEdit = edit - lumaEdit;
-    float3 applied = lumaEdit * gTransferStrength + colourEdit * gColourStrength;
+    // The composition. The model's answer is not treated as a difference to add onto the frame -- it
+    // is a complete picture in its own right, and it is brought back by rescaling it to sit where the
+    // original's luminance says it should. Adding a difference is what let colour run away: nothing
+    // bounded where the sum landed, so a warm subject could arrive green. Here both ends of every
+    // blend are well-formed pictures, so everything between them is one too.
+    float modelLuma = dot(model, kLuma);
+    float3 upgraded;
 
-    // Highlight restore. The model's trained instinct is to calm bright things -- not only the
-    // near-clipped peak but the whole glow around a lamp -- and that reads as muted, in SDR too.
-    // The achromatic darkening of bright regions is pulled back, scaled by how bright the original
-    // is; colour shifts, brightening and structure pass untouched, so the model's detail stays.
-    // 0 is off; 1 removes all darkening from the brightest regions.
-    if (gProtectHighlights > 0.0 || gShadowRestore > 0.0)
+    if (modelLuma <= 1e-5)
     {
-        float relLuma = saturate(dot(original, kLuma) / max(gWhitePoint, 1e-4));
-        float appliedLuma = dot(applied, kLuma);
-
-        // Highlight restore: the model's darkening of bright regions is pulled back. A colour test for
-        // skin was tried here and removed -- wood, sand and brick sit in the same chromaticity region,
-        // so it withheld the restore from half the environment. The model's own Style and Skin
-        // structure controls are where skin belongs.
-        if (appliedLuma < 0.0)
-            applied -= appliedLuma * gProtectHighlights * smoothstep(0.25, 0.9, relLuma);
-
-        // Shadow restore, the mirror: the model lifts dark regions toward its trained idea of a
-        // well-exposed picture, and that lift is the other half of the washed-out look -- the alley
-        // that lost its darkness. Brightening is pulled back where the original is dark; detail and
-        // colour pass, and the scene keeps its drama.
-        if (appliedLuma > 0.0)
-            applied -= appliedLuma * gShadowRestore * (1.0 - smoothstep(0.05, 0.45, relLuma));
-    }
-
-    // No highlight rolloff. It was a second belt after the clamp below, and it discarded the model's
-    // contribution exactly where a lit scene carries its punch -- the two inject points now apply the
-    // edit identically, with the clamp as the one safety in both.
-
-    float3 result;
-
-    if (originalLuma < 0.002)
-    {
-        // A ratio cannot lift black, so at the very bottom the edit lands as an offset.
-        result = original + applied * slope;
+        // The model can return an empty frame for an input it cannot read. Rescaling that collapses
+        // the picture to black, so the frame is handed back untouched instead.
+        upgraded = original;
     }
     else
     {
-        // The model's answer is applied as a ratio, not as a difference -- everywhere, display space
-        // included. "Make this pixel twelve percent brighter" moves with the content: in a dark area
-        // it stays small, and if the model's answer shifts a little between frames the shift is
-        // proportional and invisible. "Add 0.03" does not: in shadow that is an enormous relative
-        // change and it crawls, and in a highlight it has to be scaled up to survive, which is how a
-        // detail pass turns into a wobble generator. This is the single largest difference between a
-        // stable pass and an unstable one.
-        float appliedLuma = dot(applied, kLuma);
-        float3 appliedChroma = applied - appliedLuma;
-        float gain = max(1.0 + appliedLuma * slope / originalLuma, 0.0);
+        float ratio;
 
-        result = original * gain + appliedChroma * slope;
+        if (originalLuma < proxyLuma)
+        {
+            // Below what the proxy showed: the frame's own luminance is the target.
+            ratio = originalLuma / max(proxyLuma, 1e-6);
+        }
+        else
+        {
+            // Above it, the difference is headroom the proxy could not represent -- brightness the
+            // frame really has and the model never saw. It is handed back on top of the model's own
+            // answer rather than scaled away, which is what kept highlights from being muted.
+            ratio = (modelLuma + max(0.0, originalLuma - proxyLuma)) / modelLuma;
+        }
+
+        upgraded = lerp(original, HueOkLab(model * ratio, model), gTransferStrength);
     }
 
-    // A detail pass should not be able to restyle anything, whatever comes back -- and that includes
-    // restyling by accident. The old clamp bounded each channel separately, and on a saturated pixel
-    // the smallest channel hits its bound first: an achromatic edit lands as a hue shift, and a
-    // magenta-graded scene bends green. The bound is enforced on luminance instead, and the whole
-    // edit is scaled by one factor -- what lands is a smaller version of the same change, never a
-    // bent colour. The small constant keeps the bound meaningful near black.
-    float resultLuma = dot(result, kLuma);
-    float ceilingLuma = originalLuma * gMaxRatio + 0.01;
-    float floorLuma = max(originalLuma / gMaxRatio - 0.01, 0.0);
-    float editLuma2 = resultLuma - originalLuma;
-    float limit = 1.0;
+    // Detail strength decides how much of the model's picture is reached at all; colour strength
+    // decides whether its colour comes with it. At 0 the frame keeps the game's own hue exactly and
+    // only its light carries the model's verdict; at 1 the model's colour arrives as well.
+    float upgradedLuma = dot(upgraded, kLuma);
+    float lumaRatio = originalLuma > 1e-6 ? clamp(upgradedLuma / originalLuma, 0.0, gMaxRatio) : 1.0;
+    float3 result = lerp(original * lumaRatio, upgraded, gColourStrength);
 
-    if (resultLuma > ceilingLuma && editLuma2 > 1e-6)
-        limit = (ceilingLuma - originalLuma) / editLuma2;
-    else if (resultLuma < floorLuma && editLuma2 < -1e-6)
-        limit = (floorLuma - originalLuma) / editLuma2;
-
-    // Scale the deviation that was actually composed. Rebuilding it additively here -- which is what
-    // this line used to do -- silently threw the ratio away and made every path additive again.
-    result = original + (result - original) * saturate(limit);
-    result = ClampAp1(result);
     gTarget[id.xy] = float4(max(result, float3(0.0, 0.0, 0.0)), originalSample.a);
 }
 )";
@@ -400,8 +394,6 @@ struct Params
     unsigned int guideWidth;
     unsigned int guideHeight;
     float stability;
-    float protectHighlights;
-    float shadowRestore;
 
 };
 
