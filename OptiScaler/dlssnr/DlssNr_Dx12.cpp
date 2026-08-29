@@ -409,6 +409,15 @@ static void FitProxyCurve()
     ++g_curve.fits;
 }
 
+// The proxy the model is shown: 0 the old Reinhard curve, 1 the curve fitted to the game, 2 a plain
+// scale and encode. Two uses the white point as a divisor rather than a curve's shoulder, so the
+// scale control is the only thing acting on it.
+unsigned int ProxyMode(const Config& cfg)
+{
+    const unsigned int mode = cfg.DlssNrProxyCurve.value_or_default();
+    return mode > 2 ? 2 : mode;
+}
+
 static void FillCurve(codec::Params& params, bool wanted)
 {
     if (!wanted || !g_curve.ready)
@@ -1288,7 +1297,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     const bool autoWhite = cfg.DlssNrAutoWhitePoint.value_or_default();
 
-    const bool curveMatch = cfg.DlssNrProxyCurve.value_or_default() == 1 && isHdrBuffer;
+    const bool curveMatch = ProxyMode(cfg) == 1 && isHdrBuffer;
 
     if (autoWhite || curveMatch)
     {
@@ -1321,10 +1330,13 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         }
     }
 
-    const float whitePoint = (autoWhite && g_autoWhitePointSettled
-                                  ? g_autoWhitePoint
-                                  : cfg.DlssNrWhitePoint.value_or_default()) *
-                             cfg.DlssNrWhitePointScale.value_or_default();
+    const unsigned int proxyMode = ProxyMode(cfg);
+    const float whitePoint = proxyMode == 2
+                                 ? cfg.DlssNrWhitePointScale.value_or_default()
+                                 : (autoWhite && g_autoWhitePointSettled
+                                        ? g_autoWhitePoint
+                                        : cfg.DlssNrWhitePoint.value_or_default()) *
+                                       cfg.DlssNrWhitePointScale.value_or_default();
 
     if (g_gpuTime == nullptr)
         g_gpuTime = std::make_unique<GpuTime_Dx12>(device);
@@ -1338,6 +1350,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     // the resolve adds the model's edit back at full scale.
     encodeParams.passthrough = isHdrBuffer ? 0u : 1u;
     encodeParams.whitePoint = whitePoint;
+    encodeParams.curveMode = proxyMode;
     FillCurve(encodeParams, curveMatch);
     encodeParams.width = width;
     encodeParams.height = height;
@@ -1455,6 +1468,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         codec::Params resolveParams {};
         resolveParams.mode = codec::MODE_RESOLVE;
         resolveParams.whitePoint = whitePoint;
+        resolveParams.curveMode = proxyMode;
         FillCurve(resolveParams, curveMatch);
         resolveParams.width = width;
         resolveParams.height = height;

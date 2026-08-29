@@ -404,24 +404,26 @@ void RenderMenu(Config* config, float menuResScale)
         }
 
         {
-            static const char* curveNames[] = { "Reinhard (white point above)", "Match the game's tonemapper and grade" };
+            static const char* curveNames[] = { "Reinhard (compresses hard)",
+                                                "Match the game's tonemapper and grade",
+                                                "Scale and encode only (default)" };
             int curve = (int) config->DlssNrProxyCurve.value_or_default();
-            if (curve > 1)
-                curve = 1;
+            if (curve > 2)
+                curve = 2;
             if (ImGui::Combo("Proxy curve", &curve, curveNames, IM_ARRAYSIZE(curveNames)))
                 config->DlssNrProxyCurve = (uint32_t) curve;
 
-            HelpMarker("How the linear frame is compressed for the model, in the split and the DX11"
-                       "\nbridge -- the arrangements where the model sees the frame before the game's"
-                       "\ntonemapper. Reinhard is a generic guess. Match learns the game's own tone"
-                       "\ncurve AND its colour grade by comparing the same frame before and after the"
-                       "\ngame's post chain, twice a second, so the model is shown the game's actual"
-                       "\ncontrast, shadow depth and palette -- the statistics it was trained on --"
-                       "\nand its edit is brought back through the exact inverse. Bloom and grain are"
-                       "\nspatial and cannot be learned this way; the model does not see the glow."
-                       "\n\nNeeds an SDR display output to learn from; falls back to Reinhard until"
-                       "\nthe first measurement lands. Does nothing at the finished-frame and hudless"
-                       "\ninject points, which are already finished pictures.");
+            HelpMarker("What the model is shown in the split, where it sees the frame before the"
+                       "\ngame's tonemapper has run."
+                       "\n\nScale and encode only: the frame, scaled by the white point control and"
+                       "\nencoded, with a soft knee at the top. Nothing else -- the game is going to"
+                       "\ntone map this picture anyway, and doing it here as well shows the model a"
+                       "\ndoubly compressed image. Measured in Cyberpunk, the Reinhard proxy handed"
+                       "\nit a scene value of 1.0 as 0.55: flat, dark, and nothing like the finished"
+                       "\nframe it was trained on."
+                       "\n\nReinhard: that old curve, kept for comparison."
+                       "\n\nMatch: a curve and colour matrix fitted to the game by comparing the same"
+                       "\nframe before and after its post chain. Needs an SDR output to learn from.");
 
             const char* curveStatus = DlssNr::ProxyCurveStatus();
 

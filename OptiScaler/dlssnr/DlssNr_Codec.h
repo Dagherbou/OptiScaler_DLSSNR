@@ -241,17 +241,24 @@ void main(uint3 id : SV_DispatchThreadID)
             return;
         }
 
-        // Reinhard on luminance alone, with chroma carried along untouched. Compressing each channel
-        // separately is what shifted the hue of every saturated highlight.
+        // What the model is shown. Mode 2 -- the default -- scales the frame and encodes it, and that
+        // is all: the game is going to tone map this picture later, so tone mapping it here as well
+        // shows the model a doubly compressed image. Measured against Cyberpunk's own numbers, the
+        // Reinhard proxy handed the model a scene value of 1.0 as 0.55 and 1.5 as 0.64 -- flat, dark,
+        // and nothing like the finished frame it was trained on. The model then synthesised weakly,
+        // judged tone on a picture that does not exist, and its answer had to be un-crushed on the way
+        // back. Mode 0 keeps that old curve, mode 1 the fitted one.
         float luma = dot(frame, kLuma);
-        float toned = gCurveMode != 0 ? CurveToned(luma) : (luma / gWhitePoint) / (1.0 + luma / gWhitePoint);
+        float toned = gCurveMode == 2   ? luma / max(gWhitePoint, 1e-4)
+                      : gCurveMode == 1 ? CurveToned(luma)
+                                        : (luma / gWhitePoint) / (1.0 + luma / gWhitePoint);
         float scale = luma > 1e-6 ? toned / luma : 0.0;
         float3 display = frame * scale;
 
         // The game's colour grade, learned: after the luminance map the fitted matrix turns the
         // picture into what the game would have made of it -- the model then sees the game's palette
         // as well as its contrast.
-        if (gCurveMode != 0)
+        if (gCurveMode == 1)
             display = max(mul(CurveMatrix(), display), float3(0.0, 0.0, 0.0));
 
         // A soft knee instead of a hard ceiling. Anything the curve leaves above 0.75 is rolled off
@@ -454,7 +461,7 @@ void main(uint3 id : SV_DispatchThreadID)
         // change and it crawls, and in a highlight it has to be scaled up to survive, which is how a
         // detail pass turns into a wobble generator. This is the single largest difference between a
         // stable pass and an unstable one.
-        float3 appliedScene = gCurveMode != 0 ? mul(Inverse3(CurveMatrix()), applied) : applied;
+        float3 appliedScene = gCurveMode == 1 ? mul(Inverse3(CurveMatrix()), applied) : applied;
         float appliedLuma = dot(appliedScene, kLuma);
         float3 appliedChroma = appliedScene - appliedLuma;
         float gain = max(1.0 + appliedLuma * slope / originalLuma, 0.0);
