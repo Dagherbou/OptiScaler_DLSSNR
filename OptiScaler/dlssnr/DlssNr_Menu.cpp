@@ -236,9 +236,8 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nWhat it trades: the shading the model adds is broad and survives enlargement;"
                        "\nthe fine structure it synthesises does not, and softens. Worth having when the"
                        "\npass costs more than you want to pay for the detail it returns."
-                       "\n\nWorks at both inject points. Before frame generation this is the cheap way to"
-                       "\nrun the model alongside Ray Reconstruction: the delta composite keeps the frame"
-                       "\nitself at native detail.");
+                       "\n\nIn the split this is the cheap way to run the model alongside Ray"
+                       "\nReconstruction: the composition keeps the frame itself at native detail.");
 
         ImGui::SeparatorText("How much of it lands");
 
