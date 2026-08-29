@@ -185,259 +185,6 @@ bool g_autoWhitePointSettled = false;
 float g_presentWhite = 3.0f;
 bool g_presentWhiteSettled = false;
 
-// The game-matched proxy curve. Two histograms -- the linear frame at the upscaler, the finished
-// frame at present -- matched into a 32-entry tone curve the encode uses instead of Reinhard, so the
-// model is shown the game's own contrast and shadow depth rather than a generic guess.
-struct ProxyCurve
-{
-    static constexpr unsigned int kSamples = probe::BlockReader::kSide * probe::BlockReader::kSide;
-    static constexpr int kEntries = 24;
-    std::vector<float> linear = std::vector<float>(kSamples, 0.0f);
-    std::vector<float> finished = std::vector<float>(kSamples, 0.0f);
-    std::vector<float> linearRgb = std::vector<float>(kSamples * 3, 0.0f);
-    std::vector<float> finishedRgb = std::vector<float>(kSamples * 3, 0.0f);
-    bool linearFresh = false;
-    bool finishedFresh = false;
-    bool presentCapturePending = false; // the render path sampled this frame; the present samples the same one
-    bool ready = false;
-    unsigned int fits = 0;
-    float minLog = -8.0f;
-    float rangeLog = 12.0f;
-    float toned[kEntries] = {};
-    float mat[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
-};
-
-ProxyCurve g_curve;
-probe::FrameReducer g_finishedReducer;
-probe::BlockReader g_finishedReader;
-
-static float SrgbToLinearCpu(float e)
-{
-    return e <= 0.04045f ? e / 12.92f : powf((e + 0.055f) / 1.055f, 2.4f);
-}
-
-// The samples are the same 64x64 tiles of the same frame, once from the linear frame and once from
-// the finished one, so every tile is a paired observation of what the game's post chain did to it.
-// Two things are fitted: a luminance curve (the finished luminance averaged per log-luminance bin --
-// UI and bloom average out as noise), and a 3x3 colour matrix on top of it by ridge-regularised least
-// squares, which captures the grade's hue and saturation moves. Both are eased across fits.
-static void FitProxyCurve()
-{
-    if (!g_curve.linearFresh || !g_curve.finishedFresh)
-        return;
-
-    g_curve.linearFresh = false;
-    g_curve.finishedFresh = false;
-
-    const unsigned int n = ProxyCurve::kSamples;
-    const int K = ProxyCurve::kEntries;
-
-    // Range from the linear frame's spread, trimmed.
-    std::vector<float> lin = g_curve.linear;
-    std::sort(lin.begin(), lin.end());
-    const float lo = std::max(lin[n / 200], 1e-4f);
-    const float hi = std::max(lin[n - 1 - n / 200], lo * 2.0f);
-    const float minLog = log2f(lo);
-    const float rangeLog = std::max(log2f(hi) - minLog, 0.5f);
-
-    // Curve: finished luminance (linear-display) averaged per bin of scene luminance.
-    std::vector<double> binSum(K, 0.0);
-    std::vector<unsigned int> binCount(K, 0);
-
-    for (unsigned int i = 0; i < n; ++i)
-    {
-        const float l = g_curve.linear[i];
-        const float f = g_curve.finished[i];
-
-        if (l <= 0.0f || f >= 0.985f) // clipped finished tiles say nothing about the curve
-            continue;
-
-        const float pos = (log2f(std::max(l, 1e-6f)) - minLog) / rangeLog * (K - 1);
-        const int k = std::clamp((int) (pos + 0.5f), 0, K - 1);
-        binSum[k] += SrgbToLinearCpu(std::clamp(f, 0.0f, 1.0f));
-        ++binCount[k];
-    }
-
-    float toned[ProxyCurve::kEntries];
-    int lastFilled = -1;
-
-    for (int k = 0; k < K; ++k)
-    {
-        if (binCount[k] > 0)
-        {
-            toned[k] = (float) (binSum[k] / binCount[k]);
-
-            // Fill any gap since the last filled bin by interpolation.
-            if (lastFilled >= 0 && lastFilled < k - 1)
-            {
-                for (int j = lastFilled + 1; j < k; ++j)
-                    toned[j] = toned[lastFilled] + (toned[k] - toned[lastFilled]) * (float) (j - lastFilled) / (float) (k - lastFilled);
-            }
-            else if (lastFilled < 0)
-            {
-                for (int j = 0; j < k; ++j)
-                    toned[j] = toned[k] * (float) (j + 1) / (float) (k + 1);
-            }
-
-            lastFilled = k;
-        }
-    }
-
-    if (lastFilled < 3)
-        return; // too little to fit from
-
-    for (int k = lastFilled + 1; k < K; ++k)
-        toned[k] = toned[lastFilled];
-
-    float last = 0.0f;
-
-    for (int k = 0; k < K; ++k)
-    {
-        toned[k] = std::max(toned[k], last + 1e-4f);
-        last = toned[k];
-    }
-
-    // Matrix: X = the tile's linear colour after the luminance map, Y = the finished tile in linear
-    // display. Ridge toward identity, so a frame full of UI or bloom cannot produce nonsense.
-    auto curveAt = [&](float l) {
-        const float pos = std::clamp((log2f(std::max(l, 1e-6f)) - minLog) / rangeLog, 0.0f, 1.0f) * (K - 1);
-        const int i = std::clamp((int) pos, 0, K - 2);
-        const float f = pos - i;
-        return toned[i] + (toned[i + 1] - toned[i]) * f;
-    };
-
-    double A[3][3] = {};
-    double B[3][3] = {}; // B[c][j] = sum X_j * Y_c
-    double xx = 0.0;
-    unsigned int used = 0;
-
-    for (unsigned int i = 0; i < n; ++i)
-    {
-        const float l = g_curve.linear[i];
-        const float f = g_curve.finished[i];
-
-        if (l <= 1e-4f || f >= 0.985f || f <= 0.01f)
-            continue;
-
-        const float scale = curveAt(l) / l;
-        const double X[3] = { g_curve.linearRgb[i * 3 + 0] * scale, g_curve.linearRgb[i * 3 + 1] * scale,
-                              g_curve.linearRgb[i * 3 + 2] * scale };
-        const double Y[3] = { SrgbToLinearCpu(std::clamp(g_curve.finishedRgb[i * 3 + 0], 0.0f, 1.0f)),
-                              SrgbToLinearCpu(std::clamp(g_curve.finishedRgb[i * 3 + 1], 0.0f, 1.0f)),
-                              SrgbToLinearCpu(std::clamp(g_curve.finishedRgb[i * 3 + 2], 0.0f, 1.0f)) };
-
-        for (int a = 0; a < 3; ++a)
-        {
-            for (int b = 0; b < 3; ++b)
-                A[a][b] += X[a] * X[b];
-
-            for (int c = 0; c < 3; ++c)
-                B[c][a] += X[a] * Y[c];
-        }
-
-        xx += X[0] * X[0] + X[1] * X[1] + X[2] * X[2];
-        ++used;
-    }
-
-    float mat[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
-
-    if (used >= 64)
-    {
-        const double lambda = 0.15 * xx / (double) used; // ridge weight, relative to the signal
-        double R[3][3];
-
-        for (int a = 0; a < 3; ++a)
-            for (int b = 0; b < 3; ++b)
-                R[a][b] = A[a][b] + (a == b ? lambda * used : 0.0);
-
-        // Invert R (3x3, symmetric positive definite after the ridge).
-        const double det = R[0][0] * (R[1][1] * R[2][2] - R[1][2] * R[2][1]) -
-                           R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0]) +
-                           R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]);
-
-        if (std::abs(det) > 1e-12)
-        {
-            double inv[3][3];
-            inv[0][0] = (R[1][1] * R[2][2] - R[1][2] * R[2][1]) / det;
-            inv[0][1] = (R[0][2] * R[2][1] - R[0][1] * R[2][2]) / det;
-            inv[0][2] = (R[0][1] * R[1][2] - R[0][2] * R[1][1]) / det;
-            inv[1][0] = (R[1][2] * R[2][0] - R[1][0] * R[2][2]) / det;
-            inv[1][1] = (R[0][0] * R[2][2] - R[0][2] * R[2][0]) / det;
-            inv[1][2] = (R[0][2] * R[1][0] - R[0][0] * R[1][2]) / det;
-            inv[2][0] = (R[1][0] * R[2][1] - R[1][1] * R[2][0]) / det;
-            inv[2][1] = (R[0][1] * R[2][0] - R[0][0] * R[2][1]) / det;
-            inv[2][2] = (R[0][0] * R[1][1] - R[0][1] * R[1][0]) / det;
-
-            // Row c of M solves (A + lambda I) m = B_c + lambda e_c: the ridge pulls toward identity.
-            for (int c = 0; c < 3; ++c)
-            {
-                double rhs[3] = { B[c][0], B[c][1], B[c][2] };
-                rhs[c] += lambda * used;
-
-                for (int j = 0; j < 3; ++j)
-                    mat[c * 3 + j] = (float) (inv[j][0] * rhs[0] + inv[j][1] * rhs[1] + inv[j][2] * rhs[2]);
-            }
-
-            // Sanity: a grade is a modest rotation of the palette, never a wild one.
-            const float mdet = mat[0] * (mat[4] * mat[8] - mat[5] * mat[7]) - mat[1] * (mat[3] * mat[8] - mat[5] * mat[6]) +
-                               mat[2] * (mat[3] * mat[7] - mat[4] * mat[6]);
-
-            if (mdet < 0.2f || mdet > 5.0f)
-            {
-                const float ident[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
-                std::memcpy(mat, ident, sizeof(mat));
-            }
-        }
-    }
-
-    const float blend = g_curve.ready ? 0.3f : 1.0f;
-    g_curve.minLog = g_curve.ready ? g_curve.minLog + (minLog - g_curve.minLog) * blend : minLog;
-    g_curve.rangeLog = g_curve.ready ? g_curve.rangeLog + (rangeLog - g_curve.rangeLog) * blend : rangeLog;
-
-    for (int k = 0; k < K; ++k)
-        g_curve.toned[k] = g_curve.ready ? g_curve.toned[k] + (toned[k] - g_curve.toned[k]) * blend : toned[k];
-
-    for (int j = 0; j < 9; ++j)
-        g_curve.mat[j] = g_curve.ready ? g_curve.mat[j] + (mat[j] - g_curve.mat[j]) * blend : mat[j];
-
-    if (!g_curve.ready)
-        LOG_INFO("DLSS-NR proxy curve matched to the game: scene luminance {:.4f}..{:.2f}; colour matrix diag "
-                 "{:.2f} {:.2f} {:.2f} from {} tiles",
-                 lo, hi, mat[0], mat[4], mat[8], used);
-
-    g_curve.ready = true;
-    ++g_curve.fits;
-}
-
-// The proxy the model is shown: 0 the old Reinhard curve, 1 the curve fitted to the game, 2 a plain
-// scale and encode. Two uses the white point as a divisor rather than a curve's shoulder, so the
-// scale control is the only thing acting on it.
-unsigned int ProxyMode(const Config& cfg)
-{
-    const unsigned int mode = cfg.DlssNrProxyCurve.value_or_default();
-    return mode > 2 ? 2 : mode;
-}
-
-static void FillCurve(codec::Params& params, bool wanted)
-{
-    if (!wanted || !g_curve.ready)
-        return;
-
-    params.curveMode = 1;
-    params.curveMinLog = g_curve.minLog;
-    params.curveRangeLog = g_curve.rangeLog;
-    std::memcpy(params.curve, g_curve.toned, sizeof(params.curve));
-
-    for (int r = 0; r < 3; ++r)
-    {
-        params.mat[r * 4 + 0] = g_curve.mat[r * 3 + 0];
-        params.mat[r * 4 + 1] = g_curve.mat[r * 3 + 1];
-        params.mat[r * 4 + 2] = g_curve.mat[r * 3 + 2];
-        params.mat[r * 4 + 3] = 0.0f;
-    }
-}
-
-
 unsigned long long g_frames = 0;
 
 // A capture requested from outside the game: when the render path has no fence of its own, the write
@@ -1297,18 +1044,9 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     const bool autoWhite = cfg.DlssNrAutoWhitePoint.value_or_default();
 
-    const bool curveMatch = ProxyMode(cfg) == 1 && isHdrBuffer;
-
-    if (autoWhite || curveMatch)
+    if (autoWhite)
     {
-        const probe::Stats stats = g_reader.collect(curveMatch ? g_curve.linear.data() : nullptr,
-                                                     curveMatch ? g_curve.linearRgb.data() : nullptr);
-
-        if (curveMatch && stats.valid)
-        {
-            g_curve.linearFresh = true;
-            FitProxyCurve();
-        }
+        const probe::Stats stats = g_reader.collect();
 
         if (autoWhite && stats.valid && stats.meanLuma > 0.0f)
         {
@@ -1330,13 +1068,9 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         }
     }
 
-    const unsigned int proxyMode = ProxyMode(cfg);
-    const float whitePoint = proxyMode == 2
-                                 ? cfg.DlssNrWhitePointScale.value_or_default()
-                                 : (autoWhite && g_autoWhitePointSettled
-                                        ? g_autoWhitePoint
-                                        : cfg.DlssNrWhitePoint.value_or_default()) *
-                                       cfg.DlssNrWhitePointScale.value_or_default();
+    // The proxy is the frame divided by this and encoded, and that is the whole transform: the scale
+    // control is the only thing acting on it, which is what a paper-white control is.
+    const float whitePoint = cfg.DlssNrWhitePointScale.value_or_default();
 
     if (g_gpuTime == nullptr)
         g_gpuTime = std::make_unique<GpuTime_Dx12>(device);
@@ -1352,8 +1086,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     encodeParams.whitePoint = whitePoint;
     // Match only takes effect once a fit exists; until then the table is empty and the shader would
     // read a curve of zeros, so it falls back to the plain proxy.
-    encodeParams.curveMode = (proxyMode == 1 && !g_curve.ready) ? 2u : proxyMode;
-    FillCurve(encodeParams, curveMatch);
     encodeParams.width = width;
     encodeParams.height = height;
 
@@ -1363,14 +1095,10 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     // Measuring here, while the frame is already readable, costs one dispatch every so often and no
     // extra barriers. Twice a second is far more often than an exposure meaningfully moves.
-    if ((autoWhite || curveMatch) && (g_frames % 30 == 0) && g_reducer.ensure(device))
+    if (autoWhite && (g_frames % 30 == 0) && g_reducer.ensure(device))
     {
         ID3D12Resource* reducedFrame = g_reducer.dispatch(cmdList, target, width, height);
         g_reader.capture(cmdList, reducedFrame, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-        // The present that follows samples the finished version of this very frame.
-        if (curveMatch)
-            g_curve.presentCapturePending = true;
     }
 
     Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -1470,8 +1198,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         codec::Params resolveParams {};
         resolveParams.mode = codec::MODE_RESOLVE;
         resolveParams.whitePoint = whitePoint;
-        resolveParams.curveMode = (proxyMode == 1 && !g_curve.ready) ? 2u : proxyMode;
-        FillCurve(resolveParams, curveMatch);
         resolveParams.width = width;
         resolveParams.height = height;
         resolveParams.transferStrength = cfg.DlssNrTransferStrength.value_or_default();
@@ -1604,105 +1330,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     device->Release();
 }
 
-// Reads the finished frame's luminance samples for the proxy curve, on this path's own list and
-// fence, without running the model. Called under the module lock.
-static void MeasureFinishedFrame(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer,
-                                 unsigned int backBufferIndex)
-{
-    if (backBuffer->GetDesc().Format == DXGI_FORMAT_R16G16B16A16_FLOAT)
-        return;
-
-    const probe::Stats stats = g_finishedReader.collect(g_curve.finished.data(), g_curve.finishedRgb.data());
-
-    if (stats.valid)
-    {
-        g_curve.finishedFresh = true;
-        FitProxyCurve();
-    }
-
-    if (!g_curve.presentCapturePending)
-        return;
-
-    g_curve.presentCapturePending = false;
-
-    ID3D12Device* device = nullptr;
-
-    if (FAILED(backBuffer->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
-        return;
-
-    const auto desc = backBuffer->GetDesc();
-    const auto width = (unsigned int) desc.Width;
-    const auto height = desc.Height;
-
-    if (!EnsurePresentList(device) || !g_finishedReducer.ensure(device))
-    {
-        device->Release();
-        return;
-    }
-
-    // A swapchain buffer cannot be read by a shader; it is staged through a copy that the reducer
-    // reads. The copy is small potatoes next to the frame itself.
-    static ID3D12Resource* staged = nullptr;
-
-    if (staged != nullptr &&
-        ((unsigned int) staged->GetDesc().Width != width || staged->GetDesc().Height != height ||
-         staged->GetDesc().Format != codec::TypedFormat(desc.Format)))
-    {
-        ParkNrResource(staged);
-    }
-
-    if (staged == nullptr)
-        staged = CreateScratch(device, codec::TypedFormat(desc.Format), width, height);
-
-    if (staged == nullptr)
-    {
-        device->Release();
-        return;
-    }
-
-    const unsigned int slot = backBufferIndex % kPresentAllocators;
-    ID3D12CommandAllocator* allocator = g_nr.presentAllocators[slot];
-    WaitForAllSubmitted();
-
-    if (FAILED(allocator->Reset()) || FAILED(g_nr.presentList->Reset(allocator, nullptr)))
-    {
-        device->Release();
-        return;
-    }
-
-    ID3D12GraphicsCommandList* cmdList = g_nr.presentList;
-    Barrier(cmdList, backBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    Barrier(cmdList, staged, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
-    cmdList->CopyResource(staged, backBuffer);
-    Barrier(cmdList, staged, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    Barrier(cmdList, backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
-
-    ID3D12Resource* reducedFrame = g_finishedReducer.dispatch(cmdList, staged, width, height);
-    g_finishedReader.capture(cmdList, reducedFrame, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    Barrier(cmdList, staged, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-    if (SUCCEEDED(cmdList->Close()))
-    {
-        ID3D12CommandList* lists[] = { cmdList };
-        queue->ExecuteCommandLists(1, lists);
-        ++g_nr.presentFenceNext;
-
-        if (SUCCEEDED(queue->Signal(g_nr.presentFence, g_nr.presentFenceNext)))
-            g_nr.presentFenceValues[slot] = g_nr.presentFenceNext;
-    }
-
-    device->Release();
-}
-
-// What the proxy curve is doing, for the panel.
-const char* ProxyCurveStatus()
-{
-    if (Config::Instance()->DlssNrProxyCurve.value_or_default() != 1)
-        return "";
-
-    return g_curve.ready ? "matched: the game's tone curve and colour matrix" : "measuring the game's tonemapper and grade...";
-}
-
 void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, unsigned int backBufferIndex)
 {
     std::lock_guard<std::mutex> nrLock(g_nrMutex);
@@ -1710,14 +1337,6 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
 
     if (!cfg.DlssNrEnabled.value_or_default() || g_nr.failed || queue == nullptr || backBuffer == nullptr)
         return;
-
-    // The proxy curve needs the finished frame's histogram whether or not this path runs the model.
-    // An SDR backbuffer only: an scRGB frame is not in the model's world and would teach the wrong
-    // curve. Cheap -- a copy, a reduction and a readback, twice a second.
-    if (cfg.DlssNrProxyCurve.value_or_default() == 1 && g_splitActive)
-    {
-        MeasureFinishedFrame(queue, backBuffer, backBufferIndex);
-    }
 
     // The split pipeline already ran the model this frame, on its own intermediate.
     if (g_splitActive)

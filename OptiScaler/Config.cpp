@@ -331,7 +331,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrSplitSrPreset.set_from_config(readUInt("DlssNr", "SplitSrPreset"));
             DlssNrSplitSrSharpness.set_from_config(readFloat("DlssNr", "SplitSrSharpness"));
             DlssNrWhitePointScale.set_from_config(readFloat("DlssNr", "WhitePointScale"));
-            DlssNrProxyCurve.set_from_config(readUInt("DlssNr", "ProxyCurve"));
             DlssNrProtectHighlights.set_from_config(readFloat("DlssNr", "ProtectHighlights"));
             DlssNrHudDetect.set_from_config(readFloat("DlssNr", "HudDetect"));
             DlssNrShadowRestore.set_from_config(readFloat("DlssNr", "ShadowRestore"));
@@ -1194,7 +1193,6 @@ bool Config::SaveIni()
                  GetFloatValue(Instance()->DlssNrSplitSrSharpness.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WhitePointScale",
                  GetFloatValue(Instance()->DlssNrWhitePointScale.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "ProxyCurve", GetIntValue(Instance()->DlssNrProxyCurve.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ProtectHighlights",
                  GetFloatValue(Instance()->DlssNrProtectHighlights.value_for_config()).c_str());
     ini.SetValue("DlssNr", "HudDetect", GetFloatValue(Instance()->DlssNrHudDetect.value_for_config()).c_str());

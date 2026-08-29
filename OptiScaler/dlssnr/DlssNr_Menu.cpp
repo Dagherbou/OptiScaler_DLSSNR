@@ -403,34 +403,6 @@ void RenderMenu(Config* config, float menuResScale)
                            "\nit works on a dark, featureless frame.");
         }
 
-        {
-            static const char* curveNames[] = { "Reinhard (compresses hard)",
-                                                "Match the game's tonemapper and grade",
-                                                "Scale and encode only (default)" };
-            int curve = (int) config->DlssNrProxyCurve.value_or_default();
-            if (curve > 2)
-                curve = 2;
-            if (ImGui::Combo("Proxy curve", &curve, curveNames, IM_ARRAYSIZE(curveNames)))
-                config->DlssNrProxyCurve = (uint32_t) curve;
-
-            HelpMarker("What the model is shown in the split, where it sees the frame before the"
-                       "\ngame's tonemapper has run."
-                       "\n\nScale and encode only: the frame, scaled by the white point control and"
-                       "\nencoded, with a soft knee at the top. Nothing else -- the game is going to"
-                       "\ntone map this picture anyway, and doing it here as well shows the model a"
-                       "\ndoubly compressed image. Measured in Cyberpunk, the Reinhard proxy handed"
-                       "\nit a scene value of 1.0 as 0.55: flat, dark, and nothing like the finished"
-                       "\nframe it was trained on."
-                       "\n\nReinhard: that old curve, kept for comparison."
-                       "\n\nMatch: a curve and colour matrix fitted to the game by comparing the same"
-                       "\nframe before and after its post chain. Needs an SDR output to learn from.");
-
-            const char* curveStatus = DlssNr::ProxyCurveStatus();
-
-            if (curveStatus[0] != 0)
-                ImGui::TextDisabled("%s", curveStatus);
-        }
-
         float wpScale = config->DlssNrWhitePointScale.value_or_default();
         if (ImGui::SliderFloat("White point scale", &wpScale, 0.5f, 2.0f, "%.2fx"))
             config->DlssNrWhitePointScale = wpScale;

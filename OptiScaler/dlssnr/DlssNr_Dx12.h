@@ -42,8 +42,6 @@ const char* SplitStatus();
 // Whether the game's UI layer reached the model recently, for the panel.
 const char* UiLayerStatus();
 
-// Whether the game-matched proxy curve is measuring or matched; empty when Reinhard is in use.
-const char* ProxyCurveStatus();
 
 // The settings panel, drawn inside OptiScaler's menu.
 void RenderMenu(::Config* config, float menuResScale);

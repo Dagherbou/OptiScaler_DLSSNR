@@ -73,14 +73,6 @@ cbuffer Params : register(b0)
     float gProtectHighlights; // the top fraction of the range where the edit fades out; 0 is off
     float gHudDetect;    // strength of the HUD mask carried in the original's alpha; 0 is off
     float gShadowRestore; // pulls back the brightening of dark regions; 0 is off
-    uint  gCurveMode;    // 0: Reinhard against the white point. 1: the fitted curve and matrix below.
-    float gCurveMinLog;  // log2 luminance of the curve's first entry
-    float gCurveRangeLog; // log2 span across its 24 entries
-    uint  gPad1;
-    uint  gPad2;
-    uint  gPad3;
-    float4 gCurve[6];    // 24 toned (linear-display) luminance values, log-spaced in scene luminance
-    float4 gMat[3];      // the game's colour transform after the curve, rows (w unused)
 };
 
 // Colours outside the AP1 gamut are impossible on any display and read as sparkle where a bright
@@ -94,103 +86,6 @@ float3 ClampAp1(float3 color)
                                     -0.130256, 1.140805, -0.010548,
                                     -0.024003, -0.128969, 1.152972 };
     return mul(ap1_to_bt709, max(mul(bt709_to_ap1, color), float3(0.0, 0.0, 0.0)));
-}
-
-float3x3 CurveMatrix()
-{
-    return float3x3(gMat[0].xyz, gMat[1].xyz, gMat[2].xyz);
-}
-
-float3x3 Inverse3(float3x3 m)
-{
-    float3 c0 = cross(m[1], m[2]);
-    float3 c1 = cross(m[2], m[0]);
-    float3 c2 = cross(m[0], m[1]);
-    float det = dot(m[0], c0);
-    float3x3 adj = float3x3(c0.x, c1.x, c2.x, c0.y, c1.y, c2.y, c0.z, c1.z, c2.z);
-    return abs(det) > 1e-6 ? adj / det : float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
-}
-
-// The fitted proxy curve: what the game's own tonemapper does to luminance, learned by matching the
-// linear frame's histogram to the finished frame's. Log-spaced in scene luminance, linear in between.
-float CurveAt(int i)
-{
-    i = clamp(i, 0, 23);
-    return gCurve[i >> 2][i & 3];
-}
-
-float CurvePos(float luma)
-{
-    float lg = log2(max(luma, 1e-6));
-    return saturate((lg - gCurveMinLog) / max(gCurveRangeLog, 1e-4)) * 23.0;
-}
-
-float CurveToned(float luma)
-{
-    float x = CurvePos(luma);
-    int i = (int) floor(x);
-    return lerp(CurveAt(i), CurveAt(i + 1), x - i);
-}
-
-// The curve read backwards: given a toned luminance, the scene luminance that produces it. The table
-// is monotonic, so this is a lookup rather than an approximation -- which is the point. Scaling a
-// pixel by a ratio only undoes a curve that is a straight line through zero; a real tone curve is
-// compressive, so the ratio under-applies the model's edit, worst in the highlights.
-float CurveInverse(float toned)
-{
-    if (toned <= CurveAt(0))
-        return exp2(gCurveMinLog);
-
-    [unroll]
-    for (int i = 0; i < 23; ++i)
-    {
-        float a = CurveAt(i);
-        float b = CurveAt(i + 1);
-
-        if (toned <= b)
-        {
-            float f = saturate((toned - a) / max(b - a, 1e-6));
-            float la = gCurveMinLog + gCurveRangeLog * (i / 23.0);
-            float lb = gCurveMinLog + gCurveRangeLog * ((i + 1) / 23.0);
-            return exp2(lerp(la, lb, f));
-        }
-    }
-
-    // Above the table the curve has flattened; carry on proportionally rather than clamping, so a
-    // bright highlight can still be brightened.
-    float top = exp2(gCurveMinLog + gCurveRangeLog);
-    return top * (toned / max(CurveAt(23), 1e-6));
-}
-
-// The soft knee, read backwards.
-float UnKnee(float y)
-{
-    return y <= 0.75 ? y : 0.75 - 0.25 * log(max(1.0 - (y - 0.75) / 0.25, 1e-4));
-}
-
-Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
-Texture2D<float4>   gModel    : register(t1);  // resolve: what the model returned.
-Texture2D<float4>   gOriginal : register(t2);  // resolve: the untouched frame.
-Texture2D<float4>   gMotion   : register(t3);  // resolve, accumulating: the game's motion vectors.
-Texture2D<float4>   gPrevEdit : register(t4);  // resolve, accumulating: last frame's accumulated edit.
-RWTexture2D<float4> gTarget   : register(u0);  // encode: the proxy. resolve: the frame.
-RWTexture2D<float4> gKeep     : register(u1);  // encode: the untouched copy. resolve: the edit history.
-SamplerState        gLinear   : register(s0);  // so the edit can be read at a different size
-
-static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
-
-// sRGB rather than a plain 2.2 power: it is what an SDR game buffer actually carries, and the model was
-// trained on those.
-float3 LinearToSrgb(float3 v)
-{
-    v = saturate(v);
-    return lerp(v * 12.92, 1.055 * pow(max(v, 1e-8), 1.0 / 2.4) - 0.055, step(0.0031308, v));
-}
-
-float3 SrgbToLinear(float3 v)
-{
-    v = saturate(v);
-    return lerp(v / 12.92, pow((v + 0.055) / 1.055, 2.4), step(0.04045, v));
 }
 
 // The edit at an arbitrary position, exactly as the resolve computes its own.
@@ -285,17 +180,7 @@ void main(uint3 id : SV_DispatchThreadID)
         // judged tone on a picture that does not exist, and its answer had to be un-crushed on the way
         // back. Mode 0 keeps that old curve, mode 1 the fitted one.
         float luma = dot(frame, kLuma);
-        float toned = gCurveMode == 2   ? luma / max(gWhitePoint, 1e-4)
-                      : gCurveMode == 1 ? CurveToned(luma)
-                                        : (luma / gWhitePoint) / (1.0 + luma / gWhitePoint);
-        float scale = luma > 1e-6 ? toned / luma : 0.0;
-        float3 display = frame * scale;
-
-        // The game's colour grade, learned: after the luminance map the fitted matrix turns the
-        // picture into what the game would have made of it -- the model then sees the game's palette
-        // as well as its contrast.
-        if (gCurveMode == 1)
-            display = max(mul(CurveMatrix(), display), float3(0.0, 0.0, 0.0));
+        float3 display = frame / max(gWhitePoint, 1e-4);
 
         // A soft knee instead of a hard ceiling. Anything the curve leaves above 0.75 is rolled off
         // rather than clipped, so the model is never shown a field of flat white whose blown pixels
@@ -497,29 +382,9 @@ void main(uint3 id : SV_DispatchThreadID)
         // change and it crawls, and in a highlight it has to be scaled up to survive, which is how a
         // detail pass turns into a wobble generator. This is the single largest difference between a
         // stable pass and an unstable one.
-        float3 appliedScene = gCurveMode == 1 ? mul(Inverse3(CurveMatrix()), applied) : applied;
-        float appliedLuma = dot(appliedScene, kLuma);
-        float3 appliedChroma = appliedScene - appliedLuma;
+        float appliedLuma = dot(applied, kLuma);
+        float3 appliedChroma = applied - appliedLuma;
         float gain = max(1.0 + appliedLuma * slope / originalLuma, 0.0);
-
-        // With the game's curve fitted, the edit does not have to be scaled back by a ratio: the
-        // curve can be read backwards. Take what the model asked for, undo the knee and the colour
-        // matrix, and ask the curve which scene luminance produces it. That lands the edit at the
-        // strength the model intended instead of a damped version of it -- the ratio is exact only
-        // for a straight line, and a tone curve is anything but.
-        if (gCurveMode == 1)
-        {
-            float3 targetDisplay = proxy + applied;
-            float targetLuma = dot(targetDisplay, kLuma);
-            float unkneed = UnKnee(targetLuma);
-
-            if (targetLuma > 1e-6)
-                targetDisplay *= unkneed / targetLuma;
-
-            float3 preMatrix = mul(Inverse3(CurveMatrix()), targetDisplay);
-            float sceneLuma = CurveInverse(max(dot(preMatrix, kLuma), 0.0));
-            gain = max(sceneLuma / originalLuma, 0.0);
-        }
 
         result = original * gain + appliedChroma * slope;
     }
@@ -571,14 +436,7 @@ struct Params
     float protectHighlights;
     float hudDetect;
     float shadowRestore;
-    unsigned int curveMode;
-    float curveMinLog;
-    float curveRangeLog;
-    unsigned int pad1;
-    unsigned int pad2;
-    unsigned int pad3;
-    float curve[24];
-    float mat[12]; // three rows of four; the fourth is unused
+
 };
 
 static_assert(sizeof(Params) % 4 == 0, "root constants are dwords");
