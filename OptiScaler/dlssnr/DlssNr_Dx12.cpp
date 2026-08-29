@@ -1001,9 +1001,20 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         }
     }
 
-    // The proxy is the frame divided by this and encoded, and that is the whole transform: the scale
-    // control is the only thing acting on it, which is what a paper-white control is.
-    const float whitePoint = cfg.DlssNrWhitePointScale.value_or_default();
+    // The proxy is the frame divided by this and encoded, and that is the whole transform.
+    //
+    // Which divisor depends on what the frame is. On this path a linear HDR buffer is scene-referred
+    // and carries values well above 1, so it has to be normalised by the measured white point before
+    // encoding -- dividing it by the paper-white scale alone leaves everything bright piled into the
+    // soft knee, and the model then judges tone and colour on a picture that is crushed at the top.
+    // An already tone-mapped buffer is display-referred and needs no normalising, so there the scale
+    // is the whole story, which is what a paper-white control should be.
+    const float wpScale = cfg.DlssNrWhitePointScale.value_or_default();
+    const float whitePoint =
+        isHdrBuffer ? (autoWhite && g_autoWhitePointSettled ? g_autoWhitePoint
+                                                            : cfg.DlssNrWhitePoint.value_or_default()) *
+                          wpScale
+                    : wpScale;
 
     if (g_gpuTime == nullptr)
         g_gpuTime = std::make_unique<GpuTime_Dx12>(device);
