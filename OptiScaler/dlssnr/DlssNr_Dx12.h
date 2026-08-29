@@ -21,6 +21,7 @@ namespace DlssNr
 // was trained on, at a run per presented frame.
 constexpr unsigned int INJECT_BEFORE_FG = 0;
 constexpr unsigned int INJECT_PRESENT = 1;
+constexpr unsigned int INJECT_HUDLESS = 2;
 // Runs the model over Output on the same command list, immediately after the upscaler has written it.
 // Called only for upscaler evaluates -- never for frame generation, which is the whole point.
 //
@@ -34,6 +35,11 @@ void SetSplitActive(bool active);
 
 // One line of truth about the split pipeline, for the overlay. Set from the seam with string literals.
 void SetSplitStatus(const char* status);
+// The hudless inject point: the finished-look image before the interface is drawn, tagged by
+// Streamline FG games. The model's trained distribution AND structural UI immunity at once.
+void EvaluateHudless(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* hudless,
+                     D3D12_RESOURCE_STATES state);
+
 const char* SplitStatus();
 
 // Clears the session failure latches -- the model's and the split's -- so a failure caused by transient

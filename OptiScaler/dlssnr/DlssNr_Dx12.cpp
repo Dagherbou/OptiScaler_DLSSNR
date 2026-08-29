@@ -686,6 +686,402 @@ void SetSplitStatus(const char* status)
     strncpy_s(g_splitStatus, status, _TRUNCATE);
 }
 
+
+// The best seat in the house, when a game offers it: the Streamline-tagged HUDless colour buffer is
+// the finished image -- tonemapper, bloom, grading all done -- before the interface is drawn on it.
+// The model sees exactly its trained distribution, the UI is composited on top of the edit
+// afterwards, and frame generation interpolates enhanced frames at one model run per rendered frame.
+// Runs on the game's own command list at tag time; the guides were captured at the upscaler earlier
+// in the same frame.
+void EvaluateHudless(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* hudless,
+                     D3D12_RESOURCE_STATES state)
+{
+    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    const Config& cfg = *Config::Instance();
+
+    if (!cfg.DlssNrEnabled.value_or_default() || g_nr.failed || cmdList == nullptr || hudless == nullptr)
+        return;
+
+    if (cfg.DlssNrInjectPoint.value_or_default() != INJECT_HUDLESS)
+        return;
+
+    // The split runs the model on its own intermediate; and one run per frame, however many times the
+    // game tags.
+    static unsigned long long servedAtFrame = ~0ull;
+
+    if (g_splitActive || servedAtFrame == g_frames)
+        return;
+
+    if (!g_nr.guidesReady || g_nr.depthClone == nullptr || g_nr.motionClone == nullptr)
+        return;
+
+    ID3D12Device* device = nullptr;
+
+    if (FAILED(cmdList->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
+        return;
+
+    const auto desc = hudless->GetDesc();
+    const auto width = (unsigned int) desc.Width;
+    const auto height = desc.Height;
+    const DXGI_FORMAT scratchFormat = codec::TypedFormat(desc.Format);
+
+    ReleaseSurfacesIfFormatChanged(scratchFormat);
+
+    float workScale = cfg.DlssNrWorkingScale.value_or_default();
+    workScale = workScale < 0.25f ? 0.25f : (workScale > 1.0f ? 1.0f : workScale);
+    const auto workWidth = (unsigned int) (width * workScale + 0.5f);
+    const auto workHeight = (unsigned int) (height * workScale + 0.5f);
+    const bool reduced = workWidth != width || workHeight != height;
+
+    if (g_nr.feature != nullptr &&
+        (g_nr.width != width || g_nr.height != height || g_nr.workWidth != workWidth ||
+         g_nr.workHeight != workHeight))
+    {
+        ParkNrFeature(g_nr.feature);
+        ParkNrResource(g_nr.output);
+        ParkNrResource(g_nr.colorCopy);
+        ParkNrResource(g_nr.hdrCopy);
+        ParkNrResource(g_nr.colorSmall);
+    }
+
+    // Tuning is create-time latched here like everywhere else; the same settle applies.
+    if (g_nr.feature != nullptr && !TuningMatchesFeature(cfg))
+    {
+        if (g_nr.settledAt == 0)
+            g_nr.settledAt = g_frames;
+
+        if (g_frames - g_nr.settledAt >= kSettleFrames)
+        {
+            ParkNrFeature(g_nr.feature);
+            g_nr.settledAt = 0;
+            LOG_INFO("DLSS-NR rebuilding for changed tuning");
+        }
+    }
+    else
+    {
+        g_nr.settledAt = 0;
+    }
+
+    if (g_nr.output == nullptr)
+    {
+        g_nr.output = CreateScratch(device, scratchFormat, workWidth, workHeight);
+        g_nr.colorCopy = CreateScratch(device, scratchFormat, width, height);
+        g_nr.hdrCopy = CreateScratch(device, scratchFormat, width, height);
+
+        if (reduced)
+            g_nr.colorSmall = CreateScratch(device, scratchFormat, workWidth, workHeight);
+
+        g_nr.workWidth = workWidth;
+        g_nr.workHeight = workHeight;
+    }
+
+    if (reduced && g_nr.colorSmall == nullptr)
+        g_nr.colorSmall = CreateScratch(device, scratchFormat, workWidth, workHeight);
+
+    if (g_nr.output == nullptr || g_nr.colorCopy == nullptr || g_nr.hdrCopy == nullptr)
+    {
+        device->Release();
+        return;
+    }
+
+    if (!EnsureForwarder() || !EnsureCapabilityParams(device))
+    {
+        g_nr.failed = true;
+        LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
+        device->Release();
+        return;
+    }
+
+    if (g_nr.feature == nullptr)
+    {
+        auto snippet = Util::FindFilePath(g_dllDir, "nvngx_dlssnr.dll");
+
+        if (!snippet.has_value())
+            snippet = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssnr.dll");
+
+        if (!snippet.has_value())
+        {
+            g_nr.failed = true;
+            g_nr.reason = "nvngx_dlssnr.dll was not found beside OptiScaler or the game";
+            LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
+            device->Release();
+            return;
+        }
+
+        g_nr.feature =
+            g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
+                        device, cmdList, g_nr.capabilityParams, workWidth, workHeight,
+                        (int) cfg.DlssNrPreset.value_or_default(),
+                        cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
+                        cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
+                        cfg.DlssNrSkinStructure.value_or_default(),
+                        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0,
+                        cfg.DlssNrUiCorrection.value_or_default() ? 1 : 0);
+
+        if (g_nr.feature == nullptr)
+        {
+            g_nr.failed = true;
+            g_nr.reason = "the model would not initialise";
+            LOG_ERROR("DLSS-NR create failed at hudless: init 0x{:X}, create 0x{:X}",
+                      g_nr.lastInit != nullptr ? *g_nr.lastInit : 0,
+                      g_nr.lastCreate != nullptr ? *g_nr.lastCreate : 0);
+            device->Release();
+            return;
+        }
+
+        g_nr.width = width;
+        g_nr.height = height;
+        g_nr.reset = true;
+        RecordBuiltTuning(cfg);
+        LOG_INFO("DLSS-NR running on the hudless finished look at {}x{}, guides {}x{}", width, height,
+                 g_nr.guideWidth, g_nr.guideHeight);
+
+        // Creation recorded; the game's submit executes it, and the first evaluate is next frame.
+        device->Release();
+        return;
+    }
+
+    servedAtFrame = g_frames;
+
+    if (g_gpuTime == nullptr)
+        g_gpuTime = std::make_unique<GpuTime_Dx12>(device);
+
+    if (g_gpuTime != nullptr)
+        g_gpuTime->Start(cmdList);
+
+    // The frame comes over, gets processed, goes back. The tag says what state it arrived in.
+    Barrier(cmdList, hudless, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_COPY_DEST);
+    cmdList->CopyResource(g_nr.colorCopy, hudless);
+    Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    // An scRGB HDR hudless is encoded around the model exactly like the finished frame is; SDR goes
+    // over as it is.
+    const bool scRGB = desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    float presentWhite = 1.0f;
+    bool hdrEncoded = false;
+    ID3D12Resource* modelInput = g_nr.colorCopy;
+
+    if (scRGB)
+    {
+        const probe::Stats stats = g_presentReader.collect();
+
+        if (stats.valid && stats.meanLuma > 0.0f)
+        {
+            const float targetWhite = WhitePointForMean(stats.meanLuma);
+
+            if (!g_presentWhiteSettled)
+            {
+                g_presentWhite = targetWhite;
+                g_presentWhiteSettled = true;
+                LOG_INFO("DLSS-NR hudless white point settled at {:.3f} (frame mean {:.4f})",
+                         g_presentWhite, stats.meanLuma);
+            }
+            else
+            {
+                g_presentWhite += (targetWhite - g_presentWhite) * kWhitePointBlend;
+            }
+        }
+
+        if (g_nr.presentProxy != nullptr &&
+            ((unsigned int) g_nr.presentProxy->GetDesc().Width != width ||
+             g_nr.presentProxy->GetDesc().Height != height))
+        {
+            g_nr.presentProxy->Release();
+            g_nr.presentProxy = nullptr;
+        }
+
+        if (g_nr.presentProxy == nullptr)
+            g_nr.presentProxy = CreateScratch(device, desc.Format, width, height);
+    }
+
+    if (scRGB && g_nr.presentProxy != nullptr)
+    {
+        presentWhite = g_presentWhite * cfg.DlssNrWhitePointScale.value_or_default();
+        hdrEncoded = true;
+
+        codec::Params encodeParams {};
+        encodeParams.mode = codec::MODE_ENCODE;
+        encodeParams.passthrough = 0;
+        encodeParams.whitePoint = presentWhite;
+        encodeParams.width = width;
+        encodeParams.height = height;
+
+        g_codec.dispatch(cmdList, encodeParams, g_nr.colorCopy, nullptr, nullptr, g_nr.presentProxy,
+                         g_nr.hdrCopy);
+
+        D3D12_RESOURCE_BARRIER keepHazard {};
+        keepHazard.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        keepHazard.UAV.pResource = g_nr.hdrCopy;
+        cmdList->ResourceBarrier(1, &keepHazard);
+
+        if ((g_frames % 30 == 0) && g_presentReducer.ensure(device))
+        {
+            ID3D12Resource* reducedFrame =
+                g_presentReducer.dispatch(cmdList, g_nr.colorCopy, width, height);
+            g_presentReader.capture(cmdList, reducedFrame, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        }
+
+        Barrier(cmdList, g_nr.presentProxy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        modelInput = g_nr.presentProxy;
+    }
+
+    if (reduced && g_nr.colorSmall != nullptr)
+    {
+        codec::Params down {};
+        down.mode = codec::MODE_DOWNSAMPLE;
+        down.width = workWidth;
+        down.height = workHeight;
+        g_codec.dispatch(cmdList, down, modelInput, nullptr, nullptr, g_nr.colorSmall, nullptr);
+        Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        modelInput = g_nr.colorSmall;
+    }
+
+    Barrier(cmdList, g_nr.depthClone, D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Barrier(cmdList, g_nr.motionClone, D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    const float mvToWork = width != 0 ? (float) workWidth / (float) width : 1.0f;
+
+    const int result = g_nr.evaluate(
+        cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, g_nr.depthClone, g_nr.motionClone,
+        g_nr.output, workWidth, workHeight, g_nr.guideWidth, g_nr.guideHeight,
+        g_nr.guideDepthInverted ? 1 : 0, g_nr.reset ? 1 : 0, cfg.DlssNrIntensity.value_or_default(),
+        (int) cfg.DlssNrStyle.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
+        cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
+        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, g_nr.guideMvScaleX * mvToWork,
+        g_nr.guideMvScaleY * mvToWork);
+
+    g_nr.reset = false;
+
+    Barrier(cmdList, g_nr.depthClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_COPY_DEST);
+
+    if (result == NVSDK_NGX_Result_Success)
+    {
+        codec::Params resolveParams {};
+        resolveParams.mode = codec::MODE_RESOLVE;
+        resolveParams.passthrough = hdrEncoded ? 0u : 1u;
+        resolveParams.whitePoint = hdrEncoded ? presentWhite : 1.0f;
+        resolveParams.width = width;
+        resolveParams.height = height;
+        resolveParams.transferStrength = cfg.DlssNrTransferStrength.value_or_default();
+        resolveParams.colourStrength = cfg.DlssNrColourStrength.value_or_default();
+        resolveParams.debugView = cfg.DlssNrDebugView.value_or_default();
+        resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
+        resolveParams.protectHighlights = cfg.DlssNrProtectHighlights.value_or_default();
+        resolveParams.hudGuard = 0.0f; // there is no HUD here -- that is the whole point
+
+        const float stability = cfg.DlssNrEditStability.value_or_default();
+        ID3D12Resource* historyIn = nullptr;
+        ID3D12Resource* historyOut = nullptr;
+
+        if (stability > 0.0f && g_nr.motionClone != nullptr)
+        {
+            if (g_nr.editHistory[0] != nullptr &&
+                ((unsigned int) g_nr.editHistory[0]->GetDesc().Width != width ||
+                 g_nr.editHistory[0]->GetDesc().Height != height))
+            {
+                for (auto& h : g_nr.editHistory)
+                {
+                    h->Release();
+                    h = nullptr;
+                }
+
+                g_nr.editWarm = false;
+            }
+
+            if (g_nr.editHistory[0] == nullptr)
+            {
+                g_nr.editHistory[0] = CreateScratch(device, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height);
+                g_nr.editHistory[1] = CreateScratch(device, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height);
+                g_nr.editWarm = false;
+            }
+
+            if (g_nr.editHistory[0] != nullptr && g_nr.editHistory[1] != nullptr)
+            {
+                historyIn = g_nr.editHistory[g_nr.editIndex];
+                historyOut = g_nr.editHistory[1 - g_nr.editIndex];
+                resolveParams.accumulate = g_nr.editWarm ? 1u : 2u;
+                resolveParams.stability = stability > 0.95f ? 0.95f : stability;
+                resolveParams.mvScaleX = g_nr.guideMvScaleX;
+                resolveParams.mvScaleY = g_nr.guideMvScaleY;
+                resolveParams.guideWidth = g_nr.guideWidth;
+                resolveParams.guideHeight = g_nr.guideHeight;
+
+                Barrier(cmdList, historyIn, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            }
+        }
+
+        Barrier(cmdList, g_nr.motionClone, D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        g_codec.dispatch(cmdList, resolveParams, modelInput, g_nr.output, g_nr.colorCopy, g_nr.hdrCopy,
+                         historyOut, g_nr.motionClone, historyIn);
+        Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Barrier(cmdList, g_nr.motionClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_COPY_DEST);
+
+        if (historyIn != nullptr)
+        {
+            Barrier(cmdList, historyIn, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            g_nr.editIndex = 1 - g_nr.editIndex;
+            g_nr.editWarm = true;
+        }
+
+        // The edited frame goes back where the game keeps it, in the state the tag promised.
+        Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COPY_SOURCE);
+        Barrier(cmdList, hudless, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->CopyResource(hudless, g_nr.hdrCopy);
+        Barrier(cmdList, hudless, D3D12_RESOURCE_STATE_COPY_DEST, state);
+        Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }
+    else
+    {
+        Barrier(cmdList, hudless, D3D12_RESOURCE_STATE_COPY_SOURCE, state);
+        g_nr.failed = true;
+        g_nr.reason = "the model refused to run";
+        LOG_ERROR("DLSS-NR hudless evaluate returned 0x{:X}, disabling for this session",
+                  (uint32_t) result);
+    }
+
+    if (reduced && g_nr.colorSmall != nullptr)
+        Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    if (hdrEncoded)
+        Barrier(cmdList, g_nr.presentProxy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    if (g_gpuTime != nullptr)
+    {
+        g_gpuTime->End(cmdList);
+
+        if (State::Instance().currentCommandQueue != nullptr)
+        {
+            if (auto ms = g_gpuTime->ReadGpuTime((ID3D12CommandQueue*) State::Instance().currentCommandQueue);
+                ms.has_value())
+                g_lastGpuTime = ms;
+        }
+    }
+
+    device->Release();
+}
+
 const char* SplitStatus() { return g_splitStatus; }
 
 // The split's own latch lives at the seam; it registers a hook here so one button clears everything.

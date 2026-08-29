@@ -5823,14 +5823,20 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
 
         ImGui::SeparatorText("Where it runs");
 
-        static const char* injectNames[] = { "Before frame generation", "Finished frame (better image)" };
+        static const char* injectNames[] = { "Before frame generation", "Finished frame (better image)",
+                                             "Finished look, before UI (FG games)" };
         int injectPoint = (int) config->DlssNrInjectPoint.value_or_default();
-        if (injectPoint > 1)
-            injectPoint = 1;
+        if (injectPoint > 2)
+            injectPoint = 2;
         if (ImGui::Combo("Inject point", &injectPoint, injectNames, IM_ARRAYSIZE(injectNames)))
             config->DlssNrInjectPoint = (uint32_t) injectPoint;
 
-        ShowHelpMarker("Finished frame: the model sees the picture after the game's own tonemapper,"
+        ShowHelpMarker("Finished look, before UI: the best of both, where a game offers it. Frame"
+                       "\ngeneration titles hand Streamline a finished image before the interface is"
+                       "\ndrawn -- the model sees its trained distribution AND never touches the HUD,"
+                       "\nand generated frames inherit the result. Does nothing in games that do not"
+                       "\ntag that buffer; the log says when it engages."
+                       "\n\nFinished frame: the model sees the picture after the game's own tonemapper,"
                        "\nwhich is exactly what it was trained on, and its answer is used as it comes."
                        "\nCosts a run per presented frame, so roughly double with frame generation, and"
                        "\neach generated frame is enhanced on its own."
