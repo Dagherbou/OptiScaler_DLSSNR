@@ -353,21 +353,11 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
     LOG_INFO("DLSS-NR rebuilding surfaces: format {} -> {} (inject point changed)",
              (int) g_nr.output->GetDesc().Format, (int) needed);
 
-    if (g_nr.feature != nullptr && g_nr.release != nullptr)
-    {
-        g_nr.release(g_nr.feature);
-        g_nr.feature = nullptr;
-    }
+    ParkNrFeature(g_nr.feature);
 
     for (ID3D12Resource** r :
          { &g_nr.output, &g_nr.colorCopy, &g_nr.hdrCopy, &g_nr.colorSmall, &g_nr.presentProxy })
-    {
-        if (*r != nullptr)
-        {
-            (*r)->Release();
-            *r = nullptr;
-        }
-    }
+        ParkNrResource(*r);
 
     g_nr.reset = true;
 }
@@ -618,6 +608,62 @@ void WaitForAllocator(unsigned int index)
 
 namespace DlssNr
 {
+// Retired model features and surfaces are parked and freed a comfortable number of evaluates later.
+// Releasing them immediately was the device hang: with frame generation the GPU runs several frames
+// behind, the split's work rides the game's own queue that no module fence covers, and an NGX feature
+// or scratch texture freed under in-flight work kills the device. The split learned this first (its
+// trap #4); the model's own rebuild paths now obey the same rule.
+struct NrRetired
+{
+    void* feature = nullptr;
+    ID3D12Resource* resource = nullptr;
+    int framesLeft = 32;
+};
+
+std::vector<NrRetired> g_nrRetired;
+
+void ParkNrFeature(void*& feature)
+{
+    if (feature == nullptr)
+        return;
+
+    NrRetired r;
+    r.feature = feature;
+    feature = nullptr;
+    g_nrRetired.push_back(r);
+}
+
+void ParkNrResource(ID3D12Resource*& res)
+{
+    if (res == nullptr)
+        return;
+
+    NrRetired r;
+    r.resource = res;
+    res = nullptr;
+    g_nrRetired.push_back(r);
+}
+
+void TickNrRetired()
+{
+    for (size_t i = 0; i < g_nrRetired.size();)
+    {
+        if (--g_nrRetired[i].framesLeft > 0)
+        {
+            ++i;
+            continue;
+        }
+
+        if (g_nrRetired[i].feature != nullptr && g_nr.release != nullptr)
+            g_nr.release(g_nrRetired[i].feature);
+
+        if (g_nrRetired[i].resource != nullptr)
+            g_nrRetired[i].resource->Release();
+
+        g_nrRetired.erase(g_nrRetired.begin() + i);
+    }
+}
+
 bool g_splitActive = false;
 
 void SetSplitActive(bool active) { g_splitActive = active; }
@@ -768,35 +814,14 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         (g_nr.width != width || g_nr.height != height || g_nr.workWidth != workWidth ||
          g_nr.workHeight != workHeight))
     {
-        // A resolution change invalidates the model and both scratch textures. Nothing is released
-        // underneath the GPU here because this runs on the same command list the upscaler just used, and
-        // the previous frame's work has long since retired by the time a resolution actually changes.
-        g_nr.release(g_nr.feature);
-        g_nr.feature = nullptr;
-
-        if (g_nr.output != nullptr)
-        {
-            g_nr.output->Release();
-            g_nr.output = nullptr;
-        }
-
-        if (g_nr.colorCopy != nullptr)
-        {
-            g_nr.colorCopy->Release();
-            g_nr.colorCopy = nullptr;
-        }
-
-        if (g_nr.hdrCopy != nullptr)
-        {
-            g_nr.hdrCopy->Release();
-            g_nr.hdrCopy = nullptr;
-        }
-
-        if (g_nr.colorSmall != nullptr)
-        {
-            g_nr.colorSmall->Release();
-            g_nr.colorSmall = nullptr;
-        }
+        // A resolution change invalidates the model and the scratch textures. Everything is parked,
+        // not released: with frame generation the GPU can still be several frames deep in work that
+        // references all of it.
+        ParkNrFeature(g_nr.feature);
+        ParkNrResource(g_nr.output);
+        ParkNrResource(g_nr.colorCopy);
+        ParkNrResource(g_nr.hdrCopy);
+        ParkNrResource(g_nr.colorSmall);
     }
 
     if (g_nr.output == nullptr)
@@ -904,6 +929,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     // of the game's exposure rather than a number worth asking anyone to guess: measured means of 0.065,
     // 1.8 and 185 have all been seen in this one game.
     ++g_frames;
+    TickNrRetired();
     CheckCaptureTrigger();
 
     if (g_captureWriteAtFrame != 0 && g_frames >= g_captureWriteAtFrame)
@@ -1256,33 +1282,13 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         (g_nr.width != width || g_nr.height != height || g_nr.workWidth != workWidth ||
          g_nr.workHeight != workHeight))
     {
+        // The fence covers this path's own submissions; the park covers everyone else's.
         WaitForAllSubmitted();
-        g_nr.release(g_nr.feature);
-        g_nr.feature = nullptr;
-
-        if (g_nr.output != nullptr)
-        {
-            g_nr.output->Release();
-            g_nr.output = nullptr;
-        }
-
-        if (g_nr.colorCopy != nullptr)
-        {
-            g_nr.colorCopy->Release();
-            g_nr.colorCopy = nullptr;
-        }
-
-        if (g_nr.hdrCopy != nullptr)
-        {
-            g_nr.hdrCopy->Release();
-            g_nr.hdrCopy = nullptr;
-        }
-
-        if (g_nr.colorSmall != nullptr)
-        {
-            g_nr.colorSmall->Release();
-            g_nr.colorSmall = nullptr;
-        }
+        ParkNrFeature(g_nr.feature);
+        ParkNrResource(g_nr.output);
+        ParkNrResource(g_nr.colorCopy);
+        ParkNrResource(g_nr.hdrCopy);
+        ParkNrResource(g_nr.colorSmall);
     }
 
     if (g_nr.output == nullptr)
@@ -1318,8 +1324,7 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
         if (g_frames - g_nr.settledAt >= kSettleFrames)
         {
             WaitForAllSubmitted();
-            g_nr.release(g_nr.feature);
-            g_nr.feature = nullptr;
+            ParkNrFeature(g_nr.feature);
             g_nr.settledAt = 0;
             LOG_INFO("DLSS-NR rebuilding for changed tuning");
         }
@@ -1330,6 +1335,7 @@ void EvaluateAtPresent(ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, un
     }
 
     ++g_frames;
+    TickNrRetired();
     CheckCaptureTrigger();
 
     const unsigned int slot = backBufferIndex % kPresentAllocators;
@@ -1733,6 +1739,17 @@ bool CaptureInProgress() { return g_capture.isActive(); }
 
 void Shutdown()
 {
+    for (auto& r : g_nrRetired)
+    {
+        if (r.feature != nullptr && g_nr.release != nullptr)
+            g_nr.release(r.feature);
+
+        if (r.resource != nullptr)
+            r.resource->Release();
+    }
+
+    g_nrRetired.clear();
+
     if (g_nr.feature != nullptr && g_nr.release != nullptr)
         g_nr.release(g_nr.feature);
 
