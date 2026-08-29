@@ -155,6 +155,7 @@ float3 EditAt(float2 uvq)
     return m - p;
 }
 
+)" R"(
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
@@ -270,6 +271,7 @@ void main(uint3 id : SV_DispatchThreadID)
     // frame even on a static scene; blending each frame's edit with its own reprojected history keeps
     // the consistent part -- the detail -- and cancels the part that re-randomises. NVIDIA's own
     // motion vectors carry the history to where the surface is now.
+)" R"(
     if (gAccumulate == 1 || gAccumulate == 2)
     {
         // Only the lighting is accumulated. Two unrelated temporal filters -- the hand-made variance
