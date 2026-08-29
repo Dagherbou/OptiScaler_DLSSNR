@@ -310,12 +310,25 @@ void main(uint3 id : SV_DispatchThreadID)
 
     float3 result = original + applied * slope;
 
-    // A detail pass should not be able to restyle anything, whatever comes back. The small constant
-    // keeps this meaningful where the original is near black and a ratio alone would not be.
-    float3 ceiling = original * gMaxRatio + 0.01;
-    float3 floorValue = max(original / gMaxRatio - 0.01, float3(0.0, 0.0, 0.0));
+    // A detail pass should not be able to restyle anything, whatever comes back -- and that includes
+    // restyling by accident. The old clamp bounded each channel separately, and on a saturated pixel
+    // the smallest channel hits its bound first: an achromatic edit lands as a hue shift, and a
+    // magenta-graded scene bends green. The bound is enforced on luminance instead, and the whole
+    // edit is scaled by one factor -- what lands is a smaller version of the same change, never a
+    // bent colour. The small constant keeps the bound meaningful near black.
+    float resultLuma = dot(result, kLuma);
+    float ceilingLuma = originalLuma * gMaxRatio + 0.01;
+    float floorLuma = max(originalLuma / gMaxRatio - 0.01, 0.0);
+    float editLuma2 = resultLuma - originalLuma;
+    float limit = 1.0;
 
-    gTarget[id.xy] = float4(clamp(result, floorValue, ceiling), originalSample.a);
+    if (resultLuma > ceilingLuma && editLuma2 > 1e-6)
+        limit = (ceilingLuma - originalLuma) / editLuma2;
+    else if (resultLuma < floorLuma && editLuma2 < -1e-6)
+        limit = (floorLuma - originalLuma) / editLuma2;
+
+    result = original + applied * slope * saturate(limit);
+    gTarget[id.xy] = float4(max(result, float3(0.0, 0.0, 0.0)), originalSample.a);
 }
 )";
 
