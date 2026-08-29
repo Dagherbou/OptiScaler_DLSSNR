@@ -1,0 +1,45 @@
+RenoDX
+======
+
+Project:  RenoDX by clshortfuse
+Source:   https://github.com/clshortfuse/renodx
+
+What is derived from it
+-----------------------
+
+The colour composition in OptiScaler/dlssnr/DlssNr_Codec.h is taken from RenoDX's
+DLSS 5 Neural Rendering addon. Specifically:
+
+  * UpgradeToneMap -- the two-branch luminance ratio: below the proxy's luminance
+    the original's own luminance is the target, and above it the difference is
+    treated as headroom the proxy could not represent and handed back on top of
+    the model's answer.
+
+  * The OkLab hue correction applied to the rescaled result, which takes the hue
+    and chroma direction from the model's own output and only the chroma
+    magnitude from the scaled colour.
+
+  * The final blend between a luminance-only result (the original's hue, the
+    model's light) and the fully upgraded colour.
+
+This is their design. It was reimplemented here with different names and
+comments, which does not make it original work, and it is credited as theirs.
+
+What is not derived from it
+---------------------------
+
+The OkLab conversion matrices are Bjorn Ottosson's published constants. The AP1
+gamut matrices, the sRGB transfer functions and the SMPTE ST.2084 (PQ) transfer
+are standard colour science and are not specific to RenoDX.
+
+Licence
+-------
+
+RenoDX's licence terms govern this reuse. The upstream LICENSE file must be
+reproduced below verbatim before this build is distributed -- copy it from the
+repository above.
+
+vvv PASTE THE UPSTREAM LICENSE TEXT HERE vvv
+
+
+^^^ PASTE THE UPSTREAM LICENSE TEXT HERE ^^^

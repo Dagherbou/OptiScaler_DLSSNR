@@ -109,13 +109,13 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nWhat it trades: the shading the model adds is broad and survives enlargement;"
                        "\nthe fine structure it synthesises does not, and softens. Worth having when the"
                        "\npass costs more than you want to pay for the detail it returns."
-                       "\n\nIn the split this is the cheap way to run the model alongside Ray"
-                       "\nReconstruction: the composition keeps the frame itself at native detail.");
+                       "\n\nThe frame itself stays at full detail whatever this says -- only the"
+                       "\nmodel's own work is done small.");
 
         ImGui::SeparatorText("How much of it lands");
 
         float transfer = config->DlssNrTransferStrength.value_or_default();
-        if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 1.0f, "%.2f"))
+        if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 2.0f, "%.2f"))
             config->DlssNrTransferStrength = transfer;
 
         HelpMarker("How far the frame moves toward the model's picture."
@@ -124,23 +124,10 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nblends between the two, so both ends are real pictures and everything between"
                        "\nthem is one too."
                        "\n\n0 gives back exactly what the upscaler produced. 1 is the model's picture."
-                       "\n\nIf nothing here seems to do anything, push this"
-                       "\nto 4 and watch: that answers whether the model is contributing at all.");
-
-        float editStability = config->DlssNrEditStability.value_or_default();
-        if (ImGui::SliderFloat("Temporal stability", &editStability, 0.0f, 0.95f, "%.2f"))
-            config->DlssNrEditStability = editStability;
-
-        HelpMarker("Steadies the model's re-lighting of the scene -- the low-frequency part of its"
-                       "\nedit, which otherwise pumps visibly. Carried by the game's own motion vectors,"
-                       "\nand it stands down at motion boundaries, so nothing trails."
-                       "\n\nDetail is deliberately NOT accumulated. Measured twice -- a hand-made filter"
-                       "\nand a trained DLAA pass -- history on the detail band trades shimmer for"
-                       "\nghosts at best: the model re-decides detail with the framing, so old answers"
-                       "\ndo not belong to new frames. Detail stability comes from the split pipeline,"
-                       "\nwhich routes the pass through a real upscaler accumulator."
-                       "\n\n0 is off and bit-identical; anything above enables the hold.");
-
+                       "\n\nAbove 1 carries on past it in the same direction, which is not something the"
+                       "\nmodel asked for -- use it to see what it is doing, then come back down. This"
+                       "\nis the control to push if you want more effect: Intensity belongs to the model"
+                       "\nand it decides what to do with it.");
 
         float colour = config->DlssNrColourStrength.value_or_default();
         if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 1.0f, "%.2f"))
@@ -218,10 +205,10 @@ void RenderMenu(Config* config, float menuResScale)
 
         ImGui::SeparatorText("Colour");
 
-        ImGui::TextDisabled("On the finished frame an SDR picture goes over unconverted and an scRGB\n"
-                            "one is encoded with its measured white point. In the split the frame is\n"
-                            "compressed through the proxy curve instead -- and everything the resolve\n"
-                            "does there is attenuated by the game's own tonemapper afterwards.");
+        ImGui::TextDisabled("The model was trained on finished, sRGB-encoded frames. The upscaler's\n"
+                            "output is not one: it is linear and open-ended. These decide how it is\n"
+                            "mapped into something the model recognises. A frame the game reports as\n"
+                            "already tone-mapped is passed over untouched and none of this applies.");
 
         {
         bool autoWhite = config->DlssNrAutoWhitePoint.value_or_default();
@@ -234,8 +221,9 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nMeasured frame means in Cyberpunk alone have ranged from 0.065 in gameplay to"
                        "\n185 in another scene, so no fixed number can serve. This measures the frame and"
                        "\nfollows it."
-                       "\n\nChanging it cannot shift the finished image: the encode and resolve use the"
-                       "\nsame value and are exact inverses. It only moves what the model is shown.");
+                       "\n\nThis does move the result, not only what the model sees: the picture it was"
+                       "\nshown is one of the three luminances the composition weighs, so changing the"
+                       "\nwhite point changes where the model's answer is judged to sit.");
 
         if (autoWhite)
         {
@@ -262,26 +250,22 @@ void RenderMenu(Config* config, float menuResScale)
             config->DlssNrWhitePointScale = wpScale;
 
         HelpMarker("Multiplies the white point above -- automatic or manual -- before the model"
-                       "\nsees the frame. Above 1, highlights sit lower on the curve and the model"
-                       "\ntreats them as less extreme, so its tone edits back off; below 1, the"
-                       "\nopposite. The encode and resolve stay exact inverses, so this only moves"
-                       "\nwhat the model is shown, never the untouched image."
-                       "\n\nIn SDR this becomes a proxy exposure: away from 1.00x the frame is run"
-                       "\nthrough the curve just for the model's eyes -- it judges tone on the"
-                       "\nre-exposed picture and the resolve inverts exactly, so at strength zero"
-                       "\nnothing changes. Lower makes it treat your lights as more extreme (and"
-                       "\nleave them alone more); higher, the opposite. At exactly 1.00x SDR frames"
-                       "\ngo over untouched, as before.");
+                       "\nsees the frame. This is the paper-white control."
+                       "\n\nAbove 1 the picture handed over is darker, so highlights sit lower on the"
+                       "\ncurve and the model treats them as less extreme; below 1, the opposite. It"
+                       "\nis the quickest way to change how strongly the model reads a bright scene."
+                       "\n\nAt strength zero the frame is still bit-identical whatever this says.");
 
         float maxRatio = config->DlssNrMaxRatio.value_or_default();
         if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
             config->DlssNrMaxRatio = maxRatio;
 
-        HelpMarker("The most the pass may brighten or darken any pixel."
-                       "\n\nLights are where the model has least to say and where scaling its answer back"
-                       "\ninto the frame does the most damage -- an early version turned every strip light"
-                       "\nin the scene into a string of coloured cells. 1x disables the pass entirely;"
-                       "\n2x leaves detail intact while making that failure impossible.");
+        HelpMarker("The most the pass may brighten any pixel, as a multiple of what it already"
+                       "\nwas. Darkening is not capped by this -- only growth is."
+                       "\n\nLights are where the model has least to say and where rescaling its answer"
+                       "\ninto the frame does the most damage: an early version turned every strip light"
+                       "\nin the scene into a string of coloured cells. 2x leaves detail intact while"
+                       "\nmaking that failure impossible. Raise it only if bright areas look clipped.");
 
         }
 

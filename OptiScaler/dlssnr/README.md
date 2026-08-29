@@ -45,6 +45,17 @@ Scaling chain, so the bug stayed invisible until something else called it.
 | `DlssNr_Capture.h` | matched before/after frame dumps |
 | `forwarder/` | the caller-gate shim, built by `dlssnr_forwarder.vcxproj` into the release layout |
 
+## Attribution
+
+The colour composition -- the two-branch luminance ratio, the OkLab hue correction and the blend
+between a luminance-only result and the model's own colour -- is **taken from RenoDX's DLSS 5 addon
+by clshortfuse** (https://github.com/clshortfuse/renodx). It is their design, reimplemented here with
+different names; that does not make it ours. See `Licenses/RenoDX_ATTRIBUTION.txt`, which must carry
+their upstream licence text before any build is distributed.
+
+What is not theirs: the OkLab matrices are Bjorn Ottosson's published constants, and the AP1, sRGB
+and PQ transforms are standard colour science.
+
 ## Why a forwarder DLL exists
 
 The model's snippet resolves the module that owns its caller's return address and refuses any whose

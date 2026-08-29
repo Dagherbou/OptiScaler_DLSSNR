@@ -64,12 +64,6 @@ struct NrState
     // a string of coloured cells.
     ID3D12Resource* hdrCopy = nullptr;
 
-    // The accumulated edit, double-buffered: one read while the other is written. Always float, since
-    // an edit is signed and the frame's own format generally is not.
-    ID3D12Resource* editHistory[2] = {};
-    unsigned int editIndex = 0;
-    bool editWarm = false;
-
     // The frame shrunk for the model, when it is working below full resolution.
     ID3D12Resource* colorSmall = nullptr;
 
@@ -338,9 +332,8 @@ void DiscoverFloatSlot(NVSDK_NGX_Parameter* params)
 // nothing. So the set is torn down whenever the format it was built for is not the format needed now.
 // Retired model features and surfaces are parked and freed a comfortable number of evaluates later.
 // Releasing them immediately was the device hang: with frame generation the GPU runs several frames
-// behind, the split's work rides the game's own queue that no module fence covers, and an NGX feature
-// or scratch texture freed under in-flight work kills the device. The split learned this first (its
-// trap #4); the model's own rebuild paths now obey the same rule.
+// behind, this work rides the game's own queue that no module fence covers, and an NGX feature or
+// scratch texture freed under in-flight work kills the device.
 struct NrRetired
 {
     void* feature = nullptr;
@@ -586,10 +579,9 @@ void RecordBuiltTuning(const Config& cfg)
 
 namespace DlssNr
 {
-// Guards the module's state. With the finished-frame pass gone every remaining caller is on the
-// game's render thread, so this is no longer holding two threads apart -- but the D3D11-on-D3D12
-// bridge and the split's internal features enter from their own call sites, and the cost is a
-// CPU-side lock on a path that already records command lists.
+// Guards the module's state. Every caller is now on the game's render thread, so this is no longer
+// holding two threads apart -- but the D3D11-on-D3D12 bridge enters from its own call site, and the
+// cost is a CPU-side lock on a path that already records command lists.
 std::mutex g_nrMutex;
 
 void RetryAfterFailure()
@@ -959,17 +951,21 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     {
         tuningReported = true;
 
-        auto report = [](const char* name)
+        // At INFO, because whether the model actually took a value is the only way to tell a
+        // control that does nothing from one that is not being written.
+        auto report = [](const char* name, float wrote)
         {
             float value = 0.0f;
             const NVSDK_NGX_Result r = g_nr.capabilityParams->Get(name, &value);
-            LOG_DEBUG("DLSS-NR readback {} -> {} (result 0x{:X})", name, value, (uint32_t) r);
+            LOG_INFO("DLSS-NR readback {} -> {} (we wrote {}, result 0x{:X})", name, value, wrote,
+                     (uint32_t) r);
         };
 
-        report("DLSSNR.Intensity");
-        report("DLSSNR.LocalStructureStrength");
-        report("DLSSNR.LocalToneStrength");
-        report("DLSSNR.SkinStructureStrength");
+        const Config& rcfg = *Config::Instance();
+        report("DLSSNR.Intensity", rcfg.DlssNrIntensity.value_or_default());
+        report("DLSSNR.LocalStructureStrength", rcfg.DlssNrLocalStructure.value_or_default());
+        report("DLSSNR.LocalToneStrength", rcfg.DlssNrLocalTone.value_or_default());
+        report("DLSSNR.SkinStructureStrength", rcfg.DlssNrSkinStructure.value_or_default());
 
         unsigned int style = 0;
         const NVSDK_NGX_Result styleResult = g_nr.capabilityParams->Get("DLSSNR.Style", &style);
@@ -1005,68 +1001,12 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         resolveParams.maxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.passthrough = isHdrBuffer ? 0u : 1u;
 
-        // The accumulator: this frame's edit blended with its own reprojected history, carried to where
-        // each surface is now by the same motion vectors the model was given. The model re-decides a
-        // measured fraction of its edit every frame even on a static scene; the consistent part -- the
-        // detail -- survives this average and the re-randomised part cancels.
-        const float stability = cfg.DlssNrEditStability.value_or_default();
-        ID3D12Resource* historyIn = nullptr;
-        ID3D12Resource* historyOut = nullptr;
-
-        if (stability > 0.0f && motionIn != nullptr)
-        {
-            if (g_nr.editHistory[0] != nullptr &&
-                ((unsigned int) g_nr.editHistory[0]->GetDesc().Width != width ||
-                 g_nr.editHistory[0]->GetDesc().Height != height))
-            {
-                for (auto& h : g_nr.editHistory)
-                {
-                    h->Release();
-                    h = nullptr;
-                }
-
-                g_nr.editWarm = false;
-            }
-
-            if (g_nr.editHistory[0] == nullptr)
-            {
-                g_nr.editHistory[0] = CreateScratch(device, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height);
-                g_nr.editHistory[1] = CreateScratch(device, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height);
-                g_nr.editWarm = false;
-            }
-
-            if (g_nr.editHistory[0] != nullptr && g_nr.editHistory[1] != nullptr)
-            {
-                historyIn = g_nr.editHistory[g_nr.editIndex];
-                historyOut = g_nr.editHistory[1 - g_nr.editIndex];
-
-                // 2 restarts the history: the first frame after a build or reset has nothing behind it.
-                resolveParams.accumulate = g_nr.editWarm ? 1u : 2u;
-                resolveParams.stability = stability > 0.95f ? 0.95f : stability;
-                resolveParams.mvScaleX = g_nr.guideMvScaleX;
-                resolveParams.mvScaleY = g_nr.guideMvScaleY;
-                resolveParams.guideWidth = guideWidth;
-                resolveParams.guideHeight = guideHeight;
-
-                Barrier(cmdList, historyIn, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            }
-        }
-
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         g_codec.dispatch(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, target,
-                         historyOut, motionIn, historyIn);
+                         nullptr, motionIn, nullptr);
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-        if (historyIn != nullptr)
-        {
-            Barrier(cmdList, historyIn, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            g_nr.editIndex = 1 - g_nr.editIndex;
-            g_nr.editWarm = true;
-        }
 
         // On-demand capture works in this path too: the staging copy still holds the frame as the
         // upscaler produced it, and the edited frame is the output itself. The write happens a few
@@ -1184,15 +1124,6 @@ void Shutdown()
     {
         g_nr.colorSmall->Release();
         g_nr.colorSmall = nullptr;
-    }
-
-    for (auto& h : g_nr.editHistory)
-    {
-        if (h != nullptr)
-        {
-            h->Release();
-            h = nullptr;
-        }
     }
 
     if (g_nr.depthClone != nullptr)

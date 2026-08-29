@@ -326,7 +326,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrDebugView.set_from_config(readUInt("DlssNr", "DebugView"));
             DlssNrWorkingScale.set_from_config(readFloat("DlssNr", "WorkingScale"));
             DlssNrAutoCapture.set_from_config(readBool("DlssNr", "AutoCapture"));
-            DlssNrEditStability.set_from_config(readFloat("DlssNr", "EditStability"));
             DlssNrWhitePointScale.set_from_config(readFloat("DlssNr", "WhitePointScale"));
             DlssNrPreset.set_from_config(readUInt("DlssNr", "Preset"));
             DlssNrIntensity.set_from_config(readFloat("DlssNr", "Intensity"));
@@ -1178,7 +1177,6 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "DebugView", GetIntValue(Instance()->DlssNrDebugView.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WorkingScale", GetFloatValue(Instance()->DlssNrWorkingScale.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AutoCapture", GetBoolValue(Instance()->DlssNrAutoCapture.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "EditStability", GetFloatValue(Instance()->DlssNrEditStability.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WhitePointScale",
                  GetFloatValue(Instance()->DlssNrWhitePointScale.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Preset", GetIntValue(Instance()->DlssNrPreset.value_for_config()).c_str());

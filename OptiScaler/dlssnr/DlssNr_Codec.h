@@ -20,15 +20,10 @@
 //     by tens of percent. Highlights are exactly where the model has least to say and where the inverse
 //     amplifies most, which is the worst possible combination.
 //
-// So nothing is reconstructed by inversion any more. The encode maps luminance and carries chroma along
-// unchanged, so hue survives. The resolve keeps the original frame and adds the model's edit to it,
-// rescaled to the original's own luminance -- which is what the composition below does, and the
-// tidy (whitePoint + luminance), so a one percent edit on a bright light stays a one percent edit. At
-// zero edit the frame is bit-for-bit what the upscaler produced.
-//
-// On top of that the edit is rolled off as the proxy approaches white, and the total change is clamped
-// to a ratio of the original. Neither should be load-bearing given the above; they are there because a
-// detail pass has no business restyling a light source, whatever the model returns.
+// The resolve does not reconstruct the frame by inverting that encode. It keeps the original and
+// rescales the model's own picture onto it, so nothing depends on the encode being invertible and a
+// bright pixel is never reconstructed from a compressed one. At zero strength the frame is
+// bit-for-bit what the upscaler produced.
 
 #pragma once
 
@@ -61,12 +56,10 @@ cbuffer Params : register(b0)
     uint  gDebugView;
     float gMaxRatio;
     uint  gPassthrough;
-    uint  gAccumulate;   // 0 off, 1 blend with the reprojected history, 2 restart the history
     float gMvScaleX;     // motion vector units -> pixels of this dispatch
     float gMvScaleY;
     uint  gGuideWidth;   // the motion texture's valid region
     uint  gGuideHeight;
-    float gStability;    // how much of the history survives each frame; 0 is off
 };
 
 // Colours outside the AP1 gamut are impossible on any display and read as sparkle where a bright
@@ -81,6 +74,14 @@ float3 ClampAp1(float3 color)
                                     -0.024003, -0.128969, 1.152972 };
     return mul(ap1_to_bt709, max(mul(bt709_to_ap1, color), float3(0.0, 0.0, 0.0)));
 }
+
+// ---------------------------------------------------------------------------------------------
+// The composition below (UpgradeToneMap's two-branch ratio, the OkLab hue correction, and the blend
+// between a luminance-only result and the model's own colour) is taken from RenoDX's DLSS 5 addon by
+// clshortfuse -- https://github.com/clshortfuse/renodx. It is their design, not ours; see
+// Licenses/RenoDX_LICENSE.txt. The OkLab matrices are Bjorn Ottosson's published constants and the
+// AP1, sRGB and PQ transforms are standard colour science.
+// ---------------------------------------------------------------------------------------------
 
 // OkLab, so the model's colour can be reached without its hue being invented on the way. A ratio
 // applied to an RGB triple does not move hue, but a difference added to one does -- which is what the
@@ -128,7 +129,6 @@ Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: th
 Texture2D<float4>   gModel    : register(t1);  // resolve: what the model returned.
 Texture2D<float4>   gOriginal : register(t2);  // resolve: the untouched frame.
 Texture2D<float4>   gMotion   : register(t3);  // resolve, accumulating: the game's motion vectors.
-Texture2D<float4>   gPrevEdit : register(t4);  // resolve, accumulating: last frame's accumulated edit.
 RWTexture2D<float4> gTarget   : register(u0);  // encode: the proxy. resolve: the frame.
 RWTexture2D<float4> gKeep     : register(u1);  // encode: the untouched copy. resolve: the edit history.
 SamplerState        gLinear   : register(s0);  // so the edit can be read at a different size
@@ -267,69 +267,6 @@ void main(uint3 id : SV_DispatchThreadID)
     // the consistent part -- the detail -- and cancels the part that re-randomises. NVIDIA's own
     // motion vectors carry the history to where the surface is now.
 )" R"(
-    if (gAccumulate == 1 || gAccumulate == 2)
-    {
-        // Only the lighting is accumulated. Two unrelated temporal filters -- the hand-made variance
-        // clip and a trained DLAA pass -- both under-stabilised the detail band and both ghosted on
-        // it, which settles the question: the edit's detail is re-decided with the framing rather
-        // than attached to surfaces, so reprojecting it mixes genuinely different answers. History
-        // cannot fix that band; routing the pass through a real upscaler accumulator (the split)
-        // can. The lighting band is smooth and forgiving, and its accumulation measurably kills the
-        // pumping without ghosts -- so that is all this does. History: alpha = lighting, rgb unused.
-        float2 px = 1.0 / float2(gWidth, gHeight);
-        float lowNow = dot(edit, kLuma);
-
-        const float2 kWide[8] = { float2(-0.7, -0.2), float2(0.6, -0.6), float2(0.2, 0.7),
-                                  float2(-0.5, 0.5),  float2(0.9, 0.1),  float2(-0.9, -0.6),
-                                  float2(0.1, -0.9),  float2(0.5, 0.3) };
-
-        {
-            [unroll]
-            for (int i = 0; i < 8; ++i)
-                lowNow += dot(EditAt(uv + kWide[i] * 12.0 * px), kLuma);
-
-            lowNow /= 9.0;
-        }
-
-        float accumulatedLow = lowNow;
-
-        if (gAccumulate == 1)
-        {
-            float2 mv = gMotion.Load(int3(uv * float2(gGuideWidth, gGuideHeight), 0)).xy *
-                        float2(gMvScaleX, gMvScaleY);
-            float2 uvPrev = uv + mv / float2(gWidth, gHeight);
-
-            if (all(uvPrev >= 0.0) && all(uvPrev <= 1.0))
-            {
-                // Where the motion field disagrees with itself across this band's footprint -- a car
-                // against a streaming road -- history dies outright: hold and clamp both collapse, so
-                // nothing trails. Where the field is coherent, the hold is strong and the pumping
-                // cannot survive it.
-                float divergence = 0.0;
-
-                [unroll]
-                for (int k = 0; k < 4; ++k)
-                {
-                    float2 tapUv = uv + kWide[k * 2] * 12.0 * px;
-                    float2 mvTap = gMotion.Load(int3(tapUv * float2(gGuideWidth, gGuideHeight), 0)).xy *
-                                   float2(gMvScaleX, gMvScaleY);
-                    divergence = max(divergence, length(mvTap - mv));
-                }
-
-                float coherent = 1.0 - saturate(divergence / 2.0);
-                float lowHold = coherent * max(gStability, 0.9);
-                float clampWidth = lerp(0.015, 0.10, coherent);
-
-                float prevLow = gPrevEdit.SampleLevel(gLinear, uvPrev, 0).a;
-                prevLow = clamp(prevLow, lowNow - clampWidth, lowNow + clampWidth);
-                accumulatedLow = lerp(lowNow, prevLow, lowHold);
-            }
-        }
-
-        gKeep[id.xy] = float4(0.0, 0.0, 0.0, accumulatedLow);
-        edit += accumulatedLow - lowNow;
-    }
-
     // The composition. The model's answer is not treated as a difference to add onto the frame -- it
     // is a complete picture in its own right, and it is brought back by rescaling it to sit where the
     // original's luminance says it should. Adding a difference is what let colour run away: nothing
@@ -388,12 +325,10 @@ struct Params
     // Set when the game's own buffer is already tone-mapped, in which case there is nothing to convert.
     unsigned int passthrough;
     // 0 off, 1 blend with the reprojected history, 2 restart the history.
-    unsigned int accumulate;
     float mvScaleX;
     float mvScaleY;
     unsigned int guideWidth;
     unsigned int guideHeight;
-    float stability;
 
 };
 

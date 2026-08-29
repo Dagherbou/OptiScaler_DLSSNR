@@ -296,10 +296,6 @@ class Config
     // folder is cleared at the start of each run, so it holds one session's worth and never grows.
     CustomOptional<bool> DlssNrAutoCapture { true };
 
-    // How much of the edit's history survives each frame, 0 to 0.95. The model re-decides a measured
-    // fraction of its edit every frame even on a static scene; accumulating the edit keeps the
-    // consistent detail and cancels the re-randomised part. 0 is off and bit-identical to before.
-    CustomOptional<float> DlssNrEditStability { 0.0f };
 
 
 

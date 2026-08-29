@@ -17,9 +17,9 @@ class Config;
 
 namespace DlssNr
 {
-// The model runs on the finished frame -- the picture after the game's own tonemapper, which is the
-// sort of picture it was trained on. The split pipeline is the other arrangement: it runs the model
-// before the interface exists, and takes over when it is on.
+// The model runs immediately after the game's upscaler, before the interface is drawn. It is shown a
+// display-referred proxy of that frame -- the sort of picture it was trained on -- and its answer is
+// composed back over the untouched original.
 // Runs the model over Output on the same command list, immediately after the upscaler has written it.
 // Called only for upscaler evaluates -- never for frame generation, which is the whole point.
 //
@@ -37,8 +37,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 // The settings panel, drawn inside OptiScaler's menu.
 void RenderMenu(::Config* config, float menuResScale);
 
-// Clears the session failure latches -- the model's and the split's -- so a failure caused by transient
-// thrash does not cost a restart.
+// Clears the session failure latch, so a failure caused by transient thrash does not cost a restart.
 void RetryAfterFailure();
 
 
