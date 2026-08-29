@@ -816,6 +816,11 @@ static float SplitRatio()
 // Performance 3x).
 static unsigned int SplitPerfQuality(unsigned int renderW, unsigned int targetW)
 {
+    // A feature that does not upscale must say so: a 1:1 enlargement declared as an upscale mode is
+    // created fine and then dies in the driver (the RE Engine crash, mechanically).
+    if (targetW <= renderW + renderW / 20)
+        return NVSDK_NGX_PerfQuality_Value_DLAA;
+
     const float r = renderW == 0 ? 1.0f : (float) targetW / (float) renderW;
 
     if (r >= 2.5f)
@@ -1003,13 +1008,10 @@ static void SplitManageTransition(uint32_t handleId, NVSDK_NGX_Parameter* params
     // A Ray Reconstruction feature that does not upscale (RE Engine runs RR 1:1 and upscales in a
     // separate Super Resolution feature) already IS the split arrangement -- rearranging it built a
     // pointless 1:1 enlargement against the game's real output and crashed. Nothing to do here.
+    // A natively 1:1 feature is not rearranged -- but it IS served: the split's evaluate runs the
+    // model on it and adds the internal enlargement, which is the real accumulator the edit needs.
     if (want && f->TargetWidth() <= f->RenderWidth() + f->RenderWidth() / 20 && !SplitDx12.geometryOwned)
-    {
-        DlssNr::SetSplitStatus(
-            "not needed here: this game already runs Ray Reconstruction 1:1 -- the split arrangement "
-            "is native; the model runs at render resolution via the Before-frame-generation inject point");
         return;
-    }
 
     if (want && !matches && settled)
     {
@@ -1245,10 +1247,11 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
                             NVSDK_NGX_Parameter* params, PFN_NVSDK_NGX_ProgressCallback callback,
                             NVSDK_NGX_Result* outResult)
 {
-    if (!SplitWanted() || SplitDx12.displayWidth == 0)
+    if (!SplitWanted())
         return false;
 
     unsigned int renderW = 0, renderH = 0;
+    bool nativeOneToOne = false;
 
     // Observable state only: operate when the feature's geometry matches what the settings call for and
     // no recreation is in flight. Every transition frame falls through to the conventional path.
@@ -1263,16 +1266,25 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
         renderW = f->RenderWidth();
         renderH = f->RenderHeight();
 
-        unsigned int desiredW = 0, desiredH = 0;
-        SplitDesiredTarget(renderW, renderH, &desiredW, &desiredH);
+        // A feature that is natively 1:1 -- DLAA, or an engine that upscales elsewhere -- already IS
+        // the split arrangement. No geometry is touched; the model runs on it and the internal
+        // enlargement (a 1:1 DLAA pass, or a supersample when Output Scaling asks) follows. That
+        // enlargement is a real upscaler accumulator, which is where the edit's detail actually gets
+        // its temporal stability.
+        nativeOneToOne = !SplitDx12.geometryOwned && f->TargetWidth() == renderW &&
+                         f->TargetHeight() == renderH;
 
-        if (f->TargetWidth() != desiredW || f->TargetHeight() != desiredH)
-            return false;
+        if (!nativeOneToOne)
+        {
+            if (SplitDx12.displayWidth == 0 || !SplitDx12.geometryOwned)
+                return false;
 
-        // Only a feature the split itself rearranged is served. A game whose RR is natively 1:1
-        // (upscaling elsewhere) matches the 1:1 desired shape by coincidence, not ownership.
-        if (!SplitDx12.geometryOwned)
-            return false;
+            unsigned int desiredW = 0, desiredH = 0;
+            SplitDesiredTarget(renderW, renderH, &desiredW, &desiredH);
+
+            if (f->TargetWidth() != desiredW || f->TargetHeight() != desiredH)
+                return false;
+        }
     }
 
     ID3D12Resource* gameOutput = nullptr;
@@ -1285,8 +1297,10 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
 
     const DXGI_FORMAT workFormat = codec::TypedFormat(gameOutput->GetDesc().Format);
     const float mult = SplitRatio();
-    const bool includeRR =
-        Config::Instance()->DlssNrSplitIncludeRR.value_or_default() && mult > 1.0f;
+    const unsigned int dispW = nativeOneToOne ? renderW : SplitDx12.displayWidth;
+    const unsigned int dispH = nativeOneToOne ? renderH : SplitDx12.displayHeight;
+    const bool includeRR = !nativeOneToOne &&
+                           Config::Instance()->DlssNrSplitIncludeRR.value_or_default() && mult > 1.0f;
 
     char status[160];
 
@@ -1341,8 +1355,8 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
             return true;
         }
 
-        params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
-        params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
+        params->Set(NVSDK_NGX_Parameter_OutWidth, dispW);
+        params->Set(NVSDK_NGX_Parameter_OutHeight, dispH);
 
         std::snprintf(status, sizeof(status),
                       "running: RR supersampled x%.2f -> NR -> downscale (RR included)",
@@ -1382,10 +1396,8 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
 
     // The enlargement: to the supersampled size when the ratio asks, straight to display otherwise.
     const bool supersample = mult > 1.0f;
-    auto targetW =
-        supersample ? (unsigned int) (SplitDx12.displayWidth * mult + 0.5f) : SplitDx12.displayWidth;
-    auto targetH =
-        supersample ? (unsigned int) (SplitDx12.displayHeight * mult + 0.5f) : SplitDx12.displayHeight;
+    auto targetW = supersample ? (unsigned int) (dispW * mult + 0.5f) : dispW;
+    auto targetH = supersample ? (unsigned int) (dispH * mult + 0.5f) : dispH;
 
     // DLSS refuses ratios beyond 4x its input, so the target is capped there.
     targetW = targetW > renderW * 4 ? renderW * 4 : targetW;
@@ -1476,8 +1488,8 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
         if (!srInited)
         {
             params->Set(NVSDK_NGX_Parameter_Output, gameOutput);
-            params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
-            params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
+            params->Set(NVSDK_NGX_Parameter_OutWidth, dispW);
+            params->Set(NVSDK_NGX_Parameter_OutHeight, dispH);
 
             if (supersample && !SplitDx12.supersampleRefused)
             {
@@ -1514,8 +1526,8 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
         SplitDx12.srJustCreated = false;
 
         params->Set(NVSDK_NGX_Parameter_Output, gameOutput);
-        params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
-        params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
+        params->Set(NVSDK_NGX_Parameter_OutWidth, dispW);
+        params->Set(NVSDK_NGX_Parameter_OutHeight, dispH);
         DlssNr::SetSplitStatus("arming the enlargement...");
         *outResult = NVSDK_NGX_Result_Success;
         return true;
@@ -1565,8 +1577,8 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
         params->Set(NVSDK_NGX_Parameter_Color, gameColor);
 
     params->Set(NVSDK_NGX_Parameter_Output, gameOutput);
-    params->Set(NVSDK_NGX_Parameter_OutWidth, SplitDx12.displayWidth);
-    params->Set(NVSDK_NGX_Parameter_OutHeight, SplitDx12.displayHeight);
+    params->Set(NVSDK_NGX_Parameter_OutWidth, dispW);
+    params->Set(NVSDK_NGX_Parameter_OutHeight, dispH);
 
     if (!srOk && supersample && !SplitDx12.supersampleRefused)
     {
@@ -1593,7 +1605,8 @@ static bool SplitEvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_
     }
     else
     {
-        DlssNr::SetSplitStatus("running: RR 1:1 -> NR -> internal SR");
+        DlssNr::SetSplitStatus(nativeOneToOne ? "running: NR -> internal DLAA (native 1:1)"
+                                              : "running: RR 1:1 -> NR -> internal SR");
     }
 
     *outResult = srOk ? NVSDK_NGX_Result_Success : NVSDK_NGX_Result_Fail;

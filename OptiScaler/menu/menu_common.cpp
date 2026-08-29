@@ -6007,30 +6007,16 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
         if (ImGui::SliderFloat("Temporal stability", &editStability, 0.0f, 0.95f, "%.2f"))
             config->DlssNrEditStability = editStability;
 
-        ShowHelpMarker("Averages the model's edit across frames, carried to where each surface is now by"
-                       "\nthe game's own motion vectors. The model re-decides about a fifth of its edit"
-                       "\nevery frame even on a static scene -- measured directly -- and that is the"
-                       "\nwobble. Averaging keeps the consistent detail and cancels the noise."
-                       "\n\n0 is off and bit-identical. 0.6 to 0.8 is the useful range. Too high and the"
-                       "\ndetail lags a step behind fast motion, which reads as softness rather than"
-                       "\nsmearing -- the edit is small, so its ghosts are small too."
-                       "\n\nWorks at the before-frame-generation and finished-frame inject points, so it"
-                       "\ncomposes with Ray Reconstruction. Before the upscaler, DLSS's own accumulator"
-                       "\nalready does this.");
+        ShowHelpMarker("Steadies the model's re-lighting of the scene -- the low-frequency part of its"
+                       "\nedit, which otherwise pumps visibly. Carried by the game's own motion vectors,"
+                       "\nand it stands down at motion boundaries, so nothing trails."
+                       "\n\nDetail is deliberately NOT accumulated. Measured twice -- a hand-made filter"
+                       "\nand a trained DLAA pass -- history on the detail band trades shimmer for"
+                       "\nghosts at best: the model re-decides detail with the framing, so old answers"
+                       "\ndo not belong to new frames. Detail stability comes from the split pipeline,"
+                       "\nwhich routes the pass through a real upscaler accumulator."
+                       "\n\n0 is off and bit-identical; anything above enables the hold.");
 
-        bool dlaaEdit = config->DlssNrDlaaEdit.value_or_default();
-        if (ImGui::Checkbox("Stabilise with DLAA (experimental)", &dlaaEdit))
-            config->DlssNrDlaaEdit = dlaaEdit;
-
-        ShowHelpMarker("The wildcard: the edit is encoded as a grey-centred picture and handed to an"
-                       "\ninternal DLAA-mode DLSS feature with the same depth and motion guides --"
-                       "\nNVIDIA's trained temporal machinery does the stabilising, and the slider"
-                       "\nabove is bypassed while this is on."
-                       "\n\nHonest expectations: the edit is unusual input for it, so this may hold"
-                       "\nbetter than the hand-made filter or smear in trained-but-wrong ways -- that"
-                       "\nis what the toggle is for. Needs the guides at the edit's size: the split"
-                       "\npipeline (or a DLAA game). Elsewhere the hand-made filter quietly serves."
-                       "\nCosts roughly a DLAA pass at render resolution.");
 
         float colour = config->DlssNrColourStrength.value_or_default();
         if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 4.0f, "%.2f"))
@@ -6148,19 +6134,23 @@ void MenuCommon::RenderDlssNrSettings(RenderMenuContext& ctx)
                        "\nsees the frame. Above 1, highlights sit lower on the curve and the model"
                        "\ntreats them as less extreme, so its tone edits back off; below 1, the"
                        "\nopposite. The encode and resolve stay exact inverses, so this only moves"
-                       "\nwhat the model is shown, never the untouched image.");
+                       "\nwhat the model is shown, never the untouched image."
+                       "\n\nHDR paths only: linear-HDR games before frame generation, and scRGB"
+                       "\nfinished frames. An SDR finished frame is never encoded, so this does"
+                       "\nnothing there -- use Highlight restore below instead.");
 
         float protectHl = config->DlssNrProtectHighlights.value_or_default();
-        if (ImGui::SliderFloat("Protect highlights", &protectHl, 0.0f, 0.5f, "%.2f"))
+        if (ImGui::SliderFloat("Highlight restore", &protectHl, 0.0f, 1.0f, "%.2f"))
             config->DlssNrProtectHighlights = protectHl;
 
-        ShowHelpMarker("The model was trained to make finished, tone-mapped pictures, so its instinct"
-                       "\nat an extreme highlight -- a lamp, a neon sign -- is to calm it down. That"
-                       "\nreads as muted, missing punch. This fades the model's edit out over the top"
-                       "\nfraction of the brightness range: 0.2 means the brightest fifth keeps its"
-                       "\nfull energy while everything below still gets the model's detail."
-                       "\n\n0 is off and bit-identical. The other lever for the same complaint is"
-                       "\nLocal tone below: at 0 the model stops re-toning entirely, everywhere.");
+        ShowHelpMarker("How the highlights look. The model's trained instinct is to calm bright things"
+                       "\n-- not only the peak of a lamp but the whole glow around it -- and that reads"
+                       "\nas muted, in SDR as much as HDR. This pulls back the darkening of bright"
+                       "\nregions, scaled by how bright they are; colour, brightening and structure"
+                       "\ndetail pass untouched, so nothing else changes."
+                       "\n\n0 is off and bit-identical; 1 removes all darkening from the brightest"
+                       "\nregions. The blunter lever is Local tone below: at 0 the model stops"
+                       "\nre-toning entirely, everywhere, dark corners included.");
 
         float maxRatio = config->DlssNrMaxRatio.value_or_default();
         if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))

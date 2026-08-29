@@ -112,36 +112,6 @@ float3 EditAt(float2 uvq)
     return m - p;
 }
 
-// Catmull-Rom resampling of the edit history. Bilinear resampling every frame is a slow blur that
-// compounds; this keeps the accumulated detail crisp across hundreds of reprojections.
-float3 SampleHistoryCatmullRom(float2 uv, float2 texSize)
-{
-    float2 samplePos = uv * texSize;
-    float2 texPos1 = floor(samplePos - 0.5) + 0.5;
-    float2 f = samplePos - texPos1;
-
-    float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
-    float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
-    float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
-    float2 w3 = f * f * (-0.5 + 0.5 * f);
-    float2 w12 = w1 + w2;
-    float2 offset12 = w2 / w12;
-
-    float2 texPos0 = (texPos1 - 1.0) / texSize;
-    float2 texPos3 = (texPos1 + 2.0) / texSize;
-    float2 texPos12 = (texPos1 + offset12) / texSize;
-
-    return gPrevEdit.SampleLevel(gLinear, float2(texPos0.x, texPos0.y), 0).rgb * w0.x * w0.y +
-           gPrevEdit.SampleLevel(gLinear, float2(texPos12.x, texPos0.y), 0).rgb * w12.x * w0.y +
-           gPrevEdit.SampleLevel(gLinear, float2(texPos3.x, texPos0.y), 0).rgb * w3.x * w0.y +
-           gPrevEdit.SampleLevel(gLinear, float2(texPos0.x, texPos12.y), 0).rgb * w0.x * w12.y +
-           gPrevEdit.SampleLevel(gLinear, float2(texPos12.x, texPos12.y), 0).rgb * w12.x * w12.y +
-           gPrevEdit.SampleLevel(gLinear, float2(texPos3.x, texPos12.y), 0).rgb * w3.x * w12.y +
-           gPrevEdit.SampleLevel(gLinear, float2(texPos0.x, texPos3.y), 0).rgb * w0.x * w3.y +
-           gPrevEdit.SampleLevel(gLinear, float2(texPos12.x, texPos3.y), 0).rgb * w12.x * w3.y +
-           gPrevEdit.SampleLevel(gLinear, float2(texPos3.x, texPos3.y), 0).rgb * w3.x * w3.y;
-}
-
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
@@ -157,14 +127,6 @@ void main(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    if (gMode == 4)
-    {
-        // The edit as a picture: grey is zero, negatives below it, positives above -- so a trained
-        // video model can be handed the edit and asked to stabilise it like footage.
-        float3 e = EditAt(uv);
-        gTarget[id.xy] = float4(saturate(0.5 + e * 0.5), 1.0);
-        return;
-    }
 
     if (gMode == 0)
     {
@@ -225,11 +187,6 @@ void main(uint3 id : SV_DispatchThreadID)
 
     float3 edit = model - proxy;
 
-    // The stabilised edit, when a trained temporal model did the accumulating: decoded from the
-    // grey-centred picture it was given. The hand-made accumulator below is bypassed.
-    if (gAccumulate == 3)
-        edit = (gPrevEdit.SampleLevel(gLinear, uv, 0).rgb - 0.5) * 2.0;
-
     // Coring was tried here and removed: the per-frame churn's amplitude overlaps the real detail's,
     // so an amplitude threshold cannot separate them -- it only relocated the noise to the threshold.
 
@@ -247,14 +204,13 @@ void main(uint3 id : SV_DispatchThreadID)
     // motion vectors carry the history to where the surface is now.
     if (gAccumulate == 1 || gAccumulate == 2)
     {
-        // The edit is split into two bands, because its two artefacts fail in opposite ways. The
-        // low-frequency band is the model re-lighting the scene -- large, smooth, and re-decided
-        // constantly, which reads as the whole room's lighting pumping. It is spatially smooth, so
-        // reprojection errors of a few pixels are irrelevant to it and it can be stabilised HARD --
-        // and it must be, because the variance clip below sees a smooth field, makes a razor-thin
-        // window, and under camera motion clips away exactly the history this band needs. The
-        // high-frequency band is the structure detail, where trailing ghosts would actually show:
-        // it keeps the variance-clipped treatment. History: rgb = high band, alpha = low band.
+        // Only the lighting is accumulated. Two unrelated temporal filters -- the hand-made variance
+        // clip and a trained DLAA pass -- both under-stabilised the detail band and both ghosted on
+        // it, which settles the question: the edit's detail is re-decided with the framing rather
+        // than attached to surfaces, so reprojecting it mixes genuinely different answers. History
+        // cannot fix that band; routing the pass through a real upscaler accumulator (the split)
+        // can. The lighting band is smooth and forgiving, and its accumulation measurably kills the
+        // pumping without ghosts -- so that is all this does. History: alpha = lighting, rgb unused.
         float2 px = 1.0 / float2(gWidth, gHeight);
         float lowNow = dot(edit, kLuma);
 
@@ -270,8 +226,6 @@ void main(uint3 id : SV_DispatchThreadID)
             lowNow /= 9.0;
         }
 
-        float3 highNow = edit - lowNow;
-        float3 accumulatedHigh = highNow;
         float accumulatedLow = lowNow;
 
         if (gAccumulate == 1)
@@ -282,44 +236,10 @@ void main(uint3 id : SV_DispatchThreadID)
 
             if (all(uvPrev >= 0.0) && all(uvPrev <= 1.0))
             {
-                float3 prevHigh = SampleHistoryCatmullRom(uvPrev, float2(gWidth, gHeight));
-
-                // Rectified by the statistics of the edit around this pixel, not a fixed margin. Where
-                // the model answers consistently the neighbourhood is tight, and history that disagrees
-                // -- a stale edit at a disocclusion -- is clipped away within a frame. Where the model
-                // is genuinely re-deciding, the neighbourhood is wide and the average is allowed to do
-                // its work.
-                float3 m1 = float3(0.0, 0.0, 0.0);
-                float3 m2 = float3(0.0, 0.0, 0.0);
-
-                [unroll]
-                for (int dy = -1; dy <= 1; ++dy)
-                {
-                    [unroll]
-                    for (int dx = -1; dx <= 1; ++dx)
-                    {
-                        float3 e = EditAt(uv + float2(dx, dy) * px);
-                        m1 += e;
-                        m2 += e * e;
-                    }
-                }
-
-                m1 /= 9.0;
-                m2 /= 9.0;
-                float3 sigma = sqrt(max(m2 - m1 * m1, float3(0.0, 0.0, 0.0)));
-                float3 m1High = m1 - lowNow;
-                prevHigh = clamp(prevHigh, m1High - sigma * 1.25 - 0.004, m1High + sigma * 1.25 + 0.004);
-                accumulatedHigh = lerp(highNow, prevHigh, gStability);
-
-                // The low band: plain bilinear history (crispness is meaningless at this frequency), a
-                // generous clamp so a genuine lighting change still arrives promptly, and a floor on
-                // the blend -- whatever the slider says, the lighting must not pump.
-                //
-                // Unless the motion field disagrees with itself across this band's own footprint: a
-                // car against a streaming road means the wide taps span surfaces moving differently,
-                // and a hard-held low band drags a halo of tone along the road behind the vehicle.
-                // Where the field is coherent -- a camera panning over a static world, the pumping
-                // case -- the strong hold stays; where it diverges, the hold falls back to the slider.
+                // Where the motion field disagrees with itself across this band's footprint -- a car
+                // against a streaming road -- history dies outright: hold and clamp both collapse, so
+                // nothing trails. Where the field is coherent, the hold is strong and the pumping
+                // cannot survive it.
                 float divergence = 0.0;
 
                 [unroll]
@@ -331,9 +251,6 @@ void main(uint3 id : SV_DispatchThreadID)
                     divergence = max(divergence, length(mvTap - mv));
                 }
 
-                // At a boundary the history dies completely, not gently: a small patch of pumping
-                // where a car meets the road is invisible, a smeared trail behind the car is not.
-                // Both the hold and the clamp collapse with coherence.
                 float coherent = 1.0 - saturate(divergence / 2.0);
                 float lowHold = coherent * max(gStability, 0.9);
                 float clampWidth = lerp(0.015, 0.10, coherent);
@@ -344,8 +261,8 @@ void main(uint3 id : SV_DispatchThreadID)
             }
         }
 
-        gKeep[id.xy] = float4(accumulatedHigh, accumulatedLow);
-        edit = accumulatedHigh + accumulatedLow;
+        gKeep[id.xy] = float4(0.0, 0.0, 0.0, accumulatedLow);
+        edit += accumulatedLow - lowNow;
     }
 
     // Split so the detail the model synthesised and any colour it shifted can be dialled apart.
@@ -353,15 +270,18 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 colourEdit = edit - lumaEdit;
     float3 applied = lumaEdit * gTransferStrength + colourEdit * gColourStrength;
 
-    // Protect highlights. The model was trained to produce finished, tone-mapped pictures, so its
-    // instinct at an extreme highlight -- a lamp, a neon sign -- is to calm it toward its trained
-    // statistics. Structure detail lives everywhere else; the punch of a light lives exactly there.
-    // The edit fades out over the top fraction of the range, so the model keeps its say everywhere
-    // except the peaks. 0 is off.
+    // Highlight restore. The model's trained instinct is to calm bright things -- not only the
+    // near-clipped peak but the whole glow around a lamp -- and that reads as muted, in SDR too.
+    // The achromatic darkening of bright regions is pulled back, scaled by how bright the original
+    // is; colour shifts, brightening and structure pass untouched, so the model's detail stays.
+    // 0 is off; 1 removes all darkening from the brightest regions.
     if (gProtectHighlights > 0.0)
     {
         float relLuma = saturate(dot(original, kLuma) / max(gWhitePoint, 1e-4));
-        applied *= 1.0 - smoothstep(1.0 - gProtectHighlights, 1.0, relLuma);
+        float appliedLuma = dot(applied, kLuma);
+
+        if (appliedLuma < 0.0)
+            applied -= appliedLuma * gProtectHighlights * smoothstep(0.25, 0.9, relLuma);
     }
 
     // No highlight rolloff. It was a second belt after the clamp below, and it discarded the model's
