@@ -25,8 +25,7 @@ namespace DlssNr
 //
 // Safe to call every frame; it builds what it needs on first use and disables itself for the session if
 // anything fails, rather than retrying into a crash.
-void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                          bool forceInPlace = false);
+void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params);
 
 // The split pipeline runs the model itself; the present-time pass stands down while it is active.
 void SetSplitActive(bool active);

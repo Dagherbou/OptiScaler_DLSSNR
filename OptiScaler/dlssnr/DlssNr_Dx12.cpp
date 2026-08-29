@@ -88,7 +88,6 @@ struct NrState
     // long after that call has returned.
     unsigned int guideWidth = 0;
     unsigned int guideHeight = 0;
-    bool guidesReady = false;
 
     // How the game encodes its guides, as the game itself reports it. Captured with the guides, since
     // the finished-frame path runs long after the upscaler's call has returned.
@@ -543,30 +542,6 @@ ID3D12Resource* GetResource(NVSDK_NGX_Parameter* params, const char* a, const ch
     return nullptr;
 }
 
-// Forces a clone even of a typed guide. At present time the game's own buffers are not promised to hold
-// this frame any more, and in one case were freed outright across a save transition.
-ID3D12Resource* CloneGuideAlways(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
-                                 ID3D12Resource* source, ID3D12Resource** clone)
-{
-    if (source == nullptr)
-        return nullptr;
-
-    if (*clone == nullptr)
-    {
-        *clone = CreateGuideClone(device, source);
-
-        if (*clone == nullptr)
-            return nullptr;
-    }
-
-    Barrier(cmdList, source, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_COPY_SOURCE);
-    cmdList->CopyResource(*clone, source);
-    Barrier(cmdList, source, D3D12_RESOURCE_STATE_COPY_SOURCE,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    return *clone;
-}
-
 // A change has to hold still before it is acted on: a slider being dragged reports a new value every
 // frame, and each one would otherwise mean a new model.
 constexpr unsigned long long kSettleFrames = 30;
@@ -647,8 +622,7 @@ void RetryAfterFailure()
         g_splitRetryHook();
 }
 
-void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                          bool forceInPlace)
+void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params)
 {
     std::lock_guard<std::mutex> nrLock(g_nrMutex);
     const Config& cfg = *Config::Instance();
@@ -723,23 +697,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
                  "the {}x{} upscale ratio)",
                  g_nr.guideDepthInverted ? "inverted" : "not inverted", g_nr.guideMvScaleX,
                  g_nr.guideMvScaleY, mvScaleX, mvScaleY, upscaleX, upscaleY);
-    }
-
-    // When the model runs on the finished frame instead, this call exists only to take a copy of the
-    // guides while they are still valid and still describe this frame. The split pipeline overrides the
-    // choice: it calls for the in-place pass on its own intermediate, whatever the dropdown says.
-    if (!forceInPlace)
-    {
-        if (CloneGuideAlways(device, cmdList, depth, &g_nr.depthClone) != nullptr &&
-            CloneGuideAlways(device, cmdList, motion, &g_nr.motionClone) != nullptr)
-        {
-            g_nr.guideWidth = guideWidth;
-            g_nr.guideHeight = guideHeight;
-            g_nr.guidesReady = true;
-        }
-
-        device->Release();
-        return;
     }
 
     if (!EnsureForwarder() || !EnsureCapabilityParams(device))

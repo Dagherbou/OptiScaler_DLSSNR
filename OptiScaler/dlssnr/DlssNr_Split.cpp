@@ -730,7 +730,7 @@ bool EvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_Handle* hand
         }
 
         DlssNr::SetSplitActive(true);
-        DlssNr::EvaluateAfterUpscale(cmdList, params, true);
+        DlssNr::EvaluateAfterUpscale(cmdList, params);
 
         const bool ok = SplitDownscale(cmdList, SplitDx12.oversized, gameOutput);
         params->Set(NVSDK_NGX_Parameter_Output, gameOutput);
@@ -783,7 +783,7 @@ bool EvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_Handle* hand
 
         SplitParkEnlargement();
         DlssNr::SetSplitActive(true);
-        DlssNr::EvaluateAfterUpscale(cmdList, params, true);
+        DlssNr::EvaluateAfterUpscale(cmdList, params);
         DlssNr::SetSplitStatus("running: NR at 1:1, before the interface -- no enlargement needed "
                                "(Output Scaling adds a supersampled one)");
         *outResult = NVSDK_NGX_Result_Success;
@@ -816,7 +816,7 @@ bool EvaluateRR(ID3D12GraphicsCommandList* cmdList, const NVSDK_NGX_Handle* hand
     }
 
     DlssNr::SetSplitActive(true);
-    DlssNr::EvaluateAfterUpscale(cmdList, params, true);
+    DlssNr::EvaluateAfterUpscale(cmdList, params);
 
     const int srPresetWanted = (int) Config::Instance()->DlssNrSplitSrPreset.value_or_default();
 
