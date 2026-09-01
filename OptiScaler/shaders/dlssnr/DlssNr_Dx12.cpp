@@ -822,7 +822,7 @@ DlssNr_Dx12::DlssNr_Dx12(std::string InName, ID3D12Device* InDevice)
 
 bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssNrConstants& InConstants,
                                   ID3D12Resource* InSource, ID3D12Resource* InModel,
-                                  ID3D12Resource* InOriginal, ID3D12Resource* InMotion,
+                                  ID3D12Resource* InOriginal, ID3D12Resource* InProxy,
                                   ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget,
                                   ID3D12Resource* OutKeep)
 {
@@ -841,7 +841,7 @@ bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssN
         InSource,
         InModel != nullptr ? InModel : InSource,
         InOriginal != nullptr ? InOriginal : InSource,
-        InMotion != nullptr ? InMotion : InSource,
+        InProxy != nullptr ? InProxy : InSource,
         InPrevEdit != nullptr ? InPrevEdit : InSource,
     };
 
@@ -1209,6 +1209,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         down.Mode = DlssNrMode_Downsample;
         down.Width = workWidth;
         down.Height = workHeight;
+        down.Transfer = (uint32_t) DlssNr::ConfiguredTransfer();
         DispatchPass(cmdList, down, modelInput, nullptr, nullptr, nullptr, nullptr,
                             g_nr.colorSmall, nullptr);
         Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
@@ -1330,10 +1331,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         resolveParams.CompareSplit = cfg.DlssNrCompareSplit.value_or_default();
         resolveParams.CompareZoom = std::max(1.0f, cfg.DlssNrCompareZoom.value_or_default());
         resolveParams.CompareSwap = cfg.DlssNrCompareSwap.value_or_default() ? 1u : 0u;
+        resolveParams.Transfer = (uint32_t) DlssNr::ConfiguredTransfer();
+        resolveParams.HdrLift = DlssNr::ConfiguredHdrLift();
 
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        DispatchPass(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, motionIn,
+        DispatchPass(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, g_nr.colorCopy,
                             nullptr, target, nullptr);
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
