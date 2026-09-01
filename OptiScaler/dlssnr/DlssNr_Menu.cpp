@@ -18,7 +18,7 @@ static void HelpMarker(const char* tip)
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
 
-    if (ImGui::IsItemHovered())
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     {
         ImGui::BeginTooltip();
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
@@ -26,6 +26,50 @@ static void HelpMarker(const char* tip)
         ImGui::PopTextWrapPos();
         ImGui::EndTooltip();
     }
+}
+
+struct ComboItem
+{
+    const char* label;
+    bool disabled = false;
+    const char* itemTip = nullptr;
+};
+
+static bool ComboWithDisabledItems(const char* label, int* current, const ComboItem* items, int count)
+{
+    const char* preview = "";
+    if (*current >= 0 && *current < count)
+        preview = items[*current].label;
+
+    bool changed = false;
+    if (ImGui::BeginCombo(label, preview))
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            if (items[i].disabled)
+                ImGui::BeginDisabled();
+
+            const bool selected = (*current == i);
+            if (ImGui::Selectable(items[i].label, selected) && !items[i].disabled)
+            {
+                *current = i;
+                changed = true;
+            }
+
+            if (selected)
+                ImGui::SetItemDefaultFocus();
+
+            if (items[i].itemTip != nullptr && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s", items[i].itemTip);
+
+            if (items[i].disabled)
+                ImGui::EndDisabled();
+        }
+
+        ImGui::EndCombo();
+    }
+
+    return changed;
 }
 
 void RenderMenu(Config* config, float menuResScale)
@@ -243,28 +287,54 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nnot rebuild the model; the next frame uses the new shrink and the new compose.");
         }
 
+        const bool matched = DlssNr::ConfiguredTransfer() == DlssNr::Transfer::MatchedResidual;
+        const bool debugOn = config->DlssNrDebugView.value_or_default() != 0;
+        int lift = (int) config->DlssNrHdrLift.value_or_default();
+        if (lift < 0 || lift > 1)
+            lift = 0;
+
+        ImGui::BeginDisabled(!matched || debugOn);
+        {
+            static const char* liftNames[] = { "Highlight-aware", "Add the change" };
+            if (ImGui::Combo("HDR lift", &lift, liftNames, IM_ARRAYSIZE(liftNames)))
+                config->DlssNrHdrLift = (uint32_t) lift;
+            HelpMarker("Matched residual only. Highlight-aware is the default compose: the model's"
+                       "\nchange is folded back with the same highlight-aware path as Classic."
+                       "\n\nAdd the change adds the model's difference onto the original. Detail"
+                       "\nstrength still moves toward that sum; Colour strength does not apply."
+                       "\n\nA debug view replaces the composed picture, so this does not change what"
+                       "\nyou see while one is on.");
+        }
+        ImGui::EndDisabled();
+
+        const bool additive = matched && lift == 1;
+
         ImGui::SeparatorText("How much of it lands");
 
+        ImGui::BeginDisabled(debugOn);
         float transfer = config->DlssNrTransferStrength.value_or_default();
         if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 2.0f, "%.2f"))
             config->DlssNrTransferStrength = transfer;
+        ImGui::EndDisabled();
 
         HelpMarker("How far the frame moves toward the model's picture."
                        "\n\nThe model's answer is not added to the frame -- it is a complete picture of its"
                        "\nown, rescaled so its luminance sits where the original says it should. This"
                        "\nblends between the two, so both ends are real pictures and everything between"
                        "\nthem is one too."
-                       "\n\n0 writes back the encode keep (hdrCopy), the frame as this pass first saw it."
-                       "\nThat is not the Capture button's before image, which is the encoded proxy."
+                       "\n\n0 writes back the frame as this pass first saw it. That is not the Capture"
+                       "\nbefore image, which is what the model was shown."
                        "\n1 is the model's picture."
                        "\n\nAbove 1 carries on past it in the same direction, which is not something the"
                        "\nmodel asked for -- use it to see what it is doing, then come back down. This"
                        "\nis the control to push if you want more effect: Intensity belongs to the model"
                        "\nand it decides what to do with it.");
 
+        ImGui::BeginDisabled(debugOn || additive);
         float colour = config->DlssNrColourStrength.value_or_default();
         if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 1.0f, "%.2f"))
             config->DlssNrColourStrength = colour;
+        ImGui::EndDisabled();
 
         HelpMarker("Whether the model's colour arrives with its light."
                        "\n\n0 keeps the game's own hue exactly -- every pixel is the original colour with"
@@ -273,7 +343,20 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nAP1 so nothing unreachable is asked for."
                        "\n\nThis cannot shift hue on its own: it interpolates between two finished"
                        "\npictures rather than adding a colour difference to one, which is what used to"
-                       "\nlet a warm subject come back green.");
+                       "\nlet a warm subject come back green."
+                       "\n\nAdd the change (under HDR lift) has no colour mix; this slider is ignored"
+                       "\nthen.");
+
+        float maxRatio = config->DlssNrMaxRatio.value_or_default();
+        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
+            config->DlssNrMaxRatio = maxRatio;
+
+        HelpMarker("The most the pass may brighten any pixel, as a multiple of what it already"
+                       "\nwas. Darkening is not capped by this -- only growth is."
+                       "\n\nLights are where the model has least to say and where rescaling its answer"
+                       "\ninto the frame does the most damage: an early version turned every strip light"
+                       "\nin the scene into a string of coloured cells. 2x leaves detail intact while"
+                       "\nmaking that failure impossible. Raise it only if bright areas look clipped.");
 
         ImGui::SeparatorText("Model");
 
@@ -318,9 +401,15 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::SliderFloat("Local structure", &localStructure, 0.0f, 2.0f, "%.2f"))
             config->DlssNrLocalStructure = localStructure;
 
+        HelpMarker("How strongly the model rebuilds local detail."
+                       "\n\nRead when the model is built, so a change rebuilds it after a moment.");
+
         float localTone = config->DlssNrLocalTone.value_or_default();
         if (ImGui::SliderFloat("Local tone", &localTone, 0.0f, 2.0f, "%.2f"))
             config->DlssNrLocalTone = localTone;
+
+        HelpMarker("How strongly the model remaps local brightness."
+                       "\n\nRead when the model is built, so a change rebuilds it after a moment.");
 
 
         float skin = config->DlssNrSkinStructure.value_or_default();
@@ -339,11 +428,10 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::SeparatorText("Colour");
 
         ImGui::TextDisabled("The model was trained on finished, sRGB-encoded frames. The upscaler's\n"
-                            "output is not one: it is linear and open-ended. These decide how it is\n"
-                            "mapped into something the model recognises. A frame the game reports as\n"
+                            "output is not one: it is linear and open-ended. Paper white decides how it\n"
+                            "is mapped into something the model recognises. A frame the game reports as\n"
                             "already tone-mapped is passed over untouched and none of this applies.");
 
-        {
         float wpScale = config->DlssNrWhitePointScale.value_or_default();
         if (ImGui::SliderFloat("Paper white", &wpScale, 0.25f, 4.0f, "%.2fx"))
             config->DlssNrWhitePointScale = wpScale;
@@ -356,25 +444,7 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nAbove 1 the picture handed over is darker, so highlights sit lower on the"
                        "\ncurve and the model treats them as less extreme; below 1, the opposite. If a"
                        "\ngame looks washed out or flat, this is the first thing to move."
-                       "\n\nThis was once a multiplier on a measured white point. The measurement is"
-                       "\ngone: it read scene brightness rather than where white belongs, handed the"
-                       "\nmodel a picture three times too dark, and left the highlight path nothing to"
-                       "\ngive back."
-                       "\n\nAt strength zero the pass writes hdrCopy, so paper white does not move"
-                       "\nthe edited picture.");
-
-        float maxRatio = config->DlssNrMaxRatio.value_or_default();
-        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
-            config->DlssNrMaxRatio = maxRatio;
-
-        HelpMarker("The most the pass may brighten any pixel, as a multiple of what it already"
-                       "\nwas. Darkening is not capped by this -- only growth is."
-                       "\n\nLights are where the model has least to say and where rescaling its answer"
-                       "\ninto the frame does the most damage: an early version turned every strip light"
-                       "\nin the scene into a string of coloured cells. 2x leaves detail intact while"
-                       "\nmaking that failure impossible. Raise it only if bright areas look clipped.");
-
-        }
+                       "\n\nAt detail strength 0 this does not move the edited picture.");
 
         ImGui::SeparatorText("Inspect");
 
@@ -382,35 +452,45 @@ void RenderMenu(Config* config, float menuResScale)
         {
             ImGui::TextDisabled("Capturing...");
         }
-        else if (ImGui::Button("Capture 8 frames"))
+        else
         {
-            DlssNr::RequestCapture(8);
+            ImGui::BeginDisabled(debugOn);
+            if (ImGui::Button("Capture 8 frames"))
+                DlssNr::RequestCapture(8);
+            ImGui::EndDisabled();
         }
 
         HelpMarker("Writes eight consecutive frames twice: as the upscaler produced them, and again"
-                       "\nonce the model's edit was applied."
+                       "\nonce the pass has run."
+                       "\n\nIt writes whatever the pass is currently showing. Turn Debug view off if you"
+                       "\nwant the composed after image."
                        "\n\nSame frames, same run, one variable -- which is what comparing two video"
                        "\ncaptures can never be, since they have different camera paths and a codec in"
                        "\nbetween that discards exactly the fine temporal detail in question."
                        "\n\nRaw, into a dlssnr-capture folder beside OptiScaler. Bounded to eight frames,"
                        "\nand each run overwrites the last.");
 
+        ImGui::BeginDisabled(debugOn);
         static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
         int compare = (int) config->DlssNrCompare.value_or_default();
         if (ImGui::Combo("Compare", &compare, compareNames, IM_ARRAYSIZE(compareNames)))
             config->DlssNrCompare = (uint32_t) compare;
+        ImGui::EndDisabled();
 
         HelpMarker("Shows the pass against itself, so the two can be seen at once rather than"
                        "\ntoggled and remembered."
-                       "\n\nSide by side puts the whole frame in each half, untouched on the left and"
-                       "\nedited on the right. Both halves are squeezed horizontally to fit, so it is"
-                       "\nfor looking at rather than playing in."
+                       "\n\nSide by side puts the whole frame in each half. A half is half as wide as"
+                       "\nthe frame, so Zoom decides whether you see letterbox bars or cropped sides."
+                       "\nIt is for looking at rather than playing in."
                        "\n\nWipe cuts a single frame at the split and resamples nothing, so the picture"
                        "\nis the right shape and can be played normally. Drag the split below; it is a"
                        "\nstored setting and stays put once the menu is closed."
-                       "\n\nNeither needs the menu open to keep working. A hairline marks the join.");
+                       "\n\nSwap sides decides which half is the untouched frame. Neither needs the"
+                       "\nmenu open to keep working. A hairline marks the join."
+                       "\n\nA debug view replaces the composed picture, so comparison is off while one"
+                       "\nis on.");
 
-        if (compare != 0)
+        if (compare != 0 && !debugOn)
         {
             bool swap = config->DlssNrCompareSwap.value_or_default();
             if (ImGui::Checkbox("Swap sides", &swap))
@@ -423,7 +503,7 @@ void RenderMenu(Config* config, float menuResScale)
                            "\nswapping, it is the pass you are seeing and not the placement.");
         }
 
-        if (compare == 1)
+        if (compare == 1 && !debugOn)
         {
             float zoom = config->DlssNrCompareZoom.value_or_default();
             if (ImGui::SliderFloat("Zoom", &zoom, 1.0f, 2.0f, "%.2f"))
@@ -437,47 +517,37 @@ void RenderMenu(Config* config, float menuResScale)
                            "\ninstead. Anything between trades one for the other.");
         }
 
-        if (compare == 2)
+        if (compare == 2 && !debugOn)
         {
             float split = config->DlssNrCompareSplit.value_or_default();
             if (ImGui::SliderFloat("Split", &split, 0.0f, 1.0f, "%.2f"))
                 config->DlssNrCompareSplit = std::clamp(split, 0.0f, 1.0f);
 
-            HelpMarker("Where the wipe cuts. Left of it is the frame as the upscaler produced it,"
-                           "\nright of it is the frame the model edited.");
+            HelpMarker("Where the wipe cuts. Swap sides decides which side is the untouched frame.");
         }
 
-        const bool matched = DlssNr::ConfiguredTransfer() == DlssNr::Transfer::MatchedResidual;
-        ImGui::BeginDisabled(!matched);
-        {
-            static const char* liftNames[] = { "UpgradeToneMap", "Additive headroom" };
-            int lift = (int) config->DlssNrHdrLift.value_or_default();
-            if (lift < 0 || lift > 1)
-                lift = 0;
-            if (ImGui::Combo("HDR lift", &lift, liftNames, IM_ARRAYSIZE(liftNames)))
-                config->DlssNrHdrLift = (uint32_t) lift;
-            HelpMarker("Matched residual only. UpgradeToneMap is the default highlight-aware compose."
-                       "\n\nAdditive headroom adds the model's change onto the original. Detail strength"
-                       "\nstill lerps toward that sum; Colour strength does not apply.");
-        }
-        ImGui::EndDisabled();
-
-        static const char* debugNames[] = {
-            "Off",
-            "Proxy (what the model sees)",
-            "Model output (raw)",
-            "Difference (amplified)",
-            "Full-res proxy",
-            "Matched T",
+        const ComboItem debugItems[] = {
+            { "Off" },
+            { "Proxy (what the model sees)" },
+            { "Model output (raw)" },
+            { "Difference (amplified)" },
+            { "Full-res proxy", !matched, "Matched residual only." },
+            { "Matched picture", !matched, "Matched residual only." },
         };
         int debugView = (int) config->DlssNrDebugView.value_or_default();
-        if (ImGui::Combo("Debug view", &debugView, debugNames, IM_ARRAYSIZE(debugNames)))
+        if (ComboWithDisabledItems("Debug view", &debugView, debugItems, IM_ARRAYSIZE(debugItems)))
             config->DlssNrDebugView = (uint32_t) debugView;
 
-        HelpMarker("Proxy is the picture handed to the model -- if that looks wrong, the white point"
-                       "\nis wrong and nothing downstream can be judged."
+        HelpMarker("Off is the composed picture."
+                       "\n\nProxy is the small picture handed to the model -- if that looks wrong, the"
+                       "\nwhite point is wrong and nothing downstream can be judged."
+                       "\n\nModel output is the model's raw answer, the same size as the proxy."
                        "\n\nDifference shows what the model actually changed, amplified twenty times and"
-                       "\ncentred on grey. A flat grey frame there means it is doing nothing.");
+                       "\ncentred on grey. A flat grey frame there means it is doing nothing."
+                       "\n\nFull-res proxy is the sharp picture the model was shown, before it was"
+                       "\nshrunk. Matched residual only; Classic writes black."
+                       "\n\nMatched picture is that sharp proxy plus only what the model changed, before"
+                       "\nHDR lift. Matched residual only; Classic writes black.");
 
         ImGui::PopItemWidth();
     }
