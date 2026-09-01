@@ -218,13 +218,23 @@ void SetKeyDown(int vk, DWORD messageTime, bool blocked)
     {
         key.Pressed = true;
         _state.LastPressedKey = vk;
+
+        // Only a real press can be a blocked press.
+        //
+        // Windows repeats WM_KEYDOWN while a key is held. If the menu opens mid-hold, those repeats
+        // arrive blocked and used to set BlockedDown on a key whose original press the game had
+        // already seen. The release is then suppressed as if the game had never heard the press --
+        // so the key stays held, and closing the menu does not clear it, because the release has
+        // already been thrown away.
+        //
+        // Recording it here, inside the transition, means BlockedDown answers the question it is
+        // actually asked: did the game miss the press this release belongs to?
+        if (blocked)
+            key.BlockedDown = true;
     }
 
     key.Down = true;
     key.LastMessageTime = messageTime;
-
-    if (blocked)
-        key.BlockedDown = true;
 
     SyncAggregateModifierStateLocked();
 }
@@ -609,10 +619,18 @@ bool HandleWindowMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, Inpu
         const bool shouldParseRawInput =
             source == InputMessageSource::WndProc || _state.BlockMouse || _state.BlockKeyboard;
 
-        if (shouldParseRawInput)
-            HandleRawInputLocked(reinterpret_cast<HRAWINPUT>(lParam));
+        bool mustReachGame = false;
 
-        shouldBlock = _state.BlockMouse || _state.BlockKeyboard;
+        if (shouldParseRawInput)
+            mustReachGame = HandleRawInputLocked(reinterpret_cast<HRAWINPUT>(lParam));
+
+        // Withhold the message, unless it carries a key release the game is owed.
+        //
+        // Content is neutralised in the GetRawInputData hook, per key, by the same decision taken
+        // above -- so letting one of these through does not leak input. What it does is give the
+        // game the chance to ask, which it never had while the whole message was being discarded.
+        shouldBlock = (_state.BlockMouse || _state.BlockKeyboard) && !mustReachGame;
+
         break;
     }
 
