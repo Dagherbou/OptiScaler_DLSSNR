@@ -1,6 +1,7 @@
 #pragma once
 #include "SysUtils.h"
 
+#include <dlssnr/DlssNr_Modes.h>
 #include <nvsdk_ngx.h>
 #include <nvsdk_ngx_defs.h>
 
@@ -91,6 +92,20 @@ class IFeature
     unsigned int _displayWidth = 0;
     unsigned int _displayHeight = 0;
 
+    // The game's own render resolution, recorded before the multi-pass hold can
+    // pin _renderWidth/_renderHeight to 1:1. Zero until SetInitParameters has run.
+    unsigned int _nrSourceWidth = 0;
+    unsigned int _nrSourceHeight = 0;
+
+    // The arrangement this feature was actually built for. Target size is latched
+    // at creation, so a placement change has to rebuild rather than take effect live.
+    DlssNr::Mode _nrModeAtCreate = DlssNr::Mode::PostProcess;
+
+    // Whether the game's own image is linear HDR, recorded in the constructor
+    // before any later create-time decision. Distinct from IsHdr(), which reports
+    // the flag this feature was created with.
+    bool _nrGameIsHdr = false;
+
     long _frameCount = 0;
     bool _featureFrozen = false;
     bool _moduleLoaded = false;
@@ -158,6 +173,47 @@ class IFeature
     virtual bool JitteredMV() { return _initFlags.JitteredMV; }
     virtual bool LowResMV() { return _initFlags.LowResMV; }
     virtual bool SharpenEnabled() { return _initFlags.SharpenEnabled; }
+
+    // The Neural Rendering arrangement actually in force for this feature.
+    //
+    // Off, a non-Dx12 API, or an upscaler that is not DLSS / Ray Reconstruction
+    // always reports PostProcess. Multi-pass also needs the configured first-pass
+    // pipeline to match the live upscaler; a mismatch falls back rather than
+    // holding a feature at 1:1 with no enlarge to follow.
+    DlssNr::Mode NREffectiveMode() const;
+
+    bool NRUsesTwoFeatures() const { return DlssNr::UsesTwoFeatures(NREffectiveMode()); }
+
+    // True when the arrangement changed since this feature was built. Engines
+    // rebuild on a resolution change, and the game's resolutions have not moved,
+    // so nothing else notices. Left unchecked, the pipeline starts routing a
+    // display-sized feature into a render-resolution buffer.
+    bool NRNeedsRebuild() const { return _nrModeAtCreate != NREffectiveMode(); }
+
+    // What the pipeline and the seam must branch on, rather than the configured
+    // mode: the two agree only after a rebuild.
+    DlssNr::Mode NRBuiltMode() const { return _nrModeAtCreate; }
+
+    // Settle which arrangement this feature is being built for, and apply the
+    // 1:1 hold. Must be called from ProcessInitParams, never from a constructor:
+    // it asks Api() and GetUpscalerType(), which are still pure virtual while
+    // the base classes are being built.
+    void NRPrepareForCreate();
+
+    // Re-apply the multi-pass 1:1 hold to the target resolution.
+    //
+    // ProcessInitParams recomputes the target afterwards -- to the display size,
+    // or to that times the Output Scaling ratio -- and either branch silently
+    // undoes the hold. Returns true when it took ownership of the target, in
+    // which case the caller must not apply the Output Scaling multiplier.
+    bool NRApplyFeature1Hold();
+
+    unsigned int NRSourceWidth() const { return _nrSourceWidth != 0 ? _nrSourceWidth : _renderWidth; }
+    unsigned int NRSourceHeight() const { return _nrSourceHeight != 0 ? _nrSourceHeight : _renderHeight; }
+
+    // What the colour path must branch on: whether the frame the model is about
+    // to see is linear HDR. Distinct from IsHdr().
+    bool NRGameIsHdr() const { return _nrGameIsHdr; }
 
     virtual bool CallsUpscalerEndByItself() { return false; }
 

@@ -5,6 +5,29 @@
 
 #include "IFeature_Dx12.h"
 #include "State.h"
+#include <dlssnr/DlssNr.h>
+
+// After a multi-pass hold, TargetWidth is the first pass's 1:1 size. Output
+// Scaling still works at display (times its multiplier) so the FSR1 enlarge
+// can write a display-sized image into that buffer instead of R-to-R.
+static void OutputScalingWorkSize(IFeature* feature, unsigned int& width, unsigned int& height)
+{
+    width = feature->TargetWidth();
+    height = feature->TargetHeight();
+
+    if (feature->NRBuiltMode() != DlssNr::Mode::MultiPass)
+        return;
+
+    float ssMulti = Config::Instance()->OutputScalingMultiplier.value_or_default();
+
+    if (ssMulti < 0.5f)
+        ssMulti = 0.5f;
+    else if (ssMulti > 3.0f)
+        ssMulti = 3.0f;
+
+    width = static_cast<unsigned int>(feature->DisplayWidth() * ssMulti);
+    height = static_cast<unsigned int>(feature->DisplayHeight() * ssMulti);
+}
 
 void IFeature_Dx12::ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Resource* InResource,
                                     D3D12_RESOURCE_STATES InBeforeState, D3D12_RESOURCE_STATES InAfterState) const
@@ -33,7 +56,10 @@ bool IFeature_Dx12::Init(ID3D12Device* InDevice, ID3D12GraphicsCommandList* InCo
         if (!Config::Instance()->OverlayMenu.value_or_default() && (Imgui == nullptr || Imgui.get() == nullptr))
             Imgui = std::make_unique<Menu_Dx12>(Util::GetProcessWindow(), InDevice);
 
-        OutputScaler = std::make_unique<OS_Dx12>("Output Scaling", InDevice, (TargetWidth() < DisplayWidth()));
+        unsigned int osWidth = 0;
+        unsigned int osHeight = 0;
+        OutputScalingWorkSize(this, osWidth, osHeight);
+        OutputScaler = std::make_unique<OS_Dx12>("Output Scaling", InDevice, (osWidth < DisplayWidth()));
         RCAS = std::make_unique<RCAS_Dx12>("RCAS", InDevice);
         Bias = std::make_unique<Bias_Dx12>("Bias", InDevice); // TODO: not needed on DLSS/DLSSD
         Magnifier = std::make_unique<Magnifier_Dx12>("Magnifier", InDevice);
@@ -50,6 +76,18 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
     {
         LOG_ERROR("Not inited!");
         return false;
+    }
+
+    // A placement change needs the feature rebuilt before anything else happens.
+    // The target resolution is fixed at creation, and nothing else here notices:
+    // engines rebuild on a resolution change, and the game's resolutions have not
+    // moved. Reported as success: this is one deliberate frame during a mode
+    // change, not an upscaler that has gone wrong.
+    if (NRNeedsRebuild())
+    {
+        LOG_INFO("DLSS-NR placement changed; rebuilding the upscaler feature for it");
+        State::Instance().changeBackend[Handle()->Id] = true;
+        return true;
     }
 
     if (Config::Instance()->OverrideSharpness.value_or_default())
@@ -98,35 +136,92 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
     // Order is important as that's the order of shader dispatch
     std::vector<ShaderPass> pipeline;
 
-    if (useOutputScaling)
+    // Multi-pass: the model on the first pass's 1:1 result, then FSR1 EASU
+    // enlarges to display. Pushed first so it sits closest to the upscaler --
+    // the model wants the frame before Output Scaling or RCAS has been over it.
+    if (NRBuiltMode() == DlssNr::Mode::MultiPass)
     {
+        if (MultiPassScaler == nullptr)
+            MultiPassScaler = std::make_unique<OS_Dx12>("DLSS-NR Enlarge", Device, true, Scaler::FSR1);
+
         pipeline.push_back(
             { // Setup
               [&](ID3D12Resource* nextOutput) -> ID3D12Resource*
               {
-                  if (OutputScaler->CreateBufferResource(Device, nextOutput, TargetWidth(), TargetHeight(),
-                                                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+                  if (MultiPassScaler->CreateBufferResource(Device, nextOutput, RenderWidth(), RenderHeight(),
+                                                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
                   {
-                      OutputScaler->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                      return OutputScaler->Buffer();
+                      MultiPassScaler->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                      return MultiPassScaler->Buffer();
                   }
+
                   return nullptr;
               },
 
               // Dispatch
               [&](ID3D12Resource* input, ID3D12Resource* output) -> bool
               {
-                  LOG_DEBUG("Scaling output...");
-                  OutputScaler->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-                  if (!OutputScaler->Dispatch(InCommandList, input, output))
+                  if (paramDepth != nullptr && paramMotion != nullptr)
                   {
-                      Config::Instance()->OutputScalingEnabled.set_volatile_value(false);
-                      State::Instance().changeBackend[Handle()->Id] = true;
-                      return false;
+                      DlssNrFrameInfo frame {};
+                      frame.DepthInverted = DepthInverted();
+                      frame.ColourIsLinearHdr = NRGameIsHdr();
+                      frame.Reset = FrameCount() <= 1;
+
+                      int reset = 0;
+                      if (InParameters->Get(NVSDK_NGX_Parameter_Reset, &reset) == NVSDK_NGX_Result_Success)
+                          frame.Reset = frame.Reset || reset != 0;
+
+                      if (InParameters->Get(NVSDK_NGX_Parameter_MV_Scale_X, &frame.MvScaleX) !=
+                          NVSDK_NGX_Result_Success)
+                          frame.MvScaleX = 1.0f;
+
+                      if (InParameters->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &frame.MvScaleY) !=
+                          NVSDK_NGX_Result_Success)
+                          frame.MvScaleY = 1.0f;
+
+                      DlssNr::Run(InCommandList, input, paramDepth, paramMotion, input, frame,
+                                  State::Instance().currentCommandQueue);
                   }
-                  return true;
+
+                  MultiPassScaler->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                  return MultiPassScaler->Dispatch(InCommandList, input, output);
               } });
+    }
+
+    if (useOutputScaling)
+    {
+        pipeline.push_back({ // Setup
+                             [&](ID3D12Resource* nextOutput) -> ID3D12Resource*
+                             {
+                                 unsigned int osWidth = 0;
+                                 unsigned int osHeight = 0;
+                                 OutputScalingWorkSize(this, osWidth, osHeight);
+
+                                 if (OutputScaler->CreateBufferResource(Device, nextOutput, osWidth, osHeight,
+                                                                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+                                 {
+                                     OutputScaler->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                                     return OutputScaler->Buffer();
+                                 }
+                                 return nullptr;
+                             },
+
+                             // Dispatch
+                             [&](ID3D12Resource* input, ID3D12Resource* output) -> bool
+                             {
+                                 LOG_DEBUG("Scaling output...");
+                                 OutputScaler->SetBufferState(InCommandList,
+                                                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+                                 if (!OutputScaler->Dispatch(InCommandList, input, output))
+                                 {
+                                     Config::Instance()->OutputScalingEnabled.set_volatile_value(false);
+                                     State::Instance().changeBackend[Handle()->Id] = true;
+                                     return false;
+                                 }
+                                 return true;
+                             } });
     }
 
     _actualSharpness = _sharpness;
@@ -326,6 +421,7 @@ IFeature_Dx12::~IFeature_Dx12()
 
     Imgui.reset();
     OutputScaler.reset();
+    MultiPassScaler.reset();
     RCAS.reset();
     Bias.reset();
 }

@@ -31,6 +31,7 @@ class IFeature_Dx12 : public virtual IFeature
     ID3D12Device* Device = nullptr;
     static inline std::unique_ptr<Menu_Dx12> Imgui = nullptr;
     std::unique_ptr<OS_Dx12> OutputScaler = nullptr;
+    std::unique_ptr<OS_Dx12> MultiPassScaler = nullptr;
     std::unique_ptr<RCAS_Dx12> RCAS = nullptr;
     std::unique_ptr<Bias_Dx12> Bias = nullptr;
     std::unique_ptr<Magnifier_Dx12> Magnifier = nullptr;

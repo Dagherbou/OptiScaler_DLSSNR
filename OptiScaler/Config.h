@@ -257,6 +257,12 @@ class Config
     // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
     CustomOptional<bool> DlssNrEnabled { false };
+    // 0 post-process (after the upscaler), 1 multi-pass (1:1 first pass, then the model, then a
+    // spatial enlarge). OptiScaler's own Dx12 DLSS / Ray Reconstruction only; anything else falls
+    // back to post-process.
+    CustomOptional<uint32_t> DlssNrMode { 0 };
+    // Which upscaler the multi-pass first pass is: 0 Ray Reconstruction, 1 Super Resolution.
+    CustomOptional<uint32_t> DlssNrFeature1Pipeline { 0 };
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.
     CustomOptional<int> DlssNrToggleKey { UnboundKey };
@@ -276,12 +282,11 @@ class Config
     CustomOptional<float> DlssNrTransferStrength { 1.0f };
     CustomOptional<float> DlssNrColourStrength { 1.0f };
 
-
     // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
     // light source, whatever the model returns.
     CustomOptional<float> DlssNrMaxRatio { 2.0f };
 
-    // 0 off, 1 the picture the model was shown, 2 its raw answer, 3 what it changed, amplified.
+    // 0–5: off, proxy, model, amplified difference, full-res proxy, matched T.
     CustomOptional<uint32_t> DlssNrDebugView { 0 };
 
     // Showing the pass against itself, without having to toggle it and remember what the last frame
@@ -300,10 +305,18 @@ class Config
     // Which side the edited frame sits on, in both comparison modes.
     CustomOptional<bool> DlssNrCompareSwap { false };
 
-    // The fraction of the frame's resolution the model works at. The frame itself is never reduced --
-    // only the model's contribution is computed small and enlarged, so the picture underneath is
-    // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before.
+    // The model's working raster as a fraction of display resolution, not of the colour buffer.
+    // The frame itself is never reduced -- only the model's contribution is computed small and
+    // enlarged. 1.0 is display resolution, then clamped to the colour buffer so Multi-pass cannot
+    // invent pixels past Feature 1.
     CustomOptional<float> DlssNrWorkingScale { 1.0f };
+    // Lock the model to the game's render (native) raster. The slider then shows the live R/D
+    // ratio and is not adjustable. WorkingScale is left alone so unchecking restores it.
+    CustomOptional<bool> DlssNrWorkAtNative { false };
+    // 0 Classic, 1 Matched residual (default). How a below-frame model is brought back.
+    CustomOptional<uint32_t> DlssNrTransfer { 1 };
+    // 0 UpgradeToneMap (H0), 1 additive headroom (H1). Used only if Transfer == 1.
+    CustomOptional<uint32_t> DlssNrHdrLift { 0 };
 
     // Ask the driver's own nvngx.dll whether it will dispatch Neural Rendering, once per session.
     //
@@ -337,17 +350,9 @@ class Config
     // folder is cleared at the start of each run, so it holds one session's worth and never grows.
     CustomOptional<bool> DlssNrAutoCapture { true };
 
-
-
-
-
     // Multiplies the (auto or manual) white point before the encode: what the model considers "white".
     // Higher means highlights sit lower on the curve and the model treats them as less extreme.
     CustomOptional<float> DlssNrWhitePointScale { 1.0f };
-
-
-
-
 
     // --- end DLSS 5 Neural Rendering -------------------------------------------------------------
 

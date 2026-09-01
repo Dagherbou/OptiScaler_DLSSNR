@@ -164,7 +164,8 @@ float3 EditAt(float2 uvq)
     return m - p;
 }
 
-)" R"(
+)"
+                                   R"(
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
@@ -275,7 +276,8 @@ void main(uint3 id : SV_DispatchThreadID)
     // frame even on a static scene; blending each frame's edit with its own reprojected history keeps
     // the consistent part -- the detail -- and cancels the part that re-randomises. NVIDIA's own
     // motion vectors carry the history to where the surface is now.
-)" R"(
+)"
+                                   R"(
     // The composition. The model's answer is not treated as a difference to add onto the frame -- it
     // is a complete picture in its own right, and it is brought back by rescaling it to sit where the
     // original's luminance says it should. Adding a difference is what let colour run away: nothing
@@ -341,7 +343,6 @@ struct Params
     float mvScaleY;
     unsigned int guideWidth;
     unsigned int guideHeight;
-
 };
 
 static_assert(sizeof(Params) % 4 == 0, "root constants are dwords");
@@ -384,8 +385,8 @@ class Codec
         ID3DBlob* code = nullptr;
         ID3DBlob* errors = nullptr;
 
-        if (FAILED(D3DCompile(kShaderSource, strlen(kShaderSource), nullptr, nullptr, nullptr, "main",
-                              "cs_5_1", 0, 0, &code, &errors)))
+        if (FAILED(D3DCompile(kShaderSource, strlen(kShaderSource), nullptr, nullptr, nullptr, "main", "cs_5_1", 0, 0,
+                              &code, &errors)))
         {
             if (errors != nullptr)
                 errors->Release();
@@ -470,9 +471,8 @@ class Codec
     // Every texture must already be in the state its slot needs: sources shader-readable, targets
     // writable. Slots a pass does not read still have to be populated, or the descriptor is undefined.
     void dispatch(ID3D12GraphicsCommandList* cmd, const Params& constants, ID3D12Resource* source,
-                  ID3D12Resource* model, ID3D12Resource* original, ID3D12Resource* target,
-                  ID3D12Resource* keep, ID3D12Resource* motion = nullptr,
-                  ID3D12Resource* prevEdit = nullptr)
+                  ID3D12Resource* model, ID3D12Resource* original, ID3D12Resource* target, ID3D12Resource* keep,
+                  ID3D12Resource* motion = nullptr, ID3D12Resource* prevEdit = nullptr)
     {
         if (pipeline_ == nullptr)
             return;
@@ -485,10 +485,8 @@ class Codec
         D3D12_GPU_DESCRIPTOR_HANDLE gpu = heap_->GetGPUDescriptorHandleForHeapStart();
         gpu.ptr += (UINT64) slot * kPerDispatch * stride_;
 
-        ID3D12Resource* srvs[5] = { source, model != nullptr ? model : source,
-                                    original != nullptr ? original : source,
-                                    motion != nullptr ? motion : source,
-                                    prevEdit != nullptr ? prevEdit : source };
+        ID3D12Resource* srvs[5] = { source, model != nullptr ? model : source, original != nullptr ? original : source,
+                                    motion != nullptr ? motion : source, prevEdit != nullptr ? prevEdit : source };
 
         for (int i = 0; i < 5; ++i)
         {

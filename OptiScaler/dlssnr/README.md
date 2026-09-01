@@ -62,11 +62,16 @@ part of the solution, and builds with everything else.
 
 ## Design notes worth knowing before changing anything
 
-- **Ratio composition, not a delta.** The model is shown an encoded proxy; what it returns is
-  composed back as a ratio against the original's luminance, scaled by a measured slope, with the
-  chroma added. Composing it additively — which earlier revisions did — discards the model's
-  behaviour in highlights and makes every arrangement look alike. At strength zero the frame is
-  bit-identical, always.
+- **Two transfers, Matched residual default.** Matched residual is an area shrink, then the
+  model's *change* added onto the sharp full-res proxy (`colorCopy`) before the same
+  UpgradeToneMap (or additive H1, under Transfer). Classic is the older path: bilinear shrink,
+  then ratio compose of the small answer onto the full-resolution frame. Switching does not
+  rebuild the model.
+- **Ratio composition, after an optional residual.** Classic still composes by ratio against the
+  original's luminance, not by adding a raw delta to the frame. Matched residual builds `T` first,
+  then runs that same ratio compose with the sharp proxy as the reference. At strength zero both
+  options write `hdrCopy` (the encode keep). That is not bit-identity with the upscaler UAV, and
+  it is not the Capture button's “before” image (`colorCopy`).
 - **Create-time parameters.** The model's tuning (preset, style, intensity, local *) is latched at
   feature creation; changes rebuild the feature after a settle. The driver's parameter block is not
   the SDK header's vtable (floats sit at slot 6); the forwarder probes it. Rebuilding every frame

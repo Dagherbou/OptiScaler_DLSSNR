@@ -18,6 +18,8 @@ cbuffer Params : register(b0)
     float gCompareSplit; // where the wipe cuts, 0..1
     float gCompareZoom;  // side by side: 1 fits the frame, 2 fills the half
     uint  gCompareSwap;  // put the edited frame on the other side
+    uint  gTransfer;     // 0 Classic, 1 Matched residual
+    uint  gHdrLift;      // 0 H0, 1 H1; ignored unless gTransfer == 1
 };
 
 // Colours outside the AP1 gamut are impossible on any display and read as sparkle where a bright
@@ -86,7 +88,7 @@ float3 HueOkLab(float3 incorrect, float3 correct)
 Texture2D<float4>   gSource   : register(t0);  // encode: the frame. resolve: the proxy.
 Texture2D<float4>   gModel    : register(t1);  // resolve: what the model returned.
 Texture2D<float4>   gOriginal : register(t2);  // resolve: the untouched frame.
-Texture2D<float4>   gMotion   : register(t3);  // resolve, accumulating: the game's motion vectors.
+Texture2D<float4>   gProxy    : register(t3);  // resolve: colorCopy (full-res encoded proxy)
 RWTexture2D<float4> gTarget   : register(u0);  // encode: the proxy. resolve: the frame.
 RWTexture2D<float4> gKeep     : register(u1);  // encode: the untouched copy. resolve: the edit history.
 SamplerState        gLinear   : register(s0);  // so the edit can be read at a different size
@@ -105,6 +107,45 @@ float3 SrgbToLinear(float3 v)
 {
     v = saturate(v);
     return lerp(v / 12.92, pow((v + 0.055) / 1.055, 2.4), step(0.04045, v));
+}
+
+float3 DecodeRgb(float3 rgb)
+{
+    return gPassthrough != 0 ? rgb : SrgbToLinear(rgb);
+}
+
+float3 CubeScaleResidual(float3 P, float3 T)
+{
+    if (gPassthrough != 0)
+        return T;
+    float3 d = T - P;
+    float alpha = 1.0;
+    [unroll] for (int c = 0; c < 3; ++c)
+    {
+        if (d[c] > 1e-6)
+            alpha = min(alpha, (1.0 - P[c]) / d[c]);
+        else if (d[c] < -1e-6)
+            alpha = min(alpha, (0.0 - P[c]) / d[c]);
+    }
+    return P + saturate(alpha) * d;
+}
+
+// Live UpgradeToneMap body, parameterized. Empty-model gate is the caller's job.
+float3 ComposeUpgrade(float3 H, float3 proxyRgb, float3 modelRgb)
+{
+    float originalLuma = dot(H, kLuma);
+    float proxyLuma = dot(proxyRgb, kLuma);
+    float modelLuma = dot(modelRgb, kLuma);
+    float ratio;
+    if (originalLuma < proxyLuma)
+        ratio = originalLuma / max(proxyLuma, 1e-6);
+    else
+        ratio = (modelLuma + max(0.0, originalLuma - proxyLuma)) / modelLuma;
+    float3 upgraded = lerp(H, HueOkLab(modelRgb * ratio, modelRgb), gTransferStrength);
+    float upgradedLuma = dot(upgraded, kLuma);
+    const float kRatioFloor = 1.0 / 512.0;
+    float lumaRatio = clamp((upgradedLuma + kRatioFloor) / (originalLuma + kRatioFloor), 0.0, gMaxRatio);
+    return lerp(H * lumaRatio, upgraded, gColourStrength);
 }
 
 // The edit at an arbitrary position, exactly as the resolve computes its own.
@@ -134,7 +175,54 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
     if (gMode == 2)
     {
-        gTarget[id.xy] = gSource.SampleLevel(gLinear, uv, 0);
+        if (gTransfer == 0)
+        {
+            gTarget[id.xy] = gSource.SampleLevel(gLinear, uv, 0);
+            return;
+        }
+
+        uint srcW, srcH;
+        gSource.GetDimensions(srcW, srcH);
+        if (srcW == gWidth && srcH == gHeight)
+        {
+            gTarget[id.xy] = gSource.Load(int3(id.xy, 0));
+            return;
+        }
+
+        const float x0 = ((float) id.x * (float) srcW) / (float) gWidth;
+        const float x1 = ((float) (id.x + 1) * (float) srcW) / (float) gWidth;
+        const float y0 = ((float) id.y * (float) srcH) / (float) gHeight;
+        const float y1 = ((float) (id.y + 1) * (float) srcH) / (float) gHeight;
+        const float area = (x1 - x0) * (y1 - y0);
+
+        const int i0 = (int) floor(x0);
+        const int i1 = (int) ceil(x1) - 1;
+        const int j0 = (int) floor(y0);
+        const int j1 = (int) ceil(y1) - 1;
+
+        float3 acc = 0.0;
+        for (int j = j0; j <= j1; ++j)
+        {
+            const int jj = clamp(j, 0, (int) srcH - 1);
+            const float t0y = (float) j;
+            const float aY = max(y0, t0y);
+            const float bY = min(y1, t0y + 1.0);
+            const float wy = max(bY - aY, 0.0);
+            for (int i = i0; i <= i1; ++i)
+            {
+                const int ii = clamp(i, 0, (int) srcW - 1);
+                const float t0x = (float) i;
+                const float aX = max(x0, t0x);
+                const float bX = min(x1, t0x + 1.0);
+                const float w = max(bX - aX, 0.0) * wy;
+                acc += gSource.Load(int3(ii, jj, 0)).rgb * w;
+            }
+        }
+
+        const int acx = clamp((int) floor(((float) id.x + 0.5) * (float) srcW / (float) gWidth), 0, (int) srcW - 1);
+        const int acy = clamp((int) floor(((float) id.y + 0.5) * (float) srcH / (float) gHeight), 0, (int) srcH - 1);
+        const float a = gSource.Load(int3(acx, acy, 0)).a;
+        gTarget[id.xy] = float4(acc / area, a);
         return;
     }
 
@@ -219,127 +307,92 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
     // Sampled rather than loaded: when the model ran at a reduced resolution these are smaller than the
     // frame, and its edit is enlarged here while the frame underneath stays untouched.
-    float4 proxySample = gSource.SampleLevel(gLinear, cmpUv, 0);
-    float4 modelSample = gModel.SampleLevel(gLinear, cmpUv, 0);
-
-    // Nothing was encoded on the way in, so nothing is decoded here either.
-    float3 proxy = gPassthrough != 0 ? proxySample.rgb : SrgbToLinear(proxySample.rgb);
-    float3 model = gPassthrough != 0 ? modelSample.rgb : SrgbToLinear(modelSample.rgb);
+    float3 p = DecodeRgb(gSource.SampleLevel(gLinear, cmpUv, 0).rgb);
+    float3 m = DecodeRgb(gModel.SampleLevel(gLinear, cmpUv, 0).rgb);
     float4 originalSample = gCompareMode == 1 ? gOriginal.SampleLevel(gLinear, cmpUv, 0)
                                               : gOriginal.Load(int3(id.xy, 0));
-
-    // All three pictures have to share a scale before their luminances can be compared. The proxy and
-    // the model come back from an sRGB decode, so they sit in 0..1 where 1 is the white point; the
-    // frame is raw linear and runs well past that. Comparing them unnormalised is a real bug and it
-    // reads exactly like the model has stopped adding detail: with the frame several times larger,
-    // the shadow branch never fires, every pixel takes the highlight branch, and the clamp flattens
-    // the result to a near-constant scale. Colour still moves, because that comes from the model's
-    // own hue, which is what makes the failure so confusing to look at.
     const float normScale = gPassthrough != 0 ? 1.0 : max(gWhitePoint, 1e-4);
-    float3 original = originalSample.rgb / normScale;
-
-    float originalLuma = dot(original, kLuma);
-    float proxyLuma = dot(proxy, kLuma);
+    float3 H = originalSample.rgb / normScale;
 
     if (gDebugView == 1)
     {
-        gTarget[id.xy] = float4(proxy * gWhitePoint, originalSample.a);
+        gTarget[id.xy] = float4(p * gWhitePoint, originalSample.a);
         return;
     }
-
     if (gDebugView == 2)
     {
-        gTarget[id.xy] = float4(model * gWhitePoint, originalSample.a);
+        gTarget[id.xy] = float4(m * gWhitePoint, originalSample.a);
         return;
     }
-
-    float3 edit = model - proxy;
-
-    // Coring was tried here and removed: the per-frame churn's amplitude overlaps the real detail's,
-    // so an amplitude threshold cannot separate them -- it only relocated the noise to the threshold.
-
     if (gDebugView == 3)
     {
-        // Amplified and centred on grey, so both directions of the edit are visible at once.
-        float3 shown = saturate(0.5 + edit * 20.0);
+        float3 shown = saturate(0.5 + (m - p) * 20.0);
         gTarget[id.xy] = float4(SrgbToLinear(shown) * gWhitePoint, originalSample.a);
         return;
     }
 
-    // The edit, averaged over time. The model re-decides a measurable fraction of its answer every
-    // frame even on a static scene; blending each frame's edit with its own reprojected history keeps
-    // the consistent part -- the detail -- and cancels the part that re-randomises. NVIDIA's own
-    // motion vectors carry the history to where the surface is now.
-
-    // The composition. The model's answer is not treated as a difference to add onto the frame -- it
-    // is a complete picture in its own right, and it is brought back by rescaling it to sit where the
-    // original's luminance says it should. Adding a difference is what let colour run away: nothing
-    // bounded where the sum landed, so a warm subject could arrive green. Here both ends of every
-    // blend are well-formed pictures, so everything between them is one too.
-    float modelLuma = dot(model, kLuma);
-    float3 upgraded;
-
-    if (modelLuma <= 1e-5)
+    if (gDebugView == 4 || gDebugView == 5)
     {
-        // The model can return an empty frame for an input it cannot read. Rescaling that collapses
-        // the picture to black, so the frame is handed back untouched instead.
-        upgraded = original;
+        float3 shown = 0.0;
+        if (gTransfer == 1)
+        {
+            float4 eSample = gCompareMode == 1 ? gProxy.SampleLevel(gLinear, cmpUv, 0)
+                                               : gProxy.Load(int3(id.xy, 0));
+            float3 P = DecodeRgb(eSample.rgb);
+            uint srcW, srcH;
+            gSource.GetDimensions(srcW, srcH);
+            bool sameRate = (srcW == gWidth && srcH == gHeight);
+            float3 T = sameRate ? m : CubeScaleResidual(P, P + (m - p));
+            shown = (gDebugView == 4 ? P : T) * gWhitePoint;
+        }
+        gTarget[id.xy] = float4(shown, originalSample.a);
+        return;
+    }
+
+    if (gTransferStrength == 0)
+    {
+        float4 o = gCompareMode == 1 ? gOriginal.SampleLevel(gLinear, cmpUv, 0)
+                                     : gOriginal.Load(int3(id.xy, 0));
+        float3 rgb = o.rgb;
+        if (outsideFrame)
+            rgb = 0.0;
+        if (onDivider)
+            rgb = gWhitePoint;
+        gTarget[id.xy] = float4(rgb, o.a);
+        return;
+    }
+
+    float3 result;
+    if (gTransfer == 0)
+    {
+        if (dot(m, kLuma) <= 1e-5)
+            result = H * normScale;
+        else
+            result = ComposeUpgrade(H, p, m) * normScale;
     }
     else
     {
-        float ratio;
+        float4 eSample = gCompareMode == 1 ? gProxy.SampleLevel(gLinear, cmpUv, 0)
+                                           : gProxy.Load(int3(id.xy, 0));
+        float3 P = DecodeRgb(eSample.rgb);
+        uint srcW, srcH;
+        gSource.GetDimensions(srcW, srcH);
+        bool sameRate = (srcW == gWidth && srcH == gHeight);
+        float3 T = sameRate ? m : CubeScaleResidual(P, P + (m - p));
 
-        if (originalLuma < proxyLuma)
-        {
-            // Below what the proxy showed: the frame's own luminance is the target.
-            ratio = originalLuma / max(proxyLuma, 1e-6);
-        }
+        if (dot(m, kLuma) <= 1e-5)
+            result = H * normScale;
+        else if (gHdrLift == 1)
+            result = lerp(H, H + (T - P), gTransferStrength) * normScale;
         else
-        {
-            // Above it, the difference is headroom the proxy could not represent -- brightness the
-            // frame really has and the model never saw. It is handed back on top of the model's own
-            // answer rather than scaled away, which is what kept highlights from being muted.
-            ratio = (modelLuma + max(0.0, originalLuma - proxyLuma)) / modelLuma;
-        }
-
-        upgraded = lerp(original, HueOkLab(model * ratio, model), gTransferStrength);
+            result = ComposeUpgrade(H, P, T) * normScale;
     }
 
-    // Detail strength decides how much of the model's picture is reached at all; colour strength
-    // decides whether its colour comes with it. At 0 the frame keeps the game's own hue exactly and
-    // only its light carries the model's verdict; at 1 the model's colour arrives as well.
-    float upgradedLuma = dot(upgraded, kLuma);
-
-    // A ratio against a dark pixel is unbounded, and clamping it is not the same as taming it.
-    //
-    // In linear light divided by paper white a shadowed pixel sits around a thousandth, so a tiny
-    // absolute edit from the model becomes an enormous ratio, hits the clamp, and doubles that
-    // pixel's brightness. The next frame it lands slightly differently and the pixel drops back.
-    // That is the boiling: patches of lighter colour crawling over otherwise still geometry, worst
-    // where the picture is darkest.
-    //
-    // Adding the same floor above and below leaves bright pixels alone -- where luminance is far
-    // larger than the floor the term vanishes -- while making the ratio fall smoothly to one as
-    // luminance approaches zero. No edit at all is the right answer for a pixel with no light in it.
-    const float kRatioFloor = 1.0 / 512.0;
-    float lumaRatio = clamp((upgradedLuma + kRatioFloor) / (originalLuma + kRatioFloor), 0.0, gMaxRatio);
-    float3 result = lerp(original * lumaRatio, upgraded, gColourStrength);
-
-    // Back out of the normalised space the composition worked in.
-    result *= normScale;
-
-    // The side being shown untouched takes the frame as it arrived, past every step above.
     if (showOriginal)
         result = originalSample.rgb;
-
-    // The letterbox. The sampler clamps rather than wrapping, so without this the bars would be the
-    // frame's edge row smeared down the screen.
     if (outsideFrame)
-        result = float3(0.0, 0.0, 0.0);
-
-    // A hairline so the two sides are never mistaken for one picture.
+        result = 0.0;
     if (onDivider)
-        result = float3(gWhitePoint, gWhitePoint, gWhitePoint);
-
-    gTarget[id.xy] = float4(max(result, float3(0.0, 0.0, 0.0)), originalSample.a);
+        result = gWhitePoint;
+    gTarget[id.xy] = float4(max(result, 0.0), originalSample.a);
 }

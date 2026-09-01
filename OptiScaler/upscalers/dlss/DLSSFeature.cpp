@@ -34,6 +34,11 @@ void DLSSFeature::ProcessInitParams(NVSDK_NGX_Parameter* InParameters)
 {
     LOG_FUNC();
 
+    // Settle the Neural Rendering arrangement first: it can hold the target at
+    // 1:1. Here rather than in SetInitParameters because that runs from a
+    // constructor, where the virtuals this needs do not exist yet.
+    NRPrepareForCreate();
+
     // Create flags -----------------------------
     unsigned int featureFlags = 0;
 
@@ -58,7 +63,16 @@ void DLSSFeature::ProcessInitParams(NVSDK_NGX_Parameter* InParameters)
     InParameters->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, featureFlags);
 
     // Resolution -----------------------------
-    if (Config::Instance()->OutputScalingEnabled.value_or_default() && (LowResMV() || RenderWidth() == DisplayWidth()))
+    // Multi-pass holds this feature at 1:1. Checked before the branches below
+    // because both of them recompute the target -- to the display size, or to
+    // that times the Output Scaling ratio -- and either would silently undo
+    // the hold.
+    if (NRApplyFeature1Hold())
+    {
+        LOG_DEBUG("DLSS-NR multi-pass: this feature stays at {}x{}", TargetWidth(), TargetHeight());
+    }
+    else if (Config::Instance()->OutputScalingEnabled.value_or_default() &&
+             (LowResMV() || RenderWidth() == DisplayWidth()))
     {
         LOG_DEBUG("Output Scaling is active");
 

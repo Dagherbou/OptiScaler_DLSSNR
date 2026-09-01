@@ -1,7 +1,6 @@
 #include "pch.h"
 #include "DlssNr_Proxy.h"
 
-
 #include <Config.h>
 #include <Logger.h>
 #include <proxies/NVNGX_Proxy.h>
@@ -94,8 +93,7 @@ ProxyState g_proxy;
 // These have to be set before create, not at evaluate. The model reads its tuning once, while
 // building the feature; values written only at evaluate are ignored, which is why several of these
 // controls appeared to do nothing for a long time.
-void SetCreationParameters(NVSDK_NGX_Parameter* params, const Config& cfg, unsigned int width,
-                           unsigned int height)
+void SetCreationParameters(NVSDK_NGX_Parameter* params, const Config& cfg, unsigned int width, unsigned int height)
 {
     SetUInt(params, "DLSSNR.Enabled", 1u);
     SetUInt(params, "DLSSNR.Width", width);
@@ -144,10 +142,9 @@ void Release()
     g_proxy.height = 0;
 }
 
-unsigned int Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D12Resource* color,
-                 ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output,
-                 unsigned int width, unsigned int height, unsigned int guideWidth,
-                 unsigned int guideHeight, bool depthInverted, bool reset, float mvScaleX,
+unsigned int Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D12Resource* color, ID3D12Resource* depth,
+                 ID3D12Resource* motion, ID3D12Resource* output, unsigned int width, unsigned int height,
+                 unsigned int guideWidth, unsigned int guideHeight, bool depthInverted, bool reset, float mvScaleX,
                  float mvScaleY)
 {
     if (g_proxy.failed || !Available())
@@ -206,9 +203,9 @@ unsigned int Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D1
             NVSDK_NGX_FeatureCommonInfo fcInfo {};
             NVNGXProxy::GetFeatureCommonInfo(&fcInfo);
 
-            const auto initResult = NVNGXProxy::D3D12_Init_Ext()(
-                app_id_override, State::Instance().NVNGX_ApplicationDataPath.c_str(), device,
-                (NVSDK_NGX_Version) 0x0000015, &fcInfo);
+            const auto initResult =
+                NVNGXProxy::D3D12_Init_Ext()(app_id_override, State::Instance().NVNGX_ApplicationDataPath.c_str(),
+                                             device, (NVSDK_NGX_Version) 0x0000015, &fcInfo);
 
             // Success here means very little. NGX init is idempotent: a second call on an already
             // initialised core returns success and changes nothing, which the driver's own log
@@ -288,11 +285,9 @@ unsigned int Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D1
     SetFloat(params, "DLSSNR.SkinStructureStrength", cfg.DlssNrSkinStructure.value_or_default());
     SetUInt(params, "DLSSNR.UseAutoMask", cfg.DlssNrAutoMask.value_or_default() ? 1u : 0u);
 
-    const auto result =
-        NVNGXProxy::D3D12_EvaluateFeature()(cmdList, g_proxy.feature, params, nullptr);
+    const auto result = NVNGXProxy::D3D12_EvaluateFeature()(cmdList, g_proxy.feature, params, nullptr);
 
     return (unsigned int) result;
 }
 } // namespace Proxy
 } // namespace DlssNr
-
