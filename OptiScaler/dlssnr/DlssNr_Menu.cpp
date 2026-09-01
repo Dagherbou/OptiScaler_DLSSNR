@@ -225,6 +225,24 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nWhat it trades: the shading the model adds is broad and survives enlargement;"
                        "\nthe fine structure it synthesises does not, and softens.");
 
+        {
+            static const char* transferNames[] = { "Classic", "Matched residual" };
+            int transfer = (int) config->DlssNrTransfer.value_or_default();
+            if (transfer < 0 || transfer > (int) DlssNr::Transfer::MatchedResidual)
+                transfer = (int) DlssNr::Transfer::Classic;
+            if (ImGui::Combo("Transfer", &transfer, transferNames, IM_ARRAYSIZE(transferNames)))
+                config->DlssNrTransfer = (uint32_t) transfer;
+
+            HelpMarker("How a below-frame model is brought back onto the picture this pass writes."
+                       "\n\nClassic is the current path: shrink with bilinear, then fold the small answer"
+                       "\ndirectly onto the full-resolution picture. It is the default."
+                       "\n\nMatched residual keeps a sharp copy of the picture the model was shown, adds only"
+                       "\nwhat the model changed, and then runs the same highlight-aware compose. The shrink"
+                       "\nis an area filter so the model is not fed an aliased thumbnail."
+                       "\n\nWhen the model is the same size as this frame the two match. Changing this does"
+                       "\nnot rebuild the model; the next frame uses the new shrink and the new compose.");
+        }
+
         ImGui::SeparatorText("How much of it lands");
 
         float transfer = config->DlssNrTransferStrength.value_or_default();
@@ -236,7 +254,9 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nown, rescaled so its luminance sits where the original says it should. This"
                        "\nblends between the two, so both ends are real pictures and everything between"
                        "\nthem is one too."
-                       "\n\n0 gives back exactly what the upscaler produced. 1 is the model's picture."
+                       "\n\n0 writes back the encode keep (hdrCopy), the frame as this pass first saw it."
+                       "\nThat is not the Capture button's before image, which is the encoded proxy."
+                       "\n1 is the model's picture."
                        "\n\nAbove 1 carries on past it in the same direction, which is not something the"
                        "\nmodel asked for -- use it to see what it is doing, then come back down. This"
                        "\nis the control to push if you want more effect: Intensity belongs to the model"
@@ -340,7 +360,8 @@ void RenderMenu(Config* config, float menuResScale)
                        "\ngone: it read scene brightness rather than where white belongs, handed the"
                        "\nmodel a picture three times too dark, and left the highlight path nothing to"
                        "\ngive back."
-                       "\n\nAt strength zero the frame is still bit-identical whatever this says.");
+                       "\n\nAt strength zero the pass writes hdrCopy, so paper white does not move"
+                       "\nthe edited picture.");
 
         float maxRatio = config->DlssNrMaxRatio.value_or_default();
         if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
@@ -426,8 +447,29 @@ void RenderMenu(Config* config, float menuResScale)
                            "\nright of it is the frame the model edited.");
         }
 
-        static const char* debugNames[] = { "Off", "Proxy (what the model sees)", "Model output (raw)",
-                                            "Difference (amplified)" };
+        const bool matched = DlssNr::ConfiguredTransfer() == DlssNr::Transfer::MatchedResidual;
+        ImGui::BeginDisabled(!matched);
+        {
+            static const char* liftNames[] = { "UpgradeToneMap", "Additive headroom" };
+            int lift = (int) config->DlssNrHdrLift.value_or_default();
+            if (lift < 0 || lift > 1)
+                lift = 0;
+            if (ImGui::Combo("HDR lift", &lift, liftNames, IM_ARRAYSIZE(liftNames)))
+                config->DlssNrHdrLift = (uint32_t) lift;
+            HelpMarker("Matched residual only. UpgradeToneMap is the default highlight-aware compose."
+                       "\n\nAdditive headroom adds the model's change onto the original. Detail strength"
+                       "\nstill lerps toward that sum; Colour strength does not apply.");
+        }
+        ImGui::EndDisabled();
+
+        static const char* debugNames[] = {
+            "Off",
+            "Proxy (what the model sees)",
+            "Model output (raw)",
+            "Difference (amplified)",
+            "Full-res proxy",
+            "Matched T",
+        };
         int debugView = (int) config->DlssNrDebugView.value_or_default();
         if (ImGui::Combo("Debug view", &debugView, debugNames, IM_ARRAYSIZE(debugNames)))
             config->DlssNrDebugView = (uint32_t) debugView;
