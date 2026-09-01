@@ -497,7 +497,7 @@ void MenuCommon::AddDx11Backends(Upscaler upscaler)
 {
     RenderUpscalerCombo(API::DX11, upscaler,
                         { Upscaler::XeSS, Upscaler::FSR22, Upscaler::FSR31, Upscaler::XeSS_on12, Upscaler::FSR21_on12,
-                          Upscaler::FSR22_on12, Upscaler::FFX_on12, Upscaler::DLSS });
+                          Upscaler::FSR22_on12, Upscaler::FFX_on12, Upscaler::DLSS, Upscaler::DLSS_on12 });
 }
 
 void MenuCommon::AddDx12Backends(Upscaler upscaler)

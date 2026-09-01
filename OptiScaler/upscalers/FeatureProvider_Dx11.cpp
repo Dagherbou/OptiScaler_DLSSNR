@@ -7,6 +7,7 @@
 #include "NVNGX_Parameter.h"
 
 #include "upscalers/dlss/DLSSFeature_Dx11.h"
+#include "upscalers/dlss/DLSSFeature_Dx11On12.h"
 #include "upscalers/dlssd/DLSSDFeature_Dx11.h"
 #include "upscalers/fsr2/FSR2Feature_Dx11.h"
 #include "upscalers/fsr2/FSR2Feature_Dx11On12.h"
@@ -54,6 +55,17 @@ bool FeatureProvider_Dx11::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
     case Upscaler::FFX_on12:
         *feature = std::make_unique<FFXFeatureDx11on12>(handleId, parameters);
         break;
+
+    case Upscaler::DLSS_on12:
+        // DLSS across the bridge. The only way a D3D11 game can have both DLSS and Neural
+        // Rendering, because the model will not initialise on a D3D11 device.
+        if (primaryGpu.dlssCapable && state.NVNGX_DLSS_Path.has_value())
+        {
+            *feature = std::make_unique<DLSSFeatureDx11on12>(handleId, parameters);
+            break;
+        }
+
+        [[fallthrough]];
 
     case Upscaler::DLSS:
         if (primaryGpu.dlssCapable && state.NVNGX_DLSS_Path.has_value())
