@@ -62,10 +62,10 @@ part of the solution, and builds with everything else.
 
 ## Design notes worth knowing before changing anything
 
-- **Two transfers, Classic default.** Classic is the live path: bilinear shrink, then ratio
-  compose of the small answer onto the full-resolution frame. Matched residual is the other
-  option: an area shrink, then the model's *change* added onto the sharp full-res proxy
-  (`colorCopy`) before the same UpgradeToneMap (or additive H1, under Transfer). Switching does not
+- **Two transfers, Matched residual default.** Matched residual is an area shrink, then the
+  model's *change* added onto the sharp full-res proxy (`colorCopy`) before the same
+  UpgradeToneMap (or additive H1, under Transfer). Classic is the older path: bilinear shrink,
+  then ratio compose of the small answer onto the full-resolution frame. Switching does not
   rebuild the model.
 - **Ratio composition, after an optional residual.** Classic still composes by ratio against the
   original's luminance, not by adding a raw delta to the frame. Matched residual builds `T` first,

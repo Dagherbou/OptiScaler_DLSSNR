@@ -313,8 +313,8 @@ class Config
     // Lock the model to the game's render (native) raster. The slider then shows the live R/D
     // ratio and is not adjustable. WorkingScale is left alone so unchecking restores it.
     CustomOptional<bool> DlssNrWorkAtNative { false };
-    // 0 Classic (live path), 1 Matched residual. How a below-frame model is brought back.
-    CustomOptional<uint32_t> DlssNrTransfer { 0 };
+    // 0 Classic, 1 Matched residual (default). How a below-frame model is brought back.
+    CustomOptional<uint32_t> DlssNrTransfer { 1 };
     // 0 UpgradeToneMap (H0), 1 additive headroom (H1). Used only if Transfer == 1.
     CustomOptional<uint32_t> DlssNrHdrLift { 0 };
 

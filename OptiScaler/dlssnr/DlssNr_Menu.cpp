@@ -276,11 +276,11 @@ void RenderMenu(Config* config, float menuResScale)
                 config->DlssNrTransfer = (uint32_t) transfer;
 
             HelpMarker("How a below-frame model is brought back onto the picture this pass writes."
-                       "\n\nClassic is the current path: shrink with bilinear, then fold the small answer"
-                       "\ndirectly onto the full-resolution picture. It is the default."
-                       "\n\nMatched residual keeps a sharp copy of the picture the model was shown, adds only"
-                       "\nwhat the model changed, and then runs the same highlight-aware compose. The shrink"
-                       "\nis an area filter so the model is not fed an aliased thumbnail."
+                       "\n\nMatched residual is the default: keep a sharp copy of the picture the model was"
+                       "\nshown, add only what the model changed, then run the highlight-aware compose. The"
+                       "\nshrink is an area filter so the model is not fed an aliased thumbnail."
+                       "\n\nClassic shrinks with bilinear and folds the small answer directly onto the"
+                       "\nfull-resolution picture."
                        "\n\nWhen the model is the same size as this frame the two match. Changing this does"
                        "\nnot rebuild the model; the next frame uses the new shrink and the new compose.");
         }
