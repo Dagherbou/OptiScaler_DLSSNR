@@ -71,7 +71,8 @@ void DLSSFeature::ProcessInitParams(NVSDK_NGX_Parameter* InParameters)
     {
         LOG_DEBUG("DLSS-NR multi-pass: this feature stays at {}x{}", TargetWidth(), TargetHeight());
     }
-    else if (Config::Instance()->OutputScalingEnabled.value_or_default() && (LowResMV() || RenderWidth() == DisplayWidth()))
+    else if (Config::Instance()->OutputScalingEnabled.value_or_default() &&
+             (LowResMV() || RenderWidth() == DisplayWidth()))
     {
         LOG_DEBUG("Output Scaling is active");
 

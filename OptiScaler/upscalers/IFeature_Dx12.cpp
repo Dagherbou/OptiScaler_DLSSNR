@@ -191,37 +191,37 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
 
     if (useOutputScaling)
     {
-        pipeline.push_back(
-            { // Setup
-              [&](ID3D12Resource* nextOutput) -> ID3D12Resource*
-              {
-                  unsigned int osWidth = 0;
-                  unsigned int osHeight = 0;
-                  OutputScalingWorkSize(this, osWidth, osHeight);
+        pipeline.push_back({ // Setup
+                             [&](ID3D12Resource* nextOutput) -> ID3D12Resource*
+                             {
+                                 unsigned int osWidth = 0;
+                                 unsigned int osHeight = 0;
+                                 OutputScalingWorkSize(this, osWidth, osHeight);
 
-                  if (OutputScaler->CreateBufferResource(Device, nextOutput, osWidth, osHeight,
-                                                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
-                  {
-                      OutputScaler->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                      return OutputScaler->Buffer();
-                  }
-                  return nullptr;
-              },
+                                 if (OutputScaler->CreateBufferResource(Device, nextOutput, osWidth, osHeight,
+                                                                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+                                 {
+                                     OutputScaler->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                                     return OutputScaler->Buffer();
+                                 }
+                                 return nullptr;
+                             },
 
-              // Dispatch
-              [&](ID3D12Resource* input, ID3D12Resource* output) -> bool
-              {
-                  LOG_DEBUG("Scaling output...");
-                  OutputScaler->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                             // Dispatch
+                             [&](ID3D12Resource* input, ID3D12Resource* output) -> bool
+                             {
+                                 LOG_DEBUG("Scaling output...");
+                                 OutputScaler->SetBufferState(InCommandList,
+                                                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
-                  if (!OutputScaler->Dispatch(InCommandList, input, output))
-                  {
-                      Config::Instance()->OutputScalingEnabled.set_volatile_value(false);
-                      State::Instance().changeBackend[Handle()->Id] = true;
-                      return false;
-                  }
-                  return true;
-              } });
+                                 if (!OutputScaler->Dispatch(InCommandList, input, output))
+                                 {
+                                     Config::Instance()->OutputScalingEnabled.set_volatile_value(false);
+                                     State::Instance().changeBackend[Handle()->Id] = true;
+                                     return false;
+                                 }
+                                 return true;
+                             } });
     }
 
     _actualSharpness = _sharpness;

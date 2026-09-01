@@ -58,8 +58,8 @@ bool IFeature::NRApplyFeature1Hold()
 
     if (_targetWidth != _nrSourceWidth || _targetHeight != _nrSourceHeight)
     {
-        LOG_DEBUG("DLSS-NR multi-pass: restoring the first pass's 1:1 target, {}x{} rather than {}x{}",
-                  _nrSourceWidth, _nrSourceHeight, _targetWidth, _targetHeight);
+        LOG_DEBUG("DLSS-NR multi-pass: restoring the first pass's 1:1 target, {}x{} rather than {}x{}", _nrSourceWidth,
+                  _nrSourceHeight, _targetWidth, _targetHeight);
     }
 
     _targetWidth = _nrSourceWidth;

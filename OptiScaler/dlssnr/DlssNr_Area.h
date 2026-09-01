@@ -21,8 +21,7 @@ struct AreaSample
 };
 
 // src is row-major srcW*srcH. Matches spec §7.1 / HLSL Mode 2 Matched.
-inline AreaSample AreaDownsamplePixel(const AreaSample* src, int srcW, int srcH, int dstW, int dstH,
-                                      int x, int y)
+inline AreaSample AreaDownsamplePixel(const AreaSample* src, int srcW, int srcH, int dstW, int dstH, int x, int y)
 {
     if (dstW == srcW && dstH == srcH)
         return src[y * srcW + x];

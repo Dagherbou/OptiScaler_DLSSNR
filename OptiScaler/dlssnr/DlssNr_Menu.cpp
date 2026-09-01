@@ -87,10 +87,10 @@ void RenderMenu(Config* config, float menuResScale)
             config->DlssNrEnabled = enabled;
 
         HelpMarker("Synthesises detail in the upscaler's output, before frame generation sees it."
-                       "\n\nNeeds two similarly named files beside OptiScaler, one character apart:"
-                       "\n  nvngx_dlssnr.dll       NVIDIA's model (~165 MB) -- you supply it"
-                       "\n  nvngx.dll_dlssnr.dll   the forwarder (~13 KB) -- ships in this package"
-                       "\nUndocumented and driven directly, so none of this is officially supported.");
+                   "\n\nNeeds two similarly named files beside OptiScaler, one character apart:"
+                   "\n  nvngx_dlssnr.dll       NVIDIA's model (~165 MB) -- you supply it"
+                   "\n  nvngx.dll_dlssnr.dll   the forwarder (~13 KB) -- ships in this package"
+                   "\nUndocumented and driven directly, so none of this is officially supported.");
 
         // The toggle can be bound to a key, and nobody would think to look for it under Keybinds
         // unless told. Dimmed, because it is a note rather than a setting.
@@ -119,8 +119,7 @@ void RenderMenu(Config* config, float menuResScale)
             const auto ms = DlssNr::LastGpuTime();
 
             if (ms.has_value())
-                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running - %.2f ms per frame",
-                                   ms.value());
+                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running - %.2f ms per frame", ms.value());
             else
                 ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running.");
 
@@ -148,14 +147,14 @@ void RenderMenu(Config* config, float menuResScale)
                 config->DlssNrMode = (uint32_t) mode;
 
             HelpMarker("Where the model sits relative to the upscaler."
-                           "\n\nPost-process runs it on the finished frame. It is the only one that needs"
-                           "\nnothing from the upscaler, so it is also the only one that works when a game"
-                           "\nis using its own DLSS and OptiScaler is passing it straight through."
-                           "\n\nMulti-pass runs a first pass 1:1 -- denoising if that is Ray Reconstruction,"
-                           "\nantialiasing as DLAA if it is Super Resolution -- then the model at render"
-                           "\nresolution, then a spatial FSR1 enlarge to display. Dx12 DLSS / Ray"
-                           "\nReconstruction only; anything else, or a first-pass pipeline that does not"
-                           "\nmatch the live upscaler, falls back to post-process.");
+                       "\n\nPost-process runs it on the finished frame. It is the only one that needs"
+                       "\nnothing from the upscaler, so it is also the only one that works when a game"
+                       "\nis using its own DLSS and OptiScaler is passing it straight through."
+                       "\n\nMulti-pass runs a first pass 1:1 -- denoising if that is Ray Reconstruction,"
+                       "\nantialiasing as DLAA if it is Super Resolution -- then the model at render"
+                       "\nresolution, then a spatial FSR1 enlarge to display. Dx12 DLSS / Ray"
+                       "\nReconstruction only; anything else, or a first-pass pipeline that does not"
+                       "\nmatch the live upscaler, falls back to post-process.");
 
             const auto selected = (DlssNr::Mode) config->DlssNrMode.value_or_default();
 
@@ -168,11 +167,11 @@ void RenderMenu(Config* config, float menuResScale)
                     config->DlssNrFeature1Pipeline = (uint32_t) pipeline;
 
                 HelpMarker("Which upscaler the first pass is."
-                               "\n\nThis states what the game is set up for; it does not switch anything."
-                               "\nOptiScaler cannot substitute one for the other -- Ray Reconstruction needs"
-                               "\nG-buffer inputs a Super Resolution integration never supplies -- so a"
-                               "\nmismatch falls back to post-process rather than half-applying the"
-                               "\narrangement, and says so in the log.");
+                           "\n\nThis states what the game is set up for; it does not switch anything."
+                           "\nOptiScaler cannot substitute one for the other -- Ray Reconstruction needs"
+                           "\nG-buffer inputs a Super Resolution integration never supplies -- so a"
+                           "\nmismatch falls back to post-process rather than half-applying the"
+                           "\narrangement, and says so in the log.");
             }
         }
 
@@ -186,9 +185,9 @@ void RenderMenu(Config* config, float menuResScale)
             config->DlssNrWorkAtNative = atNative;
 
         HelpMarker("Lock the model to the game's render resolution."
-                       "\n\nThe slider then shows that size as a percentage of display and cannot be"
-                       "\nmoved. Unchecking puts the last display-relative value back, clamped to"
-                       "\nwhatever the current placement allows.");
+                   "\n\nThe slider then shows that size as a percentage of display and cannot be"
+                   "\nmoved. Unchecking puts the last display-relative value back, clamped to"
+                   "\nwhatever the current placement allows.");
 
         unsigned int displayH = 0;
         unsigned int nativeH = 0;
@@ -252,22 +251,21 @@ void RenderMenu(Config* config, float menuResScale)
 
         if (ImGui::IsItemDeactivatedAfterEdit() && pendingScale >= 0)
         {
-            config->DlssNrWorkingScale =
-                std::clamp(pendingScale, minPercent, maxPercent) / 100.0f;
+            config->DlssNrWorkingScale = std::clamp(pendingScale, minPercent, maxPercent) / 100.0f;
             pendingScale = -1;
         }
 
         ImGui::EndDisabled();
 
         HelpMarker("What fraction of display resolution the model works at. The same percentage"
-                       "\ncosts the same in post-process and multi-pass. Cost falls with the square of"
-                       "\nthis, so half resolution is roughly a quarter of the time."
-                       "\n\nThe frame is never reduced. Only the model's contribution is computed small"
-                       "\nand enlarged, so the picture underneath is untouched whatever this says."
-                       "\n\nMulti-pass cannot go above the game's render resolution as a fraction of"
-                       "\ndisplay -- there is nothing larger for the model to read."
-                       "\n\nWhat it trades: the shading the model adds is broad and survives enlargement;"
-                       "\nthe fine structure it synthesises does not, and softens.");
+                   "\ncosts the same in post-process and multi-pass. Cost falls with the square of"
+                   "\nthis, so half resolution is roughly a quarter of the time."
+                   "\n\nThe frame is never reduced. Only the model's contribution is computed small"
+                   "\nand enlarged, so the picture underneath is untouched whatever this says."
+                   "\n\nMulti-pass cannot go above the game's render resolution as a fraction of"
+                   "\ndisplay -- there is nothing larger for the model to read."
+                   "\n\nWhat it trades: the shading the model adds is broad and survives enlargement;"
+                   "\nthe fine structure it synthesises does not, and softens.");
 
         {
             static const char* transferNames[] = { "Classic", "Matched residual" };
@@ -318,17 +316,17 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::EndDisabled();
 
         HelpMarker("How far the frame moves toward the model's picture."
-                       "\n\nThe model's answer is not added to the frame -- it is a complete picture of its"
-                       "\nown, rescaled so its luminance sits where the original says it should. This"
-                       "\nblends between the two, so both ends are real pictures and everything between"
-                       "\nthem is one too."
-                       "\n\n0 writes back the frame as this pass first saw it. That is not the Capture"
-                       "\nbefore image, which is what the model was shown."
-                       "\n1 is the model's picture."
-                       "\n\nAbove 1 carries on past it in the same direction, which is not something the"
-                       "\nmodel asked for -- use it to see what it is doing, then come back down. This"
-                       "\nis the control to push if you want more effect: Intensity belongs to the model"
-                       "\nand it decides what to do with it.");
+                   "\n\nThe model's answer is not added to the frame -- it is a complete picture of its"
+                   "\nown, rescaled so its luminance sits where the original says it should. This"
+                   "\nblends between the two, so both ends are real pictures and everything between"
+                   "\nthem is one too."
+                   "\n\n0 writes back the frame as this pass first saw it. That is not the Capture"
+                   "\nbefore image, which is what the model was shown."
+                   "\n1 is the model's picture."
+                   "\n\nAbove 1 carries on past it in the same direction, which is not something the"
+                   "\nmodel asked for -- use it to see what it is doing, then come back down. This"
+                   "\nis the control to push if you want more effect: Intensity belongs to the model"
+                   "\nand it decides what to do with it.");
 
         ImGui::BeginDisabled(debugOn || additive);
         float colour = config->DlssNrColourStrength.value_or_default();
@@ -337,26 +335,26 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::EndDisabled();
 
         HelpMarker("Whether the model's colour arrives with its light."
-                       "\n\n0 keeps the game's own hue exactly -- every pixel is the original colour with"
-                       "\nonly its brightness carrying the model's verdict. Game-accurate colour, with"
-                       "\nthe detail. 1 brings the model's colour as well, in its own hue, clamped into"
-                       "\nAP1 so nothing unreachable is asked for."
-                       "\n\nThis cannot shift hue on its own: it interpolates between two finished"
-                       "\npictures rather than adding a colour difference to one, which is what used to"
-                       "\nlet a warm subject come back green."
-                       "\n\nAdd the change (under HDR lift) has no colour mix; this slider is ignored"
-                       "\nthen.");
+                   "\n\n0 keeps the game's own hue exactly -- every pixel is the original colour with"
+                   "\nonly its brightness carrying the model's verdict. Game-accurate colour, with"
+                   "\nthe detail. 1 brings the model's colour as well, in its own hue, clamped into"
+                   "\nAP1 so nothing unreachable is asked for."
+                   "\n\nThis cannot shift hue on its own: it interpolates between two finished"
+                   "\npictures rather than adding a colour difference to one, which is what used to"
+                   "\nlet a warm subject come back green."
+                   "\n\nAdd the change (under HDR lift) has no colour mix; this slider is ignored"
+                   "\nthen.");
 
         float maxRatio = config->DlssNrMaxRatio.value_or_default();
         if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
             config->DlssNrMaxRatio = maxRatio;
 
         HelpMarker("The most the pass may brighten any pixel, as a multiple of what it already"
-                       "\nwas. Darkening is not capped by this -- only growth is."
-                       "\n\nLights are where the model has least to say and where rescaling its answer"
-                       "\ninto the frame does the most damage: an early version turned every strip light"
-                       "\nin the scene into a string of coloured cells. 2x leaves detail intact while"
-                       "\nmaking that failure impossible. Raise it only if bright areas look clipped.");
+                   "\nwas. Darkening is not capped by this -- only growth is."
+                   "\n\nLights are where the model has least to say and where rescaling its answer"
+                   "\ninto the frame does the most damage: an early version turned every strip light"
+                   "\nin the scene into a string of coloured cells. 2x leaves detail intact while"
+                   "\nmaking that failure impossible. Raise it only if bright areas look clipped.");
 
         ImGui::SeparatorText("Model");
 
@@ -368,8 +366,8 @@ void RenderMenu(Config* config, float menuResScale)
             config->DlssNrPreset = (uint32_t) preset;
 
         HelpMarker("Default leaves the choice to the model."
-                       "\n\nNot the same scale as the super resolution or ray reconstruction presets --"
-                       "\nthe same number means something different here.");
+                   "\n\nNot the same scale as the super resolution or ray reconstruction presets --"
+                   "\nthe same number means something different here.");
 
         static const char* nrStyleNames[] = { "Default (standard)", "Natural", "Cinematic" };
         int style = (int) config->DlssNrStyle.value_or_default();
@@ -395,29 +393,28 @@ void RenderMenu(Config* config, float menuResScale)
             config->DlssNrIntensity = intensity;
 
         HelpMarker("The model's own strength control, applied inside it. Distinct from detail"
-                       "\nstrength above, which scales the result afterwards.");
+                   "\nstrength above, which scales the result afterwards.");
 
         float localStructure = config->DlssNrLocalStructure.value_or_default();
         if (ImGui::SliderFloat("Local structure", &localStructure, 0.0f, 2.0f, "%.2f"))
             config->DlssNrLocalStructure = localStructure;
 
         HelpMarker("How strongly the model rebuilds local detail."
-                       "\n\nRead when the model is built, so a change rebuilds it after a moment.");
+                   "\n\nRead when the model is built, so a change rebuilds it after a moment.");
 
         float localTone = config->DlssNrLocalTone.value_or_default();
         if (ImGui::SliderFloat("Local tone", &localTone, 0.0f, 2.0f, "%.2f"))
             config->DlssNrLocalTone = localTone;
 
         HelpMarker("How strongly the model remaps local brightness."
-                       "\n\nRead when the model is built, so a change rebuilds it after a moment.");
-
+                   "\n\nRead when the model is built, so a change rebuilds it after a moment.");
 
         float skin = config->DlssNrSkinStructure.value_or_default();
         if (ImGui::SliderFloat("Skin structure", &skin, -1.0f, 2.0f, "%.2f"))
             config->DlssNrSkinStructure = skin;
 
         HelpMarker("-1 means follow local structure, and is the model's own default -- it is not a"
-                       "\nstrength of zero. 0 and above set skin independently of the rest of the frame.");
+                   "\nstrength of zero. 0 and above set skin independently of the rest of the frame.");
 
         bool autoMask = config->DlssNrAutoMask.value_or_default();
         if (ImGui::Checkbox("Auto skin mask", &autoMask))
@@ -437,14 +434,14 @@ void RenderMenu(Config* config, float menuResScale)
             config->DlssNrWhitePointScale = wpScale;
 
         HelpMarker("What the frame is divided by before the model sees it. There is no other white"
-                       "\npoint; this is the whole of it."
-                       "\n\nThe model was trained on finished frames where white sits at 1. The"
-                       "\nupscaler's output is linear and open-ended, so something has to say where"
-                       "\nwhite is, and 1.0 is right for most games."
-                       "\n\nAbove 1 the picture handed over is darker, so highlights sit lower on the"
-                       "\ncurve and the model treats them as less extreme; below 1, the opposite. If a"
-                       "\ngame looks washed out or flat, this is the first thing to move."
-                       "\n\nAt detail strength 0 this does not move the edited picture.");
+                   "\npoint; this is the whole of it."
+                   "\n\nThe model was trained on finished frames where white sits at 1. The"
+                   "\nupscaler's output is linear and open-ended, so something has to say where"
+                   "\nwhite is, and 1.0 is right for most games."
+                   "\n\nAbove 1 the picture handed over is darker, so highlights sit lower on the"
+                   "\ncurve and the model treats them as less extreme; below 1, the opposite. If a"
+                   "\ngame looks washed out or flat, this is the first thing to move."
+                   "\n\nAt detail strength 0 this does not move the edited picture.");
 
         ImGui::SeparatorText("Inspect");
 
@@ -461,14 +458,14 @@ void RenderMenu(Config* config, float menuResScale)
         }
 
         HelpMarker("Writes eight consecutive frames twice: as the upscaler produced them, and again"
-                       "\nonce the pass has run."
-                       "\n\nIt writes whatever the pass is currently showing. Turn Debug view off if you"
-                       "\nwant the composed after image."
-                       "\n\nSame frames, same run, one variable -- which is what comparing two video"
-                       "\ncaptures can never be, since they have different camera paths and a codec in"
-                       "\nbetween that discards exactly the fine temporal detail in question."
-                       "\n\nRaw, into a dlssnr-capture folder beside OptiScaler. Bounded to eight frames,"
-                       "\nand each run overwrites the last.");
+                   "\nonce the pass has run."
+                   "\n\nIt writes whatever the pass is currently showing. Turn Debug view off if you"
+                   "\nwant the composed after image."
+                   "\n\nSame frames, same run, one variable -- which is what comparing two video"
+                   "\ncaptures can never be, since they have different camera paths and a codec in"
+                   "\nbetween that discards exactly the fine temporal detail in question."
+                   "\n\nRaw, into a dlssnr-capture folder beside OptiScaler. Bounded to eight frames,"
+                   "\nand each run overwrites the last.");
 
         ImGui::BeginDisabled(debugOn);
         static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
@@ -478,17 +475,17 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::EndDisabled();
 
         HelpMarker("Shows the pass against itself, so the two can be seen at once rather than"
-                       "\ntoggled and remembered."
-                       "\n\nSide by side puts the whole frame in each half. A half is half as wide as"
-                       "\nthe frame, so Zoom decides whether you see letterbox bars or cropped sides."
-                       "\nIt is for looking at rather than playing in."
-                       "\n\nWipe cuts a single frame at the split and resamples nothing, so the picture"
-                       "\nis the right shape and can be played normally. Drag the split below; it is a"
-                       "\nstored setting and stays put once the menu is closed."
-                       "\n\nSwap sides decides which half is the untouched frame. Neither needs the"
-                       "\nmenu open to keep working. A hairline marks the join."
-                       "\n\nA debug view replaces the composed picture, so comparison is off while one"
-                       "\nis on.");
+                   "\ntoggled and remembered."
+                   "\n\nSide by side puts the whole frame in each half. A half is half as wide as"
+                   "\nthe frame, so Zoom decides whether you see letterbox bars or cropped sides."
+                   "\nIt is for looking at rather than playing in."
+                   "\n\nWipe cuts a single frame at the split and resamples nothing, so the picture"
+                   "\nis the right shape and can be played normally. Drag the split below; it is a"
+                   "\nstored setting and stays put once the menu is closed."
+                   "\n\nSwap sides decides which half is the untouched frame. Neither needs the"
+                   "\nmenu open to keep working. A hairline marks the join."
+                   "\n\nA debug view replaces the composed picture, so comparison is off while one"
+                   "\nis on.");
 
         if (compare != 0 && !debugOn)
         {
@@ -497,10 +494,10 @@ void RenderMenu(Config* config, float menuResScale)
                 config->DlssNrCompareSwap = swap;
 
             HelpMarker("Puts the edited frame on the other side."
-                           "\n\nWorth doing once you have decided which you prefer: the eye is not"
-                           "\neven-handed about left and right, and a difference can read as an"
-                           "\nimprovement purely from where it sits. If the same side still wins after"
-                           "\nswapping, it is the pass you are seeing and not the placement.");
+                       "\n\nWorth doing once you have decided which you prefer: the eye is not"
+                       "\neven-handed about left and right, and a difference can read as an"
+                       "\nimprovement purely from where it sits. If the same side still wins after"
+                       "\nswapping, it is the pass you are seeing and not the placement.");
         }
 
         if (compare == 1 && !debugOn)
@@ -510,11 +507,11 @@ void RenderMenu(Config* config, float menuResScale)
                 config->DlssNrCompareZoom = std::clamp(zoom, 1.0f, 2.0f);
 
             HelpMarker("How much of the frame each half shows."
-                           "\n\nA half is half as wide as the frame and just as tall, so the frame"
-                           "\ncannot fill it and keep its shape."
-                           "\n\nAt 1 the whole frame is there at its right proportions, with bars above"
-                           "\nand below. At 2 the half is filled and the sides are cropped away"
-                           "\ninstead. Anything between trades one for the other.");
+                       "\n\nA half is half as wide as the frame and just as tall, so the frame"
+                       "\ncannot fill it and keep its shape."
+                       "\n\nAt 1 the whole frame is there at its right proportions, with bars above"
+                       "\nand below. At 2 the half is filled and the sides are cropped away"
+                       "\ninstead. Anything between trades one for the other.");
         }
 
         if (compare == 2 && !debugOn)
@@ -539,19 +536,18 @@ void RenderMenu(Config* config, float menuResScale)
             config->DlssNrDebugView = (uint32_t) debugView;
 
         HelpMarker("Off is the composed picture."
-                       "\n\nProxy is the small picture handed to the model -- if that looks wrong, the"
-                       "\nwhite point is wrong and nothing downstream can be judged."
-                       "\n\nModel output is the model's raw answer, the same size as the proxy."
-                       "\n\nDifference shows what the model actually changed, amplified twenty times and"
-                       "\ncentred on grey. A flat grey frame there means it is doing nothing."
-                       "\n\nFull-res proxy is the sharp picture the model was shown, before it was"
-                       "\nshrunk. Matched residual only; Classic writes black."
-                       "\n\nMatched picture is that sharp proxy plus only what the model changed, before"
-                       "\nHDR lift. Matched residual only; Classic writes black.");
+                   "\n\nProxy is the small picture handed to the model -- if that looks wrong, the"
+                   "\nwhite point is wrong and nothing downstream can be judged."
+                   "\n\nModel output is the model's raw answer, the same size as the proxy."
+                   "\n\nDifference shows what the model actually changed, amplified twenty times and"
+                   "\ncentred on grey. A flat grey frame there means it is doing nothing."
+                   "\n\nFull-res proxy is the sharp picture the model was shown, before it was"
+                   "\nshrunk. Matched residual only; Classic writes black."
+                   "\n\nMatched picture is that sharp proxy plus only what the model changed, before"
+                   "\nHDR lift. Matched residual only; Classic writes black.");
 
         ImGui::PopItemWidth();
     }
 }
 
 } // namespace DlssNr
-

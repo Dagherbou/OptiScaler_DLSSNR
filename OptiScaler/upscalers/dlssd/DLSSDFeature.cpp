@@ -65,7 +65,8 @@ void DLSSDFeature::ProcessInitParams(NVSDK_NGX_Parameter* InParameters)
     {
         LOG_DEBUG("DLSS-NR multi-pass: this feature stays at {}x{}", TargetWidth(), TargetHeight());
     }
-    else if (Config::Instance()->OutputScalingEnabled.value_or_default() && (LowResMV() || RenderWidth() == DisplayWidth()))
+    else if (Config::Instance()->OutputScalingEnabled.value_or_default() &&
+             (LowResMV() || RenderWidth() == DisplayWidth()))
     {
         float ssMulti = Config::Instance()->OutputScalingMultiplier.value_or_default();
 

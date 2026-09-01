@@ -19,14 +19,8 @@ Mode ConfiguredMode()
     return (Mode) raw;
 }
 
-Transfer ConfiguredTransfer()
-{
-    return ClampTransfer(Config::Instance()->DlssNrTransfer.value_or_default());
-}
+Transfer ConfiguredTransfer() { return ClampTransfer(Config::Instance()->DlssNrTransfer.value_or_default()); }
 
-uint32_t ConfiguredHdrLift()
-{
-    return ClampHdrLift(Config::Instance()->DlssNrHdrLift.value_or_default());
-}
+uint32_t ConfiguredHdrLift() { return ClampHdrLift(Config::Instance()->DlssNrHdrLift.value_or_default()); }
 
 } // namespace DlssNr

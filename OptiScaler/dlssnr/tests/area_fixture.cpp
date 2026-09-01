@@ -31,8 +31,10 @@ static void TestOverlap1D()
 static void Test2x2Mean()
 {
     AreaSample src[4] = {
-        { 1, 0, 0, 1 }, { 0, 1, 0, 1 },
-        { 0, 0, 1, 1 }, { 1, 1, 1, 1 },
+        { 1, 0, 0, 1 },
+        { 0, 1, 0, 1 },
+        { 0, 0, 1, 1 },
+        { 1, 1, 1, 1 },
     };
     const auto p = AreaDownsamplePixel(src, 2, 2, 1, 1, 0, 0);
     ExpectNear("mean.r", p.r, 0.5f);
@@ -61,12 +63,36 @@ static void Test3to2NotUintTruncated()
 
 static void TestClamps()
 {
-    if (DlssNr::ClampTransfer(0) != DlssNr::Transfer::Classic) { std::printf("FAIL t0\n"); ++gFails; }
-    if (DlssNr::ClampTransfer(1) != DlssNr::Transfer::MatchedResidual) { std::printf("FAIL t1\n"); ++gFails; }
-    if (DlssNr::ClampTransfer(2) != DlssNr::Transfer::Classic) { std::printf("FAIL t2\n"); ++gFails; }
-    if (DlssNr::ClampHdrLift(0) != 0) { std::printf("FAIL h0\n"); ++gFails; }
-    if (DlssNr::ClampHdrLift(1) != 1) { std::printf("FAIL h1\n"); ++gFails; }
-    if (DlssNr::ClampHdrLift(9) != 0) { std::printf("FAIL h9\n"); ++gFails; }
+    if (DlssNr::ClampTransfer(0) != DlssNr::Transfer::Classic)
+    {
+        std::printf("FAIL t0\n");
+        ++gFails;
+    }
+    if (DlssNr::ClampTransfer(1) != DlssNr::Transfer::MatchedResidual)
+    {
+        std::printf("FAIL t1\n");
+        ++gFails;
+    }
+    if (DlssNr::ClampTransfer(2) != DlssNr::Transfer::Classic)
+    {
+        std::printf("FAIL t2\n");
+        ++gFails;
+    }
+    if (DlssNr::ClampHdrLift(0) != 0)
+    {
+        std::printf("FAIL h0\n");
+        ++gFails;
+    }
+    if (DlssNr::ClampHdrLift(1) != 1)
+    {
+        std::printf("FAIL h1\n");
+        ++gFails;
+    }
+    if (DlssNr::ClampHdrLift(9) != 0)
+    {
+        std::printf("FAIL h9\n");
+        ++gFails;
+    }
 }
 
 int main()

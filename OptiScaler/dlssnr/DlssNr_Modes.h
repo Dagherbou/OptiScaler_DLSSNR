@@ -70,16 +70,14 @@ struct WorkingExtent
 };
 
 inline WorkingExtent ResolveWorkingSize(float workScale, bool atNative, unsigned int colorWidth,
-                                        unsigned int colorHeight, unsigned int displayWidth,
-                                        unsigned int displayHeight, unsigned int guideWidth,
-                                        unsigned int guideHeight)
+                                        unsigned int colorHeight, unsigned int displayWidth, unsigned int displayHeight,
+                                        unsigned int guideWidth, unsigned int guideHeight)
 {
     if (atNative)
     {
-        const bool guideFits = guideWidth != 0 && guideHeight != 0 && guideWidth < colorWidth &&
-                               guideHeight < colorHeight;
-        return guideFits ? WorkingExtent { guideWidth, guideHeight }
-                         : WorkingExtent { colorWidth, colorHeight };
+        const bool guideFits =
+            guideWidth != 0 && guideHeight != 0 && guideWidth < colorWidth && guideHeight < colorHeight;
+        return guideFits ? WorkingExtent { guideWidth, guideHeight } : WorkingExtent { colorWidth, colorHeight };
     }
 
     if (displayWidth == 0 || displayHeight == 0)

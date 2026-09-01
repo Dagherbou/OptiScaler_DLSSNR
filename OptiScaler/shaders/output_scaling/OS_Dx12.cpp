@@ -77,8 +77,8 @@ bool OS_Dx12::Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InR
     const auto dstW = (uint32_t) dstDesc.Width;
     const auto dstH = (uint32_t) dstDesc.Height;
 
-    FsrEasuCon(fsr1Constants.const0, fsr1Constants.const1, fsr1Constants.const2, fsr1Constants.const3, srcW, srcH,
-               srcW, srcH, dstW, dstH);
+    FsrEasuCon(fsr1Constants.const0, fsr1Constants.const1, fsr1Constants.const2, fsr1Constants.const3, srcW, srcH, srcW,
+               srcH, dstW, dstH);
     // vrperfkit's CSO only runs EASU inside SquaredRadius; tiles outside fall back to bilinear.
     // The struct default is zero, which makes every tile bilinear -- "FSR1" was a no-op. UINT_MAX
     // disables the circle so the whole destination uses EASU.
@@ -127,8 +127,7 @@ bool OS_Dx12::Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InR
 }
 
 OS_Dx12::OS_Dx12(std::string InName, ID3D12Device* InDevice, bool InUpsample)
-    : OS_Dx12(std::move(InName), InDevice, InUpsample,
-              Config::Instance()->OutputScalingDownscaler.value_or_default())
+    : OS_Dx12(std::move(InName), InDevice, InUpsample, Config::Instance()->OutputScalingDownscaler.value_or_default())
 {
 }
 
