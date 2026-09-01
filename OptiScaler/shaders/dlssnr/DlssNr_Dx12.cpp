@@ -501,6 +501,7 @@ void TickNrRetired()
 
 void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
 {
+    needed = codec::TypedFormat(needed);
     if (g_nr.output == nullptr || g_nr.output->GetDesc().Format == needed)
         return;
 
@@ -519,6 +520,8 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
 ID3D12Resource* CreateScratch(ID3D12Device* device, DXGI_FORMAT format, unsigned int width,
                               unsigned int height)
 {
+    format = codec::TypedFormat(format);
+
     D3D12_HEAP_PROPERTIES heap {};
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
 
@@ -843,7 +846,10 @@ bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssN
     };
 
     for (uint32_t i = 0; i < kSrvCount; ++i)
-        CreateShaderResourceView(_device, srvs[i], currentHeap.GetSrvCPU(i));
+    {
+        CreateShaderResourceView(_device, srvs[i], currentHeap.GetSrvCPU(i),
+                                 codec::TypedFormat(srvs[i]->GetDesc().Format));
+    }
 
     ID3D12Resource* const uavs[kUavCount] = {
         OutTarget,
