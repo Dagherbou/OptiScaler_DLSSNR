@@ -1,4 +1,5 @@
 #include "../DlssNr_Area.h"
+#include "../DlssNr_Modes.h"
 
 #include <cmath>
 #include <cstdio>
@@ -58,12 +59,23 @@ static void Test3to2NotUintTruncated()
     ExpectNear("3to2.b", p.b, 1.f / area);
 }
 
+static void TestClamps()
+{
+    if (DlssNr::ClampTransfer(0) != DlssNr::Transfer::Classic) { std::printf("FAIL t0\n"); ++gFails; }
+    if (DlssNr::ClampTransfer(1) != DlssNr::Transfer::MatchedResidual) { std::printf("FAIL t1\n"); ++gFails; }
+    if (DlssNr::ClampTransfer(2) != DlssNr::Transfer::Classic) { std::printf("FAIL t2\n"); ++gFails; }
+    if (DlssNr::ClampHdrLift(0) != 0) { std::printf("FAIL h0\n"); ++gFails; }
+    if (DlssNr::ClampHdrLift(1) != 1) { std::printf("FAIL h1\n"); ++gFails; }
+    if (DlssNr::ClampHdrLift(9) != 0) { std::printf("FAIL h9\n"); ++gFails; }
+}
+
 int main()
 {
     TestOverlap1D();
     Test2x2Mean();
     TestCopy();
     Test3to2NotUintTruncated();
+    TestClamps();
     if (gFails)
     {
         std::printf("%d FAIL\n", gFails);

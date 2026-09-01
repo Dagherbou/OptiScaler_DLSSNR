@@ -104,7 +104,16 @@ struct alignas(256) DlssNrConstants
     // Which side the edited frame is on. Swapping matters because the eye is not even-handed about
     // left and right, so a difference can look like an improvement purely from where it sits.
     uint32_t CompareSwap;
+
+    uint32_t Transfer; // 0 Classic, 1 Matched residual
+    uint32_t HdrLift;  // 0 H0, 1 H1; ignored unless Transfer == 1
 };
+
+#include <cstddef>
+
+static_assert(offsetof(DlssNrConstants, Transfer) == 68, "HLSL gTransfer must sit at 68");
+static_assert(offsetof(DlssNrConstants, HdrLift) == 72, "HLSL gHdrLift must sit at 72");
+static_assert(sizeof(DlssNrConstants) == 256, "CBV size is 256-aligned");
 
 class DlssNr_Common
 {

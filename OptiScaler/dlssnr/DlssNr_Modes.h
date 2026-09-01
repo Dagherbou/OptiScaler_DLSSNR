@@ -24,6 +24,22 @@ enum class Mode : uint32_t
     MultiPass = 1,
 };
 
+enum class Transfer : uint32_t
+{
+    Classic = 0,
+    MatchedResidual = 1,
+};
+
+inline Transfer ClampTransfer(uint32_t raw)
+{
+    return raw > (uint32_t) Transfer::MatchedResidual ? Transfer::Classic : (Transfer) raw;
+}
+
+inline uint32_t ClampHdrLift(uint32_t raw) { return raw > 1u ? 0u : raw; }
+
+Transfer ConfiguredTransfer();
+uint32_t ConfiguredHdrLift();
+
 // Which upscaler the first pass is. OptiScaler does not substitute one for the
 // other -- Ray Reconstruction needs G-buffer inputs a Super Resolution
 // integration never supplies -- so this states which the game is set up for,

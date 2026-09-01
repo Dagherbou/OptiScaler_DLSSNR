@@ -330,6 +330,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrCompareSwap.set_from_config(readBool("DlssNr", "CompareSwap"));
             DlssNrWorkingScale.set_from_config(readFloat("DlssNr", "WorkingScale"));
             DlssNrWorkAtNative.set_from_config(readBool("DlssNr", "WorkAtNative"));
+            DlssNrTransfer.set_from_config(readUInt("DlssNr", "Transfer"));
+            DlssNrHdrLift.set_from_config(readUInt("DlssNr", "HdrLift"));
             if (DlssNrWorkingScale.has_value() && DlssNrWorkingScale.value() <= 0.0f)
             {
                 DlssNrWorkAtNative = true;
@@ -1198,6 +1200,8 @@ bool Config::SaveIni()
                  GetBoolValue(Instance()->DlssNrCompareSwap.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WorkingScale", GetFloatValue(Instance()->DlssNrWorkingScale.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WorkAtNative", GetBoolValue(Instance()->DlssNrWorkAtNative.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "Transfer", GetIntValue(Instance()->DlssNrTransfer.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "HdrLift", GetIntValue(Instance()->DlssNrHdrLift.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AutoCapture", GetBoolValue(Instance()->DlssNrAutoCapture.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WhitePointScale",
                  GetFloatValue(Instance()->DlssNrWhitePointScale.value_for_config()).c_str());

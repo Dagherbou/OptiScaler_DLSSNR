@@ -287,7 +287,7 @@ class Config
     // light source, whatever the model returns.
     CustomOptional<float> DlssNrMaxRatio { 2.0f };
 
-    // 0 off, 1 the picture the model was shown, 2 its raw answer, 3 what it changed, amplified.
+    // 0–5: off, proxy, model, amplified difference, full-res proxy, matched T.
     CustomOptional<uint32_t> DlssNrDebugView { 0 };
 
     // Showing the pass against itself, without having to toggle it and remember what the last frame
@@ -314,6 +314,10 @@ class Config
     // Lock the model to the game's render (native) raster. The slider then shows the live R/D
     // ratio and is not adjustable. WorkingScale is left alone so unchecking restores it.
     CustomOptional<bool> DlssNrWorkAtNative { false };
+    // 0 Classic (live path), 1 Matched residual. How a below-frame model is brought back.
+    CustomOptional<uint32_t> DlssNrTransfer { 0 };
+    // 0 UpgradeToneMap (H0), 1 additive headroom (H1). Used only if Transfer == 1.
+    CustomOptional<uint32_t> DlssNrHdrLift { 0 };
 
     // Ask the driver's own nvngx.dll whether it will dispatch Neural Rendering, once per session.
     //
