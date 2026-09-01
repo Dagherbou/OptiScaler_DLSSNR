@@ -317,6 +317,8 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
             DlssNrEnabled.set_from_config(readBool("DlssNr", "Enabled"));
+            DlssNrMode.set_from_config(readUInt("DlssNr", "Mode"));
+            DlssNrFeature1Pipeline.set_from_config(readUInt("DlssNr", "Feature1Pipeline"));
             DlssNrToggleKey.set_from_config(readInt("DlssNr", "ToggleKey"));
             DlssNrTransferStrength.set_from_config(readFloat("DlssNr", "TransferStrength"));
             DlssNrColourStrength.set_from_config(readFloat("DlssNr", "ColourStrength"));
@@ -327,6 +329,12 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrCompareZoom.set_from_config(readFloat("DlssNr", "CompareZoom"));
             DlssNrCompareSwap.set_from_config(readBool("DlssNr", "CompareSwap"));
             DlssNrWorkingScale.set_from_config(readFloat("DlssNr", "WorkingScale"));
+            DlssNrWorkAtNative.set_from_config(readBool("DlssNr", "WorkAtNative"));
+            if (DlssNrWorkingScale.has_value() && DlssNrWorkingScale.value() <= 0.0f)
+            {
+                DlssNrWorkAtNative = true;
+                DlssNrWorkingScale = 1.0f;
+            }
             DlssNrProxyProbe.set_from_config(readBool("DlssNr", "ProxyProbe"));
             DlssNrUseProxy.set_from_config(readBool("DlssNr", "UseProxy"));
             DlssNrAutoCapture.set_from_config(readBool("DlssNr", "AutoCapture"));
@@ -1168,6 +1176,9 @@ bool Config::SaveIni()
 
     // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
     ini.SetValue("DlssNr", "Enabled", GetBoolValue(Instance()->DlssNrEnabled.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "Mode", GetIntValue(Instance()->DlssNrMode.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "Feature1Pipeline",
+                 GetIntValue(Instance()->DlssNrFeature1Pipeline.value_for_config()).c_str());
     {
         auto toggle = Instance()->DlssNrToggleKey.value_for_config();
         ini.SetValue("DlssNr", "ToggleKey", GetIntValue(toggle, toggle > 0).c_str());
@@ -1186,6 +1197,7 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "CompareSwap",
                  GetBoolValue(Instance()->DlssNrCompareSwap.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WorkingScale", GetFloatValue(Instance()->DlssNrWorkingScale.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "WorkAtNative", GetBoolValue(Instance()->DlssNrWorkAtNative.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AutoCapture", GetBoolValue(Instance()->DlssNrAutoCapture.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WhitePointScale",
                  GetFloatValue(Instance()->DlssNrWhitePointScale.value_for_config()).c_str());

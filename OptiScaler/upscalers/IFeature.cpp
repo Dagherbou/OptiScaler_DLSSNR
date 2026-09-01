@@ -2,6 +2,98 @@
 #include <Config.h>
 #include "IFeature.h"
 
+DlssNr::Mode IFeature::NREffectiveMode() const
+{
+    auto mode = DlssNr::ConfiguredMode();
+
+    if (!Config::Instance()->DlssNrEnabled.value_or_default())
+        return DlssNr::Mode::PostProcess;
+
+    // The multi-pass stage lives in IFeature_Dx12's pipeline and nowhere else.
+    // On D3D11 and Vulkan the model still runs, but only after the upscaler.
+    if (Api() != API::DX12)
+        return DlssNr::Mode::PostProcess;
+
+    // Only DLSS and Ray Reconstruction reach NRPrepareForCreate, so only they
+    // can have their target held at 1:1. Returning anything else for an
+    // upscaler that never records a built mode would ask for a rebuild every
+    // frame, for ever.
+    const auto upscaler = GetUpscalerType();
+
+    if (upscaler != Upscaler::DLSS && upscaler != Upscaler::DLSSD)
+        return DlssNr::Mode::PostProcess;
+
+    if (!DlssNr::UsesTwoFeatures(mode))
+        return mode;
+
+    const bool rrActive = upscaler == Upscaler::DLSSD;
+    const bool wantsRr = Config::Instance()->DlssNrFeature1Pipeline.value_or_default() ==
+                         (uint32_t) DlssNr::Feature1Pipeline::RayReconstruction;
+
+    if (wantsRr != rrActive)
+    {
+        static bool warned = false;
+
+        if (!warned)
+        {
+            warned = true;
+            LOG_WARN("DLSS-NR: multi-pass is set to the {} pipeline but the active upscaler is {}; using "
+                     "the conventional ordering instead",
+                     wantsRr ? "Ray Reconstruction" : "Super Resolution", rrActive ? "RR" : "not RR");
+        }
+
+        return DlssNr::Mode::PostProcess;
+    }
+
+    return mode;
+}
+
+bool IFeature::NRApplyFeature1Hold()
+{
+    if (!NRUsesTwoFeatures())
+        return false;
+
+    if (_nrSourceWidth == 0 || _nrSourceHeight == 0)
+        return false;
+
+    if (_targetWidth != _nrSourceWidth || _targetHeight != _nrSourceHeight)
+    {
+        LOG_DEBUG("DLSS-NR multi-pass: restoring the first pass's 1:1 target, {}x{} rather than {}x{}",
+                  _nrSourceWidth, _nrSourceHeight, _targetWidth, _targetHeight);
+    }
+
+    _targetWidth = _nrSourceWidth;
+    _targetHeight = _nrSourceHeight;
+
+    return true;
+}
+
+// Settle which arrangement this feature is being built for, and apply what that
+// decides.
+//
+// Deliberately NOT part of SetInitParameters. That runs from a feature's
+// constructor -- DLSSFeature's, with DLSSFeatureDx12 not yet built -- where
+// Api() and GetUpscalerType() are still pure virtual. Calling them there
+// aborts the process.
+//
+// Called from ProcessInitParams instead, which runs from InitInternal with the
+// object complete, and before the create flags are assembled from _initFlags.
+void IFeature::NRPrepareForCreate()
+{
+    _nrModeAtCreate = NREffectiveMode();
+
+    if (NRUsesTwoFeatures() && _nrSourceWidth != 0 && _nrSourceHeight != 0)
+    {
+        _renderWidth = _nrSourceWidth;
+        _renderHeight = _nrSourceHeight;
+        _targetWidth = _nrSourceWidth;
+        _targetHeight = _nrSourceHeight;
+
+        LOG_INFO("DLSS-NR multi-pass: Feature 1 runs 1:1 at {}x{}, spatial enlarge to {}x{}", _renderWidth,
+                 _renderHeight, _displayWidth, _displayHeight);
+    }
+}
+
 void IFeature::SetHandle(unsigned int InHandleId)
 {
     _handle = new NVSDK_NGX_Handle { InHandleId };
@@ -84,6 +176,11 @@ bool IFeature::SetInitParameters(NVSDK_NGX_Parameter* InParameters)
             _initFlags.AutoExposure = _featureFlags & NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
         }
 
+        // What the game's own frame is. A plain copy, deliberately: this runs
+        // from a feature's constructor, before the most-derived class exists,
+        // so Api() and GetUpscalerType() are still pure virtual.
+        _nrGameIsHdr = _initFlags.IsHdr;
+
         LOG_INFO("Init Flag AutoExposure: {}", _initFlags.AutoExposure);
         LOG_INFO("Init Flag DepthInverted: {}", _initFlags.DepthInverted);
         LOG_INFO("Init Flag IsHdr: {}", _initFlags.IsHdr);
@@ -148,6 +245,12 @@ bool IFeature::SetInitParameters(NVSDK_NGX_Parameter* InParameters)
             _renderWidth = width;
             _renderHeight = height;
         }
+
+        // The game's own render resolution, before the multi-pass hold can pin
+        // _renderWidth. Another plain copy: the hold itself needs to know which
+        // arrangement is in force, which cannot be asked from a constructor.
+        _nrSourceWidth = _renderWidth;
+        _nrSourceHeight = _renderHeight;
 
         _perfQualityValue = (NVSDK_NGX_PerfQuality_Value) pqValue;
 

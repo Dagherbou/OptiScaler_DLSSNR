@@ -33,6 +33,14 @@ namespace DlssNr
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
                           ID3D12CommandQueue* timingQueue = nullptr);
 
+// Resources in. Builds the composition pass on first use if it is not already
+// on this device, then Dispatches. Call sites that already hold the textures
+// -- the multi-pass pipeline stage -- use this rather than reading an NGX
+// parameter block.
+void Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour, ID3D12Resource* depth,
+         ID3D12Resource* motion, ID3D12Resource* output, const DlssNrFrameInfo& frame,
+         ID3D12CommandQueue* timingQueue = nullptr);
+
 
 
 // Frame generation titles tag their UI layer through Streamline; a copy of it makes the HUD mask

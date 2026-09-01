@@ -3,7 +3,7 @@
 #include <set>
 
 #include <dlssnr/DlssNr.h>
-
+#include <dlssnr/DlssNr_Modes.h>
 
 #include <dlssnr/DlssNr_Codec.h>
 #include <dlssnr/DlssNr_Capture.h>
@@ -192,6 +192,7 @@ struct NrState
 
     unsigned int workWidth = 0;
     unsigned int workHeight = 0;
+    DlssNr::WorkingSizeHold workHold;
 
     // Cloned unconditionally when running at present, and only for typeless formats otherwise.
     ID3D12Resource* depthClone = nullptr;
@@ -965,11 +966,35 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     }
 
     // What the model works at. The frame and its edit stay full resolution; only the model's input and
-    // answer shrink, and the resolve enlarges the answer while compositing.
-    float workScale = cfg.DlssNrWorkingScale.value_or_default();
-    workScale = workScale < 0.25f ? 0.25f : (workScale > 1.0f ? 1.0f : workScale);
-    const auto workWidth = (unsigned int) (width * workScale + 0.5f);
-    const auto workHeight = (unsigned int) (height * workScale + 0.5f);
+    // answer shrink, and the resolve enlarges the answer while compositing. WorkingScale is a fraction
+    // of display; WorkAtNative matches the guide raster. A moving guide (DRS) is held at the last
+    // latched size until it settles, so the feature is not rebuilt every frame.
+    ++g_frames;
+    constexpr unsigned long long kSettleFrames = 30;
+    unsigned int displayWidth = width;
+    unsigned int displayHeight = height;
+
+    if (auto* feature = State::Instance().currentFeature)
+    {
+        if (feature->DisplayWidth() != 0 && feature->DisplayHeight() != 0)
+        {
+            displayWidth = feature->DisplayWidth();
+            displayHeight = feature->DisplayHeight();
+        }
+    }
+
+    const auto requested = DlssNr::ResolveWorkingSize(
+        cfg.DlssNrWorkingScale.value_or_default(), cfg.DlssNrWorkAtNative.value_or_default(), width, height,
+        displayWidth, displayHeight, guideWidth, guideHeight);
+    const bool colorChanged =
+        g_nr.feature != nullptr && (g_nr.width != width || g_nr.height != height);
+    bool commitWork = false;
+    (void) commitWork;
+    const auto work = DlssNr::TickWorkingSizeHold(
+        g_nr.workHold, requested, { g_nr.workWidth, g_nr.workHeight }, g_nr.feature != nullptr,
+        colorChanged, g_frames, kSettleFrames, commitWork);
+    const auto workWidth = work.width;
+    const auto workHeight = work.height;
     const bool reduced = workWidth != width || workHeight != height;
 
     ReleaseSurfacesIfFormatChanged(desc.Format);
@@ -1113,7 +1138,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // finished, sRGB-encoded frames. The white point is what maps one to the other, and it is a property
     // of the game's exposure rather than a number worth asking anyone to guess: measured means of 0.065,
     // 1.8 and 185 have all been seen in this one game.
-    ++g_frames;
     TickNrRetired();
     CheckCaptureTrigger();
 
@@ -1382,11 +1406,52 @@ void RetryAfterFailure()
 
 }
 
+// Resources in. The pass is the object, so the caller holds it. Built once, on
+// the device the frame is on. Reused by the seam and by the multi-pass stage.
+void Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour, ID3D12Resource* depth,
+         ID3D12Resource* motion, ID3D12Resource* output, const DlssNrFrameInfo& frame,
+         ID3D12CommandQueue* timingQueue)
+{
+    if (!Config::Instance()->DlssNrEnabled.value_or_default())
+    {
+        ReportSkipOnce("it is switched off");
+        return;
+    }
+
+    if (cmdList == nullptr || colour == nullptr || depth == nullptr || motion == nullptr ||
+        output == nullptr)
+    {
+        ReportSkipOnce("a resource was missing");
+        return;
+    }
+
+    ID3D12Device* device = nullptr;
+
+    if (FAILED(output->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
+    {
+        ReportSkipOnce("the output texture belongs to no D3D12 device");
+        return;
+    }
+
+    if (g_compose == nullptr)
+        g_compose = std::make_unique<DlssNr_Dx12>("Neural Rendering", device);
+
+    device->Release();
+
+    if (g_compose == nullptr)
+    {
+        ReportSkipOnce("the pass could not be created");
+        return;
+    }
+
+    g_compose->Dispatch(cmdList, colour, depth, motion, output, frame, timingQueue);
+}
+
 // Reads the game's parameter block and runs the pass on what it finds.
 //
 // This is the call site's job, not the pass's. A caller that has the resources in hand -- a
 // reprojection stage, a frame generation path, anything that is not the upscaler seam -- calls
-// RunPass directly and never touches an NGX parameter block.
+// Run directly and never touches an NGX parameter block.
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
                           ID3D12CommandQueue* timingQueue)
 {
@@ -1429,30 +1494,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     if (params->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &frame.MvScaleY) != NVSDK_NGX_Result_Success)
         frame.MvScaleY = 1.0f;
 
-    // The upscaler's inputs are at render resolution while colour and output are at display
-    // resolution; the model takes that as a subrect per resource, which the pass reads from the
-    // resources themselves.
-    ID3D12Device* device = nullptr;
-
-    if (FAILED(target->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
-    {
-        ReportSkipOnce("the output texture belongs to no D3D12 device");
-        return;
-    }
-
-    // The pass is the object, so the caller holds it. Built once, on the device the frame is on.
-    if (g_compose == nullptr)
-        g_compose = std::make_unique<DlssNr_Dx12>("Neural Rendering", device);
-
-    device->Release();
-
-    if (g_compose == nullptr)
-    {
-        ReportSkipOnce("the pass could not be created");
-        return;
-    }
-
-    g_compose->Dispatch(cmdList, target, depth, motion, target, frame, timingQueue);
+    Run(cmdList, target, depth, motion, target, frame, timingQueue);
 }
 
 // The pass. Resources in, nothing read from anywhere the caller cannot see.

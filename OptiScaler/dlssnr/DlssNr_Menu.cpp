@@ -1,9 +1,10 @@
 #include "pch.h"
 
 #include "DlssNr.h"
-
+#include "DlssNr_Modes.h"
 
 #include <Config.h>
+#include <State.h>
 #include <menu/menu_common.h>
 
 #include <imgui/imgui.h>
@@ -91,41 +92,138 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::Spacing();
         ImGui::PushItemWidth(220.0f * menuResScale);
 
+        ImGui::SeparatorText("Placement");
+
+        {
+            static const char* modeNames[] = { "Post-process", "Multi-pass" };
+            int mode = (int) config->DlssNrMode.value_or_default();
+            if (mode < 0 || mode > (int) DlssNr::Mode::MultiPass)
+                mode = (int) DlssNr::Mode::PostProcess;
+
+            if (ImGui::Combo("Placement", &mode, modeNames, IM_ARRAYSIZE(modeNames)))
+                config->DlssNrMode = (uint32_t) mode;
+
+            HelpMarker("Where the model sits relative to the upscaler."
+                           "\n\nPost-process runs it on the finished frame. It is the only one that needs"
+                           "\nnothing from the upscaler, so it is also the only one that works when a game"
+                           "\nis using its own DLSS and OptiScaler is passing it straight through."
+                           "\n\nMulti-pass runs a first pass 1:1 -- denoising if that is Ray Reconstruction,"
+                           "\nantialiasing as DLAA if it is Super Resolution -- then the model at render"
+                           "\nresolution, then a spatial FSR1 enlarge to display. Dx12 DLSS / Ray"
+                           "\nReconstruction only; anything else, or a first-pass pipeline that does not"
+                           "\nmatch the live upscaler, falls back to post-process.");
+
+            const auto selected = (DlssNr::Mode) config->DlssNrMode.value_or_default();
+
+            if (DlssNr::UsesTwoFeatures(selected))
+            {
+                static const char* pipelineNames[] = { "Ray Reconstruction", "Super Resolution" };
+                int pipeline = (int) config->DlssNrFeature1Pipeline.value_or_default();
+
+                if (ImGui::Combo("First pass", &pipeline, pipelineNames, IM_ARRAYSIZE(pipelineNames)))
+                    config->DlssNrFeature1Pipeline = (uint32_t) pipeline;
+
+                HelpMarker("Which upscaler the first pass is."
+                               "\n\nThis states what the game is set up for; it does not switch anything."
+                               "\nOptiScaler cannot substitute one for the other -- Ray Reconstruction needs"
+                               "\nG-buffer inputs a Super Resolution integration never supplies -- so a"
+                               "\nmismatch falls back to post-process rather than half-applying the"
+                               "\narrangement, and says so in the log.");
+            }
+        }
+
         ImGui::SeparatorText("Cost");
 
-        // Any percentage, rather than a handful of steps somebody chose in advance. The lower bound
-        // is 25%: below that the model is working on so little of the picture that its answer no
-        // longer survives being enlarged onto it.
-        // Applied when the handle is let go, not while it is moving.
-        //
-        // Every distinct value here is a different working size, and a different working size tears
-        // down the scratch textures and rebuilds the model. Writing it on each pixel of a drag meant
-        // dozens of rebuilds in a second, which is felt as the whole frame hitching. The slider still
-        // reads live; only the commit waits.
+        // The slider is always work / display, so the same number costs the same
+        // in both placements. Match-render locks work to the game's native raster
+        // and does not overwrite WorkingScale, so unchecking restores it.
+        bool atNative = config->DlssNrWorkAtNative.value_or_default();
+        if (ImGui::Checkbox("Match render resolution", &atNative))
+            config->DlssNrWorkAtNative = atNative;
+
+        HelpMarker("Lock the model to the game's render resolution."
+                       "\n\nThe slider then shows that size as a percentage of display and cannot be"
+                       "\nmoved. Unchecking puts the last display-relative value back, clamped to"
+                       "\nwhatever the current placement allows.");
+
+        unsigned int displayH = 0;
+        unsigned int nativeH = 0;
+
+        if (auto* feature = State::Instance().currentFeature; feature != nullptr && !feature->IsFrozen())
+        {
+            displayH = feature->DisplayHeight();
+            nativeH = feature->NRSourceHeight();
+
+            if (nativeH == 0)
+                nativeH = feature->RenderHeight();
+        }
+
+        const bool haveRatio = displayH != 0 && nativeH != 0;
+        int nativePercent = 100;
+
+        if (haveRatio)
+            nativePercent = (int) lroundf((float) nativeH / (float) displayH * 100.0f);
+
+        if (nativePercent < 1)
+            nativePercent = 1;
+
+        const bool multiPass = DlssNr::ConfiguredMode() == DlssNr::Mode::MultiPass;
+        int maxPercent = 100;
+
+        if (multiPass && haveRatio && nativePercent < maxPercent)
+            maxPercent = nativePercent;
+
+        int minPercent = 25;
+
+        if (maxPercent < minPercent)
+            minPercent = maxPercent;
+
+        // Applied when the handle is let go, not while it is moving. Every distinct
+        // value here is a different working size, and a different working size tears
+        // down the scratch textures and rebuilds the model.
         static int pendingScale = -1;
 
-        int scalePercent = pendingScale >= 0
-                               ? pendingScale
-                               : (int) lroundf(config->DlssNrWorkingScale.value_or_default() * 100.0f);
+        if (atNative)
+            pendingScale = -1;
 
-        if (ImGui::SliderInt("Model resolution", &scalePercent, 25, 100, "%d%%"))
+        int scalePercent = 100;
+
+        if (atNative)
+            scalePercent = haveRatio ? nativePercent : 100;
+        else if (pendingScale >= 0)
+            scalePercent = pendingScale;
+        else
+            scalePercent = (int) lroundf(config->DlssNrWorkingScale.value_or_default() * 100.0f);
+
+        if (scalePercent < minPercent)
+            scalePercent = minPercent;
+
+        if (scalePercent > maxPercent)
+            scalePercent = maxPercent;
+
+        ImGui::BeginDisabled(atNative);
+
+        if (ImGui::SliderInt("Model resolution", &scalePercent, minPercent, maxPercent, "%d%%"))
             pendingScale = scalePercent;
 
         if (ImGui::IsItemDeactivatedAfterEdit() && pendingScale >= 0)
         {
-            config->DlssNrWorkingScale = std::clamp(pendingScale, 25, 100) / 100.0f;
+            config->DlssNrWorkingScale =
+                std::clamp(pendingScale, minPercent, maxPercent) / 100.0f;
             pendingScale = -1;
         }
 
-        HelpMarker("What fraction of the frame the model works at. Cost falls with the square of"
+        ImGui::EndDisabled();
+
+        HelpMarker("What fraction of display resolution the model works at. The same percentage"
+                       "\ncosts the same in post-process and multi-pass. Cost falls with the square of"
                        "\nthis, so half resolution is roughly a quarter of the time."
                        "\n\nThe frame is never reduced. Only the model's contribution is computed small"
                        "\nand enlarged, so the picture underneath is untouched whatever this says."
+                       "\n\nMulti-pass cannot go above the game's render resolution as a fraction of"
+                       "\ndisplay -- there is nothing larger for the model to read."
                        "\n\nWhat it trades: the shading the model adds is broad and survives enlargement;"
-                       "\nthe fine structure it synthesises does not, and softens. Worth having when the"
-                       "\npass costs more than you want to pay for the detail it returns."
-                       "\n\nThe frame itself stays at full detail whatever this says -- only the"
-                       "\nmodel's own work is done small.");
+                       "\nthe fine structure it synthesises does not, and softens.");
 
         ImGui::SeparatorText("How much of it lands");
 

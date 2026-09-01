@@ -1159,7 +1159,15 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
             // motion vectors too, and its handle can reach here because the branch above does not
             // return, so filtering on the parameter block alone would run the model twice a frame.
             if (result == NVSDK_NGX_Result_Success && feature != NVSDK_NGX_Feature_FrameGeneration)
-                DlssNr::EvaluateAfterUpscale(InCmdList, InParameters);
+            {
+                // Multi-pass already ran the model at render resolution inside
+                // IFeature_Dx12::Evaluate. Ask the built mode, not the configured
+                // one, so the rebuild frame stays consistent. Native passthrough
+                // has no currentFeature and is PostProcess only.
+                auto* current = State::Instance().currentFeature;
+                if (current == nullptr || current->NRBuiltMode() == DlssNr::Mode::PostProcess)
+                    DlssNr::EvaluateAfterUpscale(InCmdList, InParameters);
+            }
 
             return result;
         }
@@ -1186,7 +1194,11 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
 
     // Same pass, for OptiScaler's own upscalers rather than native DLSS.
     if (optiResult == NVSDK_NGX_Result_Success && feature != NVSDK_NGX_Feature_FrameGeneration)
-        DlssNr::EvaluateAfterUpscale(InCmdList, InParameters);
+    {
+        auto* current = State::Instance().currentFeature;
+        if (current == nullptr || current->NRBuiltMode() == DlssNr::Mode::PostProcess)
+            DlssNr::EvaluateAfterUpscale(InCmdList, InParameters);
+    }
 
     return optiResult;
 }

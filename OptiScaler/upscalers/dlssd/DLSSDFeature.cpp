@@ -32,6 +32,11 @@ void DLSSDFeature::ProcessEvaluateParams(NVSDK_NGX_Parameter* InParameters)
 
 void DLSSDFeature::ProcessInitParams(NVSDK_NGX_Parameter* InParameters)
 {
+    // Settle the Neural Rendering arrangement first: it can hold the target at
+    // 1:1. Here rather than in SetInitParameters because that runs from a
+    // constructor, where the virtuals this needs do not exist yet.
+    NRPrepareForCreate();
+
     // Create flags -----------------------------
     unsigned int featureFlags = 0;
 
@@ -56,7 +61,11 @@ void DLSSDFeature::ProcessInitParams(NVSDK_NGX_Parameter* InParameters)
     InParameters->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, featureFlags);
 
     // Resolution -----------------------------
-    if (Config::Instance()->OutputScalingEnabled.value_or_default() && (LowResMV() || RenderWidth() == DisplayWidth()))
+    if (NRApplyFeature1Hold())
+    {
+        LOG_DEBUG("DLSS-NR multi-pass: this feature stays at {}x{}", TargetWidth(), TargetHeight());
+    }
+    else if (Config::Instance()->OutputScalingEnabled.value_or_default() && (LowResMV() || RenderWidth() == DisplayWidth()))
     {
         float ssMulti = Config::Instance()->OutputScalingMultiplier.value_or_default();
 
