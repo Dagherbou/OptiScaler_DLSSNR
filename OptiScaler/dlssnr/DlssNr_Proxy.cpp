@@ -113,7 +113,6 @@ void SetCreationParameters(NVSDK_NGX_Parameter* params, const Config& cfg, unsig
     SetFloat(params, "DLSSNR.SkinStructureStrength", cfg.DlssNrSkinStructure.value_or_default());
     SetUInt(params, "DLSSNR.UseAutoMask", cfg.DlssNrAutoMask.value_or_default() ? 1u : 0u);
 
-    SetFloat(params, "DLSSNR.GlobalToneStrength", cfg.DlssNrGlobalTone.value_or_default());
     SetUInt(params, "DLSSNR.UICorrection", cfg.DlssNrUICorrection.value_or_default() ? 1u : 0u);
 }
 } // namespace

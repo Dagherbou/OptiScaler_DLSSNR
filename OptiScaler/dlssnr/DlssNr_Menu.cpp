@@ -494,17 +494,6 @@ void RenderMenu(Config* config, float menuResScale)
         if (rTone.released)
             anyChanged = true;
         HelpMarker("The model's tone-remapping strength across the whole frame.");
-
-        float globalTone = config->DlssNrGlobalTone.value_or_default();
-        auto rGlobalTone = NrSlider("Global Tone", &globalTone, 0.0f, 1.0f, "%.2f", rowWidth);
-        if (rGlobalTone.changed)
-            config->DlssNrGlobalTone = globalTone;
-        if (rGlobalTone.released)
-            anyChanged = true;
-        HelpMarker("The model's tone control applied across the whole frame, where Tone Intensity above"
-                   "\nacts per region. Read when the model is built, so a change rebuilds it."
-                   "\n\nThe forwarder always carried this; it was pinned to 1.00 until now.");
-
         // Model Automask -- DlssNrAutoMask. In NVIDIA's panel this is a letter-tracked caps row
         // of its own with a "Show Mask" toggle on the right, not a section caption with a divider,
         // so it is drawn that way here.

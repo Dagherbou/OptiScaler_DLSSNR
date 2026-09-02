@@ -234,7 +234,6 @@ struct NrState
     float builtLocalTone = 0.0f;
     float builtSkinStructure = 0.0f;
     bool builtAutoMask = false;
-    float builtGlobalTone = 1.0f;
     bool builtUICorrection = true;
     unsigned long long settledAt = 0;
 
@@ -713,8 +712,12 @@ void SetExtras(const Config& cfg, ID3D12Resource* ui, ID3D12Resource* backbuffer
     if (g_nr.setExtras == nullptr || g_nr.capabilityParams == nullptr)
         return;
 
-    g_nr.setExtras(g_nr.capabilityParams, cfg.DlssNrGlobalTone.value_or_default(), ui, ui, backbuffer, uiWidth,
-                   uiHeight, bbWidth, bbHeight);
+    // Global tone stays at the model's own default, and now for a demonstrated reason rather than a
+    // suspected one: nvngx_dlssnr.dll does not contain the string "DLSSNR.GlobalToneStrength" at all,
+    // while every sibling -- Intensity, LocalToneStrength, LocalStructureStrength,
+    // SkinStructureStrength -- is present. A parameter block is looked up by name, so a name the
+    // model does not carry cannot be read. Only sl.dlss_nr.dll knows this key; the model does not.
+    g_nr.setExtras(g_nr.capabilityParams, 1.0f, ui, ui, backbuffer, uiWidth, uiHeight, bbWidth, bbHeight);
 }
 
 bool TuningMatchesFeature(const Config& cfg)
@@ -726,7 +729,6 @@ bool TuningMatchesFeature(const Config& cfg)
            g_nr.builtLocalTone == cfg.DlssNrLocalTone.value_or_default() &&
            g_nr.builtSkinStructure == cfg.DlssNrSkinStructure.value_or_default() &&
            g_nr.builtAutoMask == cfg.DlssNrAutoMask.value_or_default() &&
-           g_nr.builtGlobalTone == cfg.DlssNrGlobalTone.value_or_default() &&
            g_nr.builtUICorrection == cfg.DlssNrUICorrection.value_or_default();
 }
 
@@ -739,7 +741,6 @@ void RecordBuiltTuning(const Config& cfg)
     g_nr.builtLocalTone = cfg.DlssNrLocalTone.value_or_default();
     g_nr.builtSkinStructure = cfg.DlssNrSkinStructure.value_or_default();
     g_nr.builtAutoMask = cfg.DlssNrAutoMask.value_or_default();
-    g_nr.builtGlobalTone = cfg.DlssNrGlobalTone.value_or_default();
     g_nr.builtUICorrection = cfg.DlssNrUICorrection.value_or_default();
 }
 

@@ -337,11 +337,6 @@ class Config
     // convention wrongly had no remedy.
     CustomOptional<uint32_t> DlssNrDepthConvention { 0 };
 
-    // The model's global tone control. Distinct from LocalToneStrength, which is what the panel's
-    // "Tone Intensity" drives -- this one applies across the frame rather than per region. The
-    // forwarder has always plumbed it; it was passed as a constant 1.0 until it became adjustable.
-    CustomOptional<float> DlssNrGlobalTone { 1.0f };
-
     // Whether the model corrects for a UI layer. Its own default is on, and on is right whenever a
     // UI resource is fed to it; off is worth having when the correction is itself the artifact.
     CustomOptional<bool> DlssNrUICorrection { true };
