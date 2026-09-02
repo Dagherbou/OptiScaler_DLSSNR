@@ -367,8 +367,11 @@ void RenderMenu(Config* config, float menuResScale)
             }
             else if (ex.exposure > 1e-6f)
             {
-                const float wp = ex.preExposure / ex.exposure *
-                                 config->DlssNrWhitePointScale.value_or_default();
+                // Matches what ResolveWhitePoint actually consumes, trim bound included. A readout
+                // that disagreed with the picture would be worse than no readout.
+                const float trim =
+                    std::clamp(config->DlssNrWhitePointScale.value_or_default(), 0.25f, 4.0f);
+                const float wp = ex.preExposure / ex.exposure * trim;
 
                 ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
                                    "Game exposure %.4f  ->  white point %.2f%s", ex.exposure, wp,

@@ -923,7 +923,21 @@ float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
     // Held across the frames where the texture is absent -- GTA V dropped it three times in one
     // session -- because falling back to a default on those frames is a flicker, not a fallback.
     if (cfg.DlssNrWhitePointFromExposure.value_or_default() && g_nr.gameExposure > 1e-6f)
-        return std::clamp(g_nr.gamePreExposure / g_nr.gameExposure * slider, 0.01f, 4096.0f);
+    {
+        // The slider is a trim here, not the answer, so it is bounded here rather than only in the
+        // menu that draws it.
+        //
+        // Bounding it at the slider would have been cosmetic: someone who found 64 by hand on the
+        // manual path and then switched the exposure source on keeps that 64 in their ini, and the
+        // composition would go on reading it until they happened to touch the control. The picture
+        // would be wrong for a reason the menu was no longer showing.
+        //
+        // Their value is left in the config untouched, so switching back to manual restores the
+        // number they arrived at. It is only what this path consumes that is limited.
+        const float trim = std::clamp(slider, 0.25f, 4.0f);
+
+        return std::clamp(g_nr.gamePreExposure / g_nr.gameExposure * trim, 0.01f, 4096.0f);
+    }
 
     // Otherwise the slider, and only the slider.
     //
