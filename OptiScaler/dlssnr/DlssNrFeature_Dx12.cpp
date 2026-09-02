@@ -234,6 +234,8 @@ struct NrState
     float builtLocalTone = 0.0f;
     float builtSkinStructure = 0.0f;
     bool builtAutoMask = false;
+    float builtGlobalTone = 1.0f;
+    bool builtUICorrection = true;
     unsigned long long settledAt = 0;
 
     // Once something fails there is no recovering it mid-session, and retrying every frame turns a
@@ -711,9 +713,8 @@ void SetExtras(const Config& cfg, ID3D12Resource* ui, ID3D12Resource* backbuffer
     if (g_nr.setExtras == nullptr || g_nr.capabilityParams == nullptr)
         return;
 
-    // Global tone is written at the model's own default: the control that exposed it changed nothing
-    // that could be seen, and the block persists, so a value still has to be put there.
-    g_nr.setExtras(g_nr.capabilityParams, 1.0f, ui, ui, backbuffer, uiWidth, uiHeight, bbWidth, bbHeight);
+    g_nr.setExtras(g_nr.capabilityParams, cfg.DlssNrGlobalTone.value_or_default(), ui, ui, backbuffer, uiWidth,
+                   uiHeight, bbWidth, bbHeight);
 }
 
 bool TuningMatchesFeature(const Config& cfg)
@@ -724,7 +725,9 @@ bool TuningMatchesFeature(const Config& cfg)
            g_nr.builtLocalStructure == cfg.DlssNrLocalStructure.value_or_default() &&
            g_nr.builtLocalTone == cfg.DlssNrLocalTone.value_or_default() &&
            g_nr.builtSkinStructure == cfg.DlssNrSkinStructure.value_or_default() &&
-           g_nr.builtAutoMask == cfg.DlssNrAutoMask.value_or_default();
+           g_nr.builtAutoMask == cfg.DlssNrAutoMask.value_or_default() &&
+           g_nr.builtGlobalTone == cfg.DlssNrGlobalTone.value_or_default() &&
+           g_nr.builtUICorrection == cfg.DlssNrUICorrection.value_or_default();
 }
 
 void RecordBuiltTuning(const Config& cfg)
@@ -736,6 +739,8 @@ void RecordBuiltTuning(const Config& cfg)
     g_nr.builtLocalTone = cfg.DlssNrLocalTone.value_or_default();
     g_nr.builtSkinStructure = cfg.DlssNrSkinStructure.value_or_default();
     g_nr.builtAutoMask = cfg.DlssNrAutoMask.value_or_default();
+    g_nr.builtGlobalTone = cfg.DlssNrGlobalTone.value_or_default();
+    g_nr.builtUICorrection = cfg.DlssNrUICorrection.value_or_default();
 }
 
 } // namespace
@@ -831,7 +836,22 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     params->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &createFlags);
     const bool gameSaysInverted = (createFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
 
-    g_nr.guideDepthInverted = gameSaysInverted;
+    // ...but a game that states it wrongly used to leave nothing to do about it. 0 keeps following
+    // the flags, 1 and 2 override them.
+    switch (Config::Instance()->DlssNrDepthConvention.value_or_default())
+    {
+    case 1:
+        g_nr.guideDepthInverted = false;
+        break;
+
+    case 2:
+        g_nr.guideDepthInverted = true;
+        break;
+
+    default:
+        g_nr.guideDepthInverted = gameSaysInverted;
+        break;
+    }
 
     // And it states how its motion vectors are encoded. Inventing a resolution ratio here meant handing
     // the model vectors it could not interpret.
@@ -957,9 +977,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
             cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
             cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
             cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0,
-            // UI correction at the model's own default: with no UI layer fed to it there
-            // is nothing for it to correct.
-            1);
+            cfg.DlssNrUICorrection.value_or_default() ? 1 : 0);
 
         if (g_nr.feature == nullptr)
         {

@@ -113,9 +113,8 @@ void SetCreationParameters(NVSDK_NGX_Parameter* params, const Config& cfg, unsig
     SetFloat(params, "DLSSNR.SkinStructureStrength", cfg.DlssNrSkinStructure.value_or_default());
     SetUInt(params, "DLSSNR.UseAutoMask", cfg.DlssNrAutoMask.value_or_default() ? 1u : 0u);
 
-    // UI correction at the model's own default: with no UI layer fed to it there is nothing to
-    // correct.
-    SetUInt(params, "DLSSNR.UICorrection", 1u);
+    SetFloat(params, "DLSSNR.GlobalToneStrength", cfg.DlssNrGlobalTone.value_or_default());
+    SetUInt(params, "DLSSNR.UICorrection", cfg.DlssNrUICorrection.value_or_default() ? 1u : 0u);
 }
 } // namespace
 

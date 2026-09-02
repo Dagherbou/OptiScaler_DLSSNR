@@ -495,6 +495,16 @@ void RenderMenu(Config* config, float menuResScale)
             anyChanged = true;
         HelpMarker("The model's tone-remapping strength across the whole frame.");
 
+        float globalTone = config->DlssNrGlobalTone.value_or_default();
+        auto rGlobalTone = NrSlider("Global Tone", &globalTone, 0.0f, 1.0f, "%.2f", rowWidth);
+        if (rGlobalTone.changed)
+            config->DlssNrGlobalTone = globalTone;
+        if (rGlobalTone.released)
+            anyChanged = true;
+        HelpMarker("The model's tone control applied across the whole frame, where Tone Intensity above"
+                   "\nacts per region. Read when the model is built, so a change rebuilds it."
+                   "\n\nThe forwarder always carried this; it was pinned to 1.00 until now.");
+
         // Model Automask -- DlssNrAutoMask. In NVIDIA's panel this is a letter-tracked caps row
         // of its own with a "Show Mask" toggle on the right, not a section caption with a divider,
         // so it is drawn that way here.
@@ -771,6 +781,33 @@ void RenderMenu(Config* config, float menuResScale)
             anyChanged = true;
         HelpMarker("The most the pass may brighten any pixel, as a multiple of what it already was."
                    "\nDarkening is not capped by this -- only growth is.");
+
+        // Both of these describe the frame to the model rather than shaping its output, which is
+        // why they sit together and away from the strength controls.
+        SectionCaption("Guide", rowWidth);
+
+        static const char* depthNames[] = { "Follow the game", "Force normal", "Force inverted" };
+        int depthMode = (int) config->DlssNrDepthConvention.value_or_default();
+        if (NrCombo("Depth", &depthMode, depthNames, IM_ARRAYSIZE(depthNames), rowWidth))
+        {
+            config->DlssNrDepthConvention = (uint32_t) depthMode;
+            anyChanged = true;
+        }
+        HelpMarker("Which way round the model is told depth runs. The game states this in the flags it"
+                   "\ncreated its own DLSS feature with, and following it is right almost always -- but"
+                   "\na game that states it wrongly needs correcting by hand."
+                   "\n\nIf the pass looks worst where geometry meets sky, try forcing the other one.");
+
+        if (bool uiCorrection = config->DlssNrUICorrection.value_or_default();
+            NrCheckbox("UI correction", &uiCorrection))
+        {
+            config->DlssNrUICorrection = uiCorrection;
+            anyChanged = true;
+        }
+        HelpMarker("Lets the model account for a UI layer laid over the frame. On is its own default"
+                   "\nand right whenever a UI resource reaches it; turn it off if the correction is"
+                   "\nitself what looks wrong."
+                   "\n\nRead when the model is built.");
 
         SectionCaption("Inspect", rowWidth);
 
