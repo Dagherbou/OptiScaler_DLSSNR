@@ -262,6 +262,141 @@ __declspec(dllexport) int dlssnr_query_scaling_ratio(const wchar_t *snippetPath,
     return 1;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Native Direct3D 11.
+//
+// The claim this tests is one nobody ever tested. "The model refuses to run on DX11, it answers
+// FeatureNotSupported" has been in the notes and the release text for a long time, and this forwarder
+// resolves no D3D11 entry point at all -- so whatever returned FeatureNotSupported, it was not the
+// snippet's own D3D11 path, because that path has never been called.
+//
+// The binary says it should exist. nvngx_dlssnr.dll exports ten D3D11 entry points, implemented in
+// source/features/dlssnr/ngx_d3d11.cpp, and its CreateFeature, EvaluateFeature and ReleaseFeature go
+// through the same CreateFeatureCommon / EvaluateFeatureCommon / ReleaseFeatureCommon in
+// ngx_templates.h that the D3D12 path uses. That is a real implementation sharing the same core, not
+// a stub.
+//
+// If it works, a D3D11 game does not need the bridge -- which is what currently forces those games to
+// give up DLSS as their upscaler, the biggest caveat in the whole feature.
+//
+// Probe first, exactly as the Vulkan path did: resolve the entry points and report which answer,
+// before anything is created.
+// ---------------------------------------------------------------------------------------------
+
+using PFN_NrD3D11Init = int(__cdecl *)(unsigned long long, const wchar_t *, void *, const void *, int);
+using PFN_NrD3D11Create = int(__cdecl *)(void *, int, const void *, void **);
+using PFN_NrD3D11Evaluate = int(__cdecl *)(void *, const void *, const void *, void *);
+
+struct D3D11Snippet {
+    HMODULE module = nullptr;
+    PFN_NrD3D11Init init = nullptr;
+    PFN_NrD3D11Create create = nullptr;
+    PFN_NrD3D11Evaluate evaluate = nullptr;
+    PFN_NrRelease release = nullptr;
+    bool initialised = false;
+};
+
+D3D11Snippet g_d3d11;
+
+bool loadD3D11Snippet(const wchar_t *path) {
+    if (g_d3d11.module) {
+        return g_d3d11.create != nullptr;
+    }
+
+    g_d3d11.module = LoadLibraryExW(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+
+    if (!g_d3d11.module) {
+        return false;
+    }
+
+    g_d3d11.init = (PFN_NrD3D11Init) GetProcAddress(g_d3d11.module, "NVSDK_NGX_D3D11_Init_Ext");
+    g_d3d11.create = (PFN_NrD3D11Create) GetProcAddress(g_d3d11.module, "NVSDK_NGX_D3D11_CreateFeature");
+    g_d3d11.evaluate = (PFN_NrD3D11Evaluate) GetProcAddress(g_d3d11.module, "NVSDK_NGX_D3D11_EvaluateFeature");
+    g_d3d11.release = (PFN_NrRelease) GetProcAddress(g_d3d11.module, "NVSDK_NGX_D3D11_ReleaseFeature");
+
+    return g_d3d11.create != nullptr && g_d3d11.evaluate != nullptr;
+}
+
+__declspec(dllexport) int dlssnr_d3d11_last_init = 0;
+__declspec(dllexport) int dlssnr_d3d11_last_create = 0;
+
+// Which entry points resolved, as a bit field: init 1, create 2, evaluate 4, release 8. Fifteen means
+// the model's D3D11 surface is entirely reachable. Answered without creating anything.
+__declspec(dllexport) int dlssnr_d3d11_probe(const wchar_t *snippetPath) {
+    loadD3D11Snippet(snippetPath);
+
+    int bits = 0;
+    bits |= g_d3d11.init != nullptr ? 1 : 0;
+    bits |= g_d3d11.create != nullptr ? 2 : 0;
+    bits |= g_d3d11.evaluate != nullptr ? 4 : 0;
+    bits |= g_d3d11.release != nullptr ? 8 : 0;
+
+    return bits;
+}
+
+// Initialises NGX on a D3D11 device. This is the call that decides the question: if the snippet
+// wanted nothing to do with D3D11 it would refuse here, before any feature exists.
+__declspec(dllexport) int dlssnr_d3d11_init(const wchar_t *snippetPath, const wchar_t *dataPath,
+                                            void *device, int sdkVersion) {
+    if (!loadD3D11Snippet(snippetPath) || g_d3d11.init == nullptr || device == nullptr) {
+        return -1;
+    }
+
+    if (g_d3d11.initialised) {
+        return 1;
+    }
+
+    // Assigned rather than returned: a tail call becomes a jmp and the snippet resolves its caller
+    // past this module, which the gate rejects before reading an argument.
+    volatile int result = g_d3d11.init(0x24480451ull, dataPath, device, nullptr, sdkVersion);
+
+    dlssnr_d3d11_last_init = (int) result;
+    g_d3d11.initialised = result == 1;
+
+    return (int) result;
+}
+
+// Creates the feature on a D3D11 device context. Tuning is set here for the same reason it is on the
+// other two paths: the model reads it once, when it builds the feature.
+__declspec(dllexport) void *dlssnr_d3d11_create(void *deviceContext, void *capabilityParams,
+                                                unsigned int width, unsigned int height, int preset,
+                                                float intensity, int style, float localStructure,
+                                                float localTone, float skinStructure, int useAutoMask,
+                                                int uiCorrection) {
+    if (g_d3d11.create == nullptr || deviceContext == nullptr || capabilityParams == nullptr) {
+        return nullptr;
+    }
+
+    setUInt(capabilityParams, "DLSSNR.Enabled", 1);
+    setUInt(capabilityParams, "DLSSNR.Width", width);
+    setUInt(capabilityParams, "DLSSNR.Height", height);
+    setUInt(capabilityParams, "CreationNodeMask", 1);
+    setUInt(capabilityParams, "VisibilityNodeMask", 1);
+    setUInt(capabilityParams, "DLSSNR.Hint.Render.Preset", (unsigned int) preset);
+
+    setFloat(capabilityParams, "DLSSNR.Intensity", intensity);
+    setUInt(capabilityParams, "DLSSNR.Style", (unsigned int) style);
+    setFloat(capabilityParams, "DLSSNR.LocalStructureStrength", localStructure);
+    setFloat(capabilityParams, "DLSSNR.LocalToneStrength", localTone);
+    setFloat(capabilityParams, "DLSSNR.SkinStructureStrength", skinStructure);
+    setUInt(capabilityParams, "DLSSNR.UseAutoMask", (unsigned int) useAutoMask);
+    setUInt(capabilityParams, "DLSSNR.UICorrection", (unsigned int) uiCorrection);
+
+    void *feature = nullptr;
+    volatile int result = g_d3d11.create(deviceContext, 18, capabilityParams, &feature);
+
+    dlssnr_d3d11_last_create = (int) result;
+
+    return result == 1 ? feature : nullptr;
+}
+
+__declspec(dllexport) void dlssnr_d3d11_release(void *feature) {
+    if (g_d3d11.release != nullptr && feature != nullptr) {
+        volatile int ignored = g_d3d11.release(feature);
+        (void) ignored;
+    }
+}
+
 __declspec(dllexport) int dlssnr_vk_last_init = 0;
 __declspec(dllexport) int dlssnr_vk_last_create = 0;
 

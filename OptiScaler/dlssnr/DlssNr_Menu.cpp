@@ -386,7 +386,7 @@ void RenderMenu(Config* config, float menuResScale)
 
         float wpScale = config->DlssNrWhitePointScale.value_or_default();
         if (ImGui::SliderFloat(fromExposure ? "Paper white (x exposure)" : "Paper white", &wpScale, 0.25f,
-                               240.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
+                               2000.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
             config->DlssNrWhitePointScale = wpScale;
 
         HelpMarker("What the frame is divided by before the model sees it. There is no other white"
