@@ -69,6 +69,24 @@ class StreamlineProxy
         if (_dll != nullptr)
             return true;
 
+        // The game may already have its own native Streamline/Reflex loaded and running --
+        // dllmain.cpp's startup scan detects that and leaves the handle in slInterposerModule.
+        // Loading a second, independent sl.interposer.dll (and, transitively, a second
+        // sl.reflex.dll) from OptiScaler/streamline on top of that gives the driver two Reflex
+        // instances fighting over its single global Reflex state: reproduced live as a hard
+        // crash (access violation inside the freshly-loaded sl.reflex.dll) on games that ship
+        // native Streamline. The interposer is designed for multiple SL-aware consumers within
+        // one process (that's what slInit's appId is for), so reuse the game's own already-loaded
+        // interposer instead of bringing a second copy -- its own already-loaded sl.common.dll,
+        // sl.dlss_g.dll and sl.reflex.dll (from the game's own folder) serve both consumers.
+        if (slInterposerModule != nullptr)
+        {
+            LOG_INFO("Reusing the game's own already-loaded sl.interposer.dll instead of loading "
+                     "a second copy from OptiScaler/streamline");
+            State::Instance().optiSlInterposer = slInterposerModule;
+            return HookStreamline(slInterposerModule);
+        }
+
         auto owner = State::GetOwner();
         if (State::Instance().activeFgOutput == FGOutput::DLSSG &&
             State::Instance().activeFgNvngx != FGNvngxReplacement::None)

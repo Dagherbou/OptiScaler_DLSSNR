@@ -189,6 +189,10 @@ class MenuCommon
     static bool IsVisible() { return _isVisible; }
     static HWND Handle() { return _handle; }
 
+    // Renders one keybind row: a button that captures the next key, the current binding, and a
+    // reset. Lives here because the capture it depends on runs in this file's input handling.
+    static void RenderKeybindRow(const char* label, int id, CustomOptional<int>& configKey);
+
     static bool RenderMenu();
     static void Init(HWND InHwnd, bool isUWP);
     static void Shutdown();

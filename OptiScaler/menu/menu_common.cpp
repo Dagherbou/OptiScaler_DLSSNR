@@ -26,6 +26,7 @@
 #include <imgui/imgui_impl_win32.h>
 #include <imgui/imgui_impl_uwp.h>
 
+#include <map>
 #include <mutex>
 #include <cstdarg>
 
@@ -6882,6 +6883,20 @@ void MenuCommon::RenderApiAndTextureSettings(RenderMenuContext& ctx)
     }
 }
 
+void MenuCommon::RenderKeybindRow(const char* label, int id, CustomOptional<int>& configKey)
+{
+    // Keyed by id so each row keeps its own "waiting for a key" state across frames, the same way
+    // the statics in RenderKeybindSettings do.
+    static std::map<int, Keybind> rows;
+
+    auto it = rows.find(id);
+
+    if (it == rows.end())
+        it = rows.try_emplace(id, label, id).first;
+
+    it->second.Render(configKey);
+}
+
 void MenuCommon::RenderKeybindSettings(RenderMenuContext& ctx)
 {
     auto config = ctx.config;
@@ -6912,39 +6927,11 @@ void MenuCommon::RenderKeybindSettings(RenderMenuContext& ctx)
 
 void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
 {
-    if (ImGui::BeginTable("main", 2, ImGuiTableFlags_SizingStretchSame))
-    {
-        ImGui::TableNextColumn();
-
-        // Left column: active upscaler state, frame generation, FSR common, latency and fakenvapi controls.
-        RenderActiveUpscalerSettings(ctx);
-        RenderFrameGenerationSelection(ctx);
-        RenderFrameGenerationRuntimeSettings(ctx);
-        RenderFsrCommonSettings(ctx);
-        RenderFramerateSettings(ctx);
-#ifdef LOW_LATENCY_INPUTS
-        RenderLowLatencySettings(ctx);
-#else
-        RenderFakenvapiSettings(ctx);
-#endif
-
-        ImGui::TableNextColumn();
-
-        // Right column: image quality, initialization, advanced options, appearance, overlay and input settings.
-        RenderActiveImageSettings(ctx);
-        DlssNr::RenderMenu(ctx.config, ctx.menuResScale);
-        RenderMagnifierSettings(ctx);
-        RenderQuirksSettings(ctx);
-        RenderAdvancedSettings(ctx);
-        RenderLoggingSettings(ctx);
-        RenderThemeSettings(ctx);
-        RenderFpsOverlaySettings(ctx);
-        RenderUpscalerInputsSettings(ctx);
-        RenderApiAndTextureSettings(ctx);
-        RenderKeybindSettings(ctx);
-
-        ImGui::EndTable();
-    }
+    // Cut down to a single-purpose overlay: DLSS Neural Rendering is the only thing this build
+    // exposes. Every other upscaler/frame-gen/appearance section is intentionally not rendered
+    // here -- the underlying hooking and interception in the rest of OptiScaler is untouched and
+    // keeps running, only the settings UI for it is hidden.
+    DlssNr::RenderMenu(ctx.config, ctx.menuResScale);
 }
 
 void MenuCommon::RenderMainMenuGraphs(RenderMenuContext& ctx)
@@ -7494,28 +7481,12 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
         ImGui::SetNextWindowSize({ 1.0f, 1.0f });
     }
 
-    // Main menu window
-    if (windowTitle.empty())
-    {
-        windowTitle = StrFmt("%s - %s %s %s %s", VER_PRODUCT_NAME, state.gameExe.c_str(),
-                             state.gameName.empty() ? "" : StrFmt("- %s", state.gameName.c_str()).c_str(),
-                             (state.detectedQuirks.size() > 0) ? "(Q)" : "", state.isOptiPatcherSucceed ? "(OP)" : "");
-    }
-
-    if (ImGui::Begin(windowTitle.c_str(), NULL, flags))
-    {
-        // Header/status messages shown above the two-column settings table.
-        RenderMainMenuHeaderMessages(ctx);
-
-        // Main two-column settings content.
-        RenderMainMenuTable(ctx);
-
-        // Diagnostics and footer actions below the settings table.
-        RenderMainMenuGraphs(ctx);
-        RenderMainMenuBottomBar(ctx);
-
-        ImGui::End();
-    }
+    // No shared OptiScaler window here any more -- DlssNr::RenderMenu (called from
+    // RenderMainMenuTable) opens and owns its own self-contained window, with its own
+    // position, background and styling. The old title bar, header messages, FrameTime/Upscaler
+    // graphs and Save/Close bottom bar all belonged to the multi-section menu this build no
+    // longer has any other section for, so none of that is rendered any more.
+    RenderMainMenuTable(ctx);
 
     // Detached utility windows owned by the main menu.
     RenderMipmapBiasWindow(ctx, flags);

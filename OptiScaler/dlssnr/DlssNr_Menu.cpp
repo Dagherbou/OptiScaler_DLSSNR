@@ -2,20 +2,46 @@
 
 #include "DlssNr.h"
 
-
 #include <Config.h>
+
 #include <menu/menu_common.h>
 
 #include <imgui/imgui.h>
 
+#include <cctype>
+#include <cfloat>
+#include <string>
+
 namespace DlssNr
 {
 
-// The "(?)" marker every control carries, matching the rest of the menu.
+// A whole standalone overlay -- its own window, its own colours, independent of the rest of
+// OptiScaler's shared menu chrome (title bar, graphs, bottom bar) and its user-configurable theme.
+// Modelled on NVIDIA's own DLSS 5 Developer Controls panel.
+
+// Palette sampled straight off a capture of NVIDIA's own panel rather than eyeballed, so the
+// numbers below are what the screenshot measures, give or take JPEG noise:
+//   accent green   #84B63A - #97B948   (slider fill, checkbox fill, selected model)
+//   panel bg       #1A191A - #202021   (darker than the grey this overlay used before)
+//   unfilled track #282828
+//   title text     #E7E7E7   caption text #C6C7CB
+//   row label      #A2A2A0   value text   #8A8A8C  (labels sit dimmer than captions)
+//   disabled       caption #605E5F, label #4D4C4A, track #41413F, handle #424242
+static const ImVec4 kAccent(0.549f, 0.729f, 0.239f, 1.0f);
+static const ImVec4 kTitle(0.906f, 0.906f, 0.906f, 1.0f);
+static const ImVec4 kCaption(0.776f, 0.780f, 0.796f, 1.0f);
+static const ImVec4 kText(0.635f, 0.635f, 0.627f, 1.0f);
+static const ImVec4 kValue(0.541f, 0.541f, 0.549f, 1.0f);
+static const ImVec4 kTextDim(0.376f, 0.369f, 0.373f, 1.0f);
+static const ImVec4 kTrack(0.157f, 0.157f, 0.157f, 1.0f);
+static const ImVec4 kPanelBg(0.110f, 0.110f, 0.114f, 1.0f);
+
+static float PanelWidth(float scale) { return 460.0f * scale; }
+
 static void HelpMarker(const char* tip)
 {
     ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
+    ImGui::TextColored(kTextDim, "(?)");
 
     if (ImGui::IsItemHovered())
     {
@@ -27,29 +53,385 @@ static void HelpMarker(const char* tip)
     }
 }
 
+// Upper-cased captions, matching NVIDIA's own panel ("GLOBAL CONTROLS", ...).
+static std::string Caps(const char* text)
+{
+    std::string out;
+
+    for (const char* p = text; *p; ++p)
+        out += (char) std::toupper((unsigned char) *p);
+
+    return out;
+}
+
+// How far apart the caption letters sit, as a fraction of the font size. NVIDIA's panel tracks
+// by roughly a seventh of a character -- open enough to read as styling, nowhere near the full
+// space per letter that a plain ImGui text call would force.
+static constexpr float kTracking = 0.14f;
+
+// Letter-tracked text.
+//
+// ImGui cannot express sub-character tracking in a text call: its only lever is inserting whole
+// spaces, which is several times too wide and reads as sprayed apart. So the run is drawn glyph
+// by glyph through the draw list, advancing by each glyph's own width plus the tracking, and a
+// Dummy of the measured width reserves the layout box afterwards. Drawing starts at the cursor
+// and the box matches what was drawn, so SameLine, the (?) markers and the right-aligned
+// checkboxes all land exactly where they would after ordinary text.
+static void TrackedText(const char* text)
+{
+    ImFont* font = ImGui::GetFont();
+    const float fontSize = ImGui::GetFontSize();
+    const float tracking = fontSize * kTracking;
+    const ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
+
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    float x = 0.0f;
+
+    for (const char* p = text; *p; ++p)
+    {
+        const char* begin = p;
+        const char* end = p + 1;
+
+        dl->AddText(font, fontSize, ImVec2(origin.x + x, origin.y), col, begin, end);
+        x += font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, begin, end).x + tracking;
+    }
+
+    // The tracking belongs between letters, so the last one does not carry it.
+    if (x > 0.0f)
+        x -= tracking;
+
+    ImGui::Dummy(ImVec2(x, ImGui::GetTextLineHeight()));
+}
+
+static void SectionCaption(const char* text, float rowWidth)
+{
+    const ImVec2 sp = ImGui::GetStyle().ItemSpacing;
+
+    // A caption heads the rows beneath it, so it sits nearer to them than to the section
+    // above: a little air on top, very little between the caption, its rule and the first
+    // row. Fractions of ItemSpacing rather than fixed pixels, so it tracks the menu scale.
+    ImGui::Dummy(ImVec2(0.0f, sp.y * 0.75f));
+
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(sp.x, sp.y * 0.30f));
+
+    ImGui::PushStyleColor(ImGuiCol_Text, kCaption);
+    TrackedText(Caps(text).c_str());
+    ImGui::PopStyleColor();
+
+    ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddLine(p0, ImVec2(p0.x + rowWidth, p0.y),
+                                        ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.14f)), 1.0f);
+    ImGui::Dummy(ImVec2(rowWidth, sp.y * 0.30f));
+
+    ImGui::PopStyleVar();
+}
+
+struct SliderResult
+{
+    bool changed;
+    bool released;
+};
+
+// Custom-drawn slider: label on the left, a thin track with a filled portion and a round
+// handle in the middle, and the value as its own right-aligned text -- not centred inside the
+// track the way stock ImGui::SliderFloat draws it, which is what made the handle collide with
+// the digits in the first pass.
+static SliderResult NrSlider(const char* label, float* value, float vMin, float vMax, const char* fmt, float rowWidth,
+                             bool showFill = true)
+{
+    ImGui::PushID(label);
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    float labelWidth = rowWidth * 0.44f;
+    float valueWidth = 52.0f;
+    float trackWidth = rowWidth - labelWidth - valueWidth - style.ItemSpacing.x * 2.0f;
+    if (trackWidth < 40.0f)
+        trackWidth = 40.0f;
+
+    ImGui::PushStyleColor(ImGuiCol_Text, kText);
+    ImGui::TextUnformatted(label);
+    ImGui::PopStyleColor();
+    ImGui::SameLine(labelWidth);
+
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    float rowH = ImGui::GetFrameHeight();
+    float trackH = 4.0f;
+    float radius = 6.5f;
+    ImVec2 tMin(pos.x, pos.y + rowH * 0.5f - trackH * 0.5f);
+    ImVec2 tMax(pos.x + trackWidth, tMin.y + trackH);
+
+    ImGui::InvisibleButton("track", ImVec2(trackWidth, rowH));
+    bool active = ImGui::IsItemActive();
+    bool hovered = ImGui::IsItemHovered();
+
+    ImGuiStorage* store = ImGui::GetStateStorage();
+    ImGuiID wasActiveId = ImGui::GetID("wasActive");
+    bool wasActive = store->GetBool(wasActiveId, false);
+
+    bool changed = false;
+    if (active)
+    {
+        float t = (ImGui::GetIO().MousePos.x - tMin.x) / trackWidth;
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        float newVal = vMin + t * (vMax - vMin);
+        if (newVal != *value)
+        {
+            *value = newVal;
+            changed = true;
+        }
+    }
+
+    bool released = wasActive && !active;
+    store->SetBool(wasActiveId, active);
+
+    float t = (*value - vMin) / (vMax - vMin);
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    float handleX = tMin.x + t * trackWidth;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(tMin, tMax, ImGui::GetColorU32(kTrack), trackH * 0.5f);
+
+    if (showFill)
+        dl->AddRectFilled(tMin, ImVec2(handleX, tMax.y), ImGui::GetColorU32(kAccent), trackH * 0.5f);
+
+    ImVec4 hCol = (hovered || active) ? kAccent : ImVec4(kAccent.x, kAccent.y, kAccent.z, 0.88f);
+    ImVec2 hCenter(handleX, tMin.y + trackH * 0.5f);
+    dl->AddCircleFilled(hCenter, radius, ImGui::GetColorU32(hCol), 18);
+    dl->AddCircle(hCenter, radius, ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.45f)), 18, 1.4f);
+
+    ImGui::SameLine(labelWidth + trackWidth + style.ItemSpacing.x);
+    ImGui::PushStyleColor(ImGuiCol_Text, kValue);
+    ImGui::Text(fmt, *value);
+    ImGui::PopStyleColor();
+
+    ImGui::PopID();
+
+    return { changed, released };
+}
+
+static bool NrCombo(const char* label, int* v, const char* const* items, int count, float rowWidth)
+{
+    float labelWidth = rowWidth * 0.44f;
+
+    ImGui::PushStyleColor(ImGuiCol_Text, kText);
+    ImGui::TextUnformatted(label);
+    ImGui::PopStyleColor();
+    ImGui::SameLine(labelWidth);
+
+    ImGui::SetNextItemWidth(rowWidth - labelWidth);
+    std::string id = std::string("##") + label;
+    return ImGui::Combo(id.c_str(), v, items, count);
+}
+
+// One entry in the "Models" row -- the segmented Model A / B / C selector.
+static bool ModelButton(const char* label, bool active, float width)
+{
+    // Sampled off NVIDIA's panel: the selected pill is a dark olive fill (#353D1D) with a green
+    // border and green label; the unselected ones are flat neutral grey (#3A3A3A, text #8C8C8C).
+    if (active)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.208f, 0.239f, 0.114f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.247f, 0.286f, 0.137f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.278f, 0.322f, 0.153f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
+        ImGui::PushStyleColor(ImGuiCol_Border, kAccent);
+    }
+    else
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.227f, 0.227f, 0.227f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.267f, 0.267f, 0.267f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.298f, 0.298f, 0.298f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.549f, 0.549f, 0.549f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 0.10f));
+    }
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+
+    bool clicked = ImGui::Button(label, ImVec2(width, 0.0f));
+
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(5);
+
+    return clicked;
+}
+
+// The small right-aligned "Show Mask" / "Show Masks" toggle that rides on the right end of a
+// section row in NVIDIA's panel: label first, small box after it, the pair pushed to the right
+// edge of the row rather than following the section label.
+static bool NrRightCheckbox(const char* label, bool* v, float rowWidth)
+{
+    ImGui::PushID(label);
+
+    float boxSize = ImGui::GetFontSize() + 1.0f;
+    float spacing = ImGui::GetStyle().ItemSpacing.x;
+    float pairWidth = ImGui::CalcTextSize(label).x + spacing + boxSize;
+
+    ImGui::SameLine(rowWidth - pairWidth);
+
+    ImGui::PushStyleColor(ImGuiCol_Text, kTextDim);
+    ImGui::TextUnformatted(label);
+    ImGui::PopStyleColor();
+
+    ImGui::SameLine(0.0f, spacing);
+
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::InvisibleButton("box", ImVec2(boxSize, boxSize));
+    bool hovered = ImGui::IsItemHovered();
+    if (clicked)
+        *v = !*v;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 c0 = pos;
+    ImVec2 c1 = ImVec2(pos.x + boxSize, pos.y + boxSize);
+
+    if (*v)
+    {
+        dl->AddRectFilled(c0, c1, ImGui::GetColorU32(kAccent), 2.0f);
+
+        ImU32 dark = ImGui::GetColorU32(ImVec4(0.06f, 0.09f, 0.05f, 1.0f));
+        ImVec2 a(pos.x + boxSize * 0.22f, pos.y + boxSize * 0.55f);
+        ImVec2 b(pos.x + boxSize * 0.42f, pos.y + boxSize * 0.76f);
+        ImVec2 cpt(pos.x + boxSize * 0.80f, pos.y + boxSize * 0.26f);
+        dl->AddLine(a, b, dark, 2.0f);
+        dl->AddLine(b, cpt, dark, 2.0f);
+    }
+    else
+    {
+        dl->AddRectFilled(c0, c1, ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, hovered ? 0.10f : 0.05f)), 2.0f);
+        dl->AddRect(c0, c1, ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.20f)), 2.0f, 0, 1.0f);
+    }
+
+    ImGui::PopID();
+    return clicked;
+}
+
+// A filled green square with a dark checkmark when set, matching NVIDIA's own panel -- not
+// stock ImGui::Checkbox's outlined box with a coloured glyph.
+static bool NrCheckbox(const char* label, bool* v, bool caps = false)
+{
+    ImGui::PushID(label);
+
+    float boxSize = ImGui::GetFontSize() + 5.0f;
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+
+    bool clicked = ImGui::InvisibleButton("box", ImVec2(boxSize, boxSize));
+    bool hovered = ImGui::IsItemHovered();
+    if (clicked)
+        *v = !*v;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 c0 = pos;
+    ImVec2 c1 = ImVec2(pos.x + boxSize, pos.y + boxSize);
+
+    if (*v)
+    {
+        ImVec4 fill = hovered ? ImVec4(std::min(kAccent.x + 0.08f, 1.0f), std::min(kAccent.y + 0.08f, 1.0f),
+                                       std::min(kAccent.z + 0.08f, 1.0f), 1.0f)
+                              : kAccent;
+        dl->AddRectFilled(c0, c1, ImGui::GetColorU32(fill), 3.0f);
+
+        ImU32 dark = ImGui::GetColorU32(ImVec4(0.06f, 0.09f, 0.05f, 1.0f));
+        ImVec2 a(pos.x + boxSize * 0.22f, pos.y + boxSize * 0.55f);
+        ImVec2 b(pos.x + boxSize * 0.42f, pos.y + boxSize * 0.76f);
+        ImVec2 cpt(pos.x + boxSize * 0.80f, pos.y + boxSize * 0.26f);
+        dl->AddLine(a, b, dark, 2.2f);
+        dl->AddLine(b, cpt, dark, 2.2f);
+    }
+    else
+    {
+        dl->AddRectFilled(c0, c1, ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, hovered ? 0.10f : 0.06f)), 3.0f);
+        dl->AddRect(c0, c1, ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.24f)), 3.0f, 0, 1.2f);
+    }
+
+    ImGui::SameLine();
+    // Section-level rows ("DLSS ON", "MODEL AUTOMASK", "DEVELOPER MASKING") are letter-tracked
+    // caps in the caption colour; the per-object rows under them stay sentence case.
+    ImGui::PushStyleColor(ImGuiCol_Text, caps ? kCaption : kText);
+    if (caps)
+        TrackedText(Caps(label).c_str());
+    else
+        ImGui::TextUnformatted(label);
+    ImGui::PopStyleColor();
+
+    ImGui::PopID();
+    return clicked;
+}
+
 void RenderMenu(Config* config, float menuResScale)
 {
+    ImGuiIO& io = ImGui::GetIO();
+    auto& state = State::Instance();
+    float rowWidth = PanelWidth(menuResScale);
 
-    // DLSS Neural Rendering -----------------------------
-    ImGui::Spacing();
-    if (auto ch = ScopedCollapsingHeader("DLSS Neural Rendering"); ch.IsHeaderOpen())
+    // Pinned to the left edge, vertically centred -- the position NVIDIA's own overlay uses.
+    // Not user-movable: this is the only thing this build shows, so there is nothing to arrange
+    // it around.
+    float margin = 24.0f * menuResScale;
+    ImGui::SetNextWindowPos(ImVec2(margin, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.0f, 0.5f));
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, kPanelBg);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 0.10f));
+    ImGui::PushStyleColor(ImGuiCol_Text, kText);
+    ImGui::PushStyleColor(ImGuiCol_CheckMark, kAccent);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.157f, 0.157f, 0.157f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.196f, 0.196f, 0.196f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.227f, 0.227f, 0.227f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(kAccent.x, kAccent.y, kAccent.z, 0.25f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(kAccent.x, kAccent.y, kAccent.z, 0.35f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(kAccent.x, kAccent.y, kAccent.z, 0.45f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.0f, 1.0f, 1.0f, 0.07f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 1.0f, 1.0f, 0.12f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.0f, 1.0f, 1.0f, 0.16f));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.086f, 0.086f, 0.090f, 0.98f));
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 14.0f) * menuResScale);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 9.0f * menuResScale));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                             ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar;
+
+    bool anyChanged = false;
+
+    if (ImGui::Begin("##DlssNrOverlay", nullptr, flags))
     {
-        ScopedIndent indent {};
+        // Matches the old shared window's behaviour: claim focus so keyboard/mouse routes here
+        // rather than being left with whatever last had it.
+        if (!ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow))
+            ImGui::SetWindowFocus();
+
+        ImGui::Dummy(ImVec2(rowWidth, 0.0f));
+
+        ImGui::PushStyleColor(ImGuiCol_Text, kTitle);
+        TrackedText(Caps("DLSS 5 Developer Controls").c_str());
+        ImGui::PopStyleColor();
+
         ImGui::Spacing();
 
         bool enabled = config->DlssNrEnabled.value_or_default();
-        if (ImGui::Checkbox("Enable Neural Rendering", &enabled))
+        if (NrCheckbox("DLSS ON", &enabled, true))
+        {
             config->DlssNrEnabled = enabled;
+            anyChanged = true;
+        }
 
         HelpMarker("Synthesises detail in the upscaler's output, before frame generation sees it."
-                       "\n\nNeeds two similarly named files beside OptiScaler, one character apart:"
-                       "\n  nvngx_dlssnr.dll       NVIDIA's model (~165 MB) -- you supply it"
-                       "\n  nvngx.dll_dlssnr.dll   the forwarder (~13 KB) -- ships in this package"
-                       "\nUndocumented and driven directly, so none of this is officially supported.");
+                   "\n\nNeeds two similarly named files beside OptiScaler, one character apart:"
+                   "\n  nvngx_dlssnr.dll       NVIDIA's model (~165 MB) -- you supply it"
+                   "\n  nvngx.dll_dlssnr.dll   the forwarder (~13 KB) -- ships in this package"
+                   "\nUndocumented and driven directly, so none of this is officially supported.");
 
-        // The toggle can be bound to a key, and nobody would think to look for it under Keybinds
-        // unless told. Dimmed, because it is a note rather than a setting.
-        ImGui::TextDisabled("Can be toggled with a key -- bind it under Keybinds, \"Neural Rendering\".");
+        // This used to read "bind it under Keybinds" -- but this build renders only this panel, so
+        // that section is unreachable and the instruction pointed nowhere. The row itself lives
+        // here now.
+        MenuCommon::RenderKeybindRow("Toggle key", 14, config->DlssNrToggleKey);
+        HelpMarker("Toggles Neural Rendering without opening this panel. Press the button, then the"
+                   "\nkey you want. Escape cancels, Backspace unbinds, R resets it.");
 
         if (!DlssNr::IsRunning())
         {
@@ -64,23 +446,28 @@ void RenderMenu(Config* config, float menuResScale)
                     DlssNr::RetryAfterFailure();
             }
             else if (enabled)
-                ImGui::TextUnformatted("Waiting for the upscaler to run.");
+            {
+                ImGui::TextColored(kTextDim, "Waiting for the upscaler to run.");
+                // The one thing the old shared window told you here that this panel otherwise
+                // wouldn't: this needs the game's own upscaler active, not just this checkbox.
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + rowWidth);
+                ImGui::TextColored(kTextDim, "Needs DLSS or XeSS selected as the upscaler in the game's own "
+                                             "video settings, and a save loaded -- this (and the rest of "
+                                             "OptiScaler) does not run in menus.");
+                ImGui::PopTextWrapPos();
+            }
         }
         else
         {
-            // The cost belongs here rather than only in the upscaler's breakdown: that tooltip needs
-            // OptiScaler's own upscaler to have run, and with native DLSS passing through there is
-            // nothing in it to hang this off.
             const auto ms = DlssNr::LastGpuTime();
 
             if (ms.has_value())
-                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running - %.2f ms per frame",
-                                   ms.value());
+                ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.45f, 1.0f), "Running - %.2f ms per frame", ms.value());
             else
-                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running.");
+                ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.45f, 1.0f), "Running.");
 
             ImGui::SameLine();
-            ImGui::TextDisabled("(?)");
+            ImGui::TextColored(kTextDim, "(?)");
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                 ImGui::SetTooltip("The whole pass: the staging copies and the resolve as well as the"
                                   "\nmodel. Timing only the model would flatter the number."
@@ -88,253 +475,445 @@ void RenderMenu(Config* config, float menuResScale)
                                   "\nsee what it is costing you.");
         }
 
+        // Global Controls -- DlssNrLocalStructure / DlssNrLocalTone: NVIDIA's own name for
+        // these two in its DLSS 5 developer overlay.
+        SectionCaption("Global Controls", rowWidth);
+
+        float localStructure = config->DlssNrLocalStructure.value_or_default();
+        auto rStruct = NrSlider("Structure Intensity", &localStructure, 0.0f, 1.0f, "%.2f", rowWidth);
+        if (rStruct.changed)
+            config->DlssNrLocalStructure = localStructure;
+        if (rStruct.released)
+            anyChanged = true;
+        HelpMarker("The model's structure-synthesis strength across the whole frame.");
+
+        float localTone = config->DlssNrLocalTone.value_or_default();
+        auto rTone = NrSlider("Tone Intensity", &localTone, 0.0f, 1.0f, "%.2f", rowWidth);
+        if (rTone.changed)
+            config->DlssNrLocalTone = localTone;
+        if (rTone.released)
+            anyChanged = true;
+        HelpMarker("The model's tone-remapping strength across the whole frame.");
+        // Model Automask -- DlssNrAutoMask. In NVIDIA's panel this is a letter-tracked caps row
+        // of its own with a "Show Mask" toggle on the right, not a section caption with a divider,
+        // so it is drawn that way here.
         ImGui::Spacing();
-        ImGui::PushItemWidth(220.0f * menuResScale);
 
-        ImGui::SeparatorText("Cost");
-
-        // Any percentage, rather than a handful of steps somebody chose in advance. The lower bound
-        // is 25%: below that the model is working on so little of the picture that its answer no
-        // longer survives being enlarged onto it.
-        // Applied when the handle is let go, not while it is moving.
-        //
-        // Every distinct value here is a different working size, and a different working size tears
-        // down the scratch textures and rebuilds the model. Writing it on each pixel of a drag meant
-        // dozens of rebuilds in a second, which is felt as the whole frame hitching. The slider still
-        // reads live; only the commit waits.
-        static int pendingScale = -1;
-
-        int scalePercent = pendingScale >= 0
-                               ? pendingScale
-                               : (int) lroundf(config->DlssNrWorkingScale.value_or_default() * 100.0f);
-
-        if (ImGui::SliderInt("Model resolution", &scalePercent, 25, 100, "%d%%"))
-            pendingScale = scalePercent;
-
-        if (ImGui::IsItemDeactivatedAfterEdit() && pendingScale >= 0)
+        bool autoMask = config->DlssNrAutoMask.value_or_default();
+        if (NrCheckbox("Model Automask", &autoMask, true))
         {
-            config->DlssNrWorkingScale = std::clamp(pendingScale, 25, 100) / 100.0f;
-            pendingScale = -1;
+            config->DlssNrAutoMask = autoMask;
+            anyChanged = true;
         }
+        HelpMarker("Lets the model find skin itself rather than treating the frame uniformly.");
 
-        HelpMarker("What fraction of the frame the model works at. Cost falls with the square of"
-                       "\nthis, so half resolution is roughly a quarter of the time."
-                       "\n\nThe frame is never reduced. Only the model's contribution is computed small"
-                       "\nand enlarged, so the picture underneath is untouched whatever this says."
-                       "\n\nWhat it trades: the shading the model adds is broad and survives enlargement;"
-                       "\nthe fine structure it synthesises does not, and softens. Worth having when the"
-                       "\npass costs more than you want to pay for the detail it returns."
-                       "\n\nThe frame itself stays at full detail whatever this says -- only the"
-                       "\nmodel's own work is done small.");
+        // Greyed out, and not because a setting is off: the model keeps its mask to itself. It is
+        // never handed back as a resource across the interface this fork drives, so there is
+        // nothing for an overlay to draw.
+        ImGui::BeginDisabled(true);
+        bool showMask = false;
+        NrRightCheckbox("Show Mask", &showMask, rowWidth);
+        ImGui::EndDisabled();
 
-        ImGui::SeparatorText("How much of it lands");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("NVIDIA's panel can draw the automask over the frame. The model does not hand"
+                              "\nits mask back through the interface this fork drives, so there is nothing"
+                              "\nhere to display.");
 
-        float transfer = config->DlssNrTransferStrength.value_or_default();
-        if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 2.0f, "%.2f"))
-            config->DlssNrTransferStrength = transfer;
+        // Matches NVIDIA's own panel: greyed out while Automask is off. The value underneath is
+        // unchanged either way -- this only stops it being dragged while it has nothing to act on.
+        ImGui::BeginDisabled(!autoMask);
+        ImGui::PushID("Automask");
+        float skin = config->DlssNrSkinStructure.value_or_default();
+        auto rSkin = NrSlider("Structure Intensity", &skin, -1.0f, 1.0f, "%.2f", rowWidth);
+        if (rSkin.changed)
+            config->DlssNrSkinStructure = skin;
+        if (rSkin.released)
+            anyChanged = true;
+        ImGui::PopID();
+        ImGui::EndDisabled();
+        HelpMarker("-1 means follow the Global Controls Structure Intensity above, and is the"
+                   "\nmodel's own default. 0 and above set the masked region's structure"
+                   "\nindependently of the rest of the frame."
+                   "\n\nGreyed out while Model Automask is off -- there is no mask for it to"
+                   "\nshape without it.");
 
-        HelpMarker("How far the frame moves toward the model's picture."
-                       "\n\nThe model's answer is not added to the frame -- it is a complete picture of its"
-                       "\nown, rescaled so its luminance sits where the original says it should. This"
-                       "\nblends between the two, so both ends are real pictures and everything between"
-                       "\nthem is one too."
-                       "\n\n0 gives back exactly what the upscaler produced. 1 is the model's picture."
-                       "\n\nAbove 1 carries on past it in the same direction, which is not something the"
-                       "\nmodel asked for -- use it to see what it is doing, then come back down. This"
-                       "\nis the control to push if you want more effect: Intensity belongs to the model"
-                       "\nand it decides what to do with it.");
+        // Developer Masking -- NVIDIA's per-object, engine-level masking. The game's own renderer
+        // tags individual objects (the "Pitcher", "Grapes" and "Bottles" of NVIDIA's demo scene)
+        // and hands those masks to DLSS through Streamline, so an artist can dial each object
+        // separately. There is nothing here for this fork to drive: OptiScaler sits below the
+        // engine, in the graphics API, with no object list and no way to author such masks. The
+        // row is drawn because the panel this copies has it, and is disabled because it cannot be
+        // made to work -- not because a setting is off.
+        ImGui::Spacing();
 
-        float colour = config->DlssNrColourStrength.value_or_default();
-        if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 1.0f, "%.2f"))
-            config->DlssNrColourStrength = colour;
+        ImGui::BeginDisabled(true);
+        bool devMasking = false;
+        bool showMasks = false;
+        NrCheckbox("Developer Masking", &devMasking, true);
+        NrRightCheckbox("Show Masks", &showMasks, rowWidth);
+        ImGui::EndDisabled();
 
-        HelpMarker("Whether the model's colour arrives with its light."
-                       "\n\n0 keeps the game's own hue exactly -- every pixel is the original colour with"
-                       "\nonly its brightness carrying the model's verdict. Game-accurate colour, with"
-                       "\nthe detail. 1 brings the model's colour as well, in its own hue, clamped into"
-                       "\nAP1 so nothing unreachable is asked for."
-                       "\n\nThis cannot shift hue on its own: it interpolates between two finished"
-                       "\npictures rather than adding a colour difference to one, which is what used to"
-                       "\nlet a warm subject come back green.");
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + rowWidth);
+        ImGui::TextColored(kTextDim, "Per-object masks come from the game's own renderer, so this one stays "
+                                     "NVIDIA-only -- an injector has no object list to mask.");
+        ImGui::PopTextWrapPos();
 
-        ImGui::SeparatorText("Model");
+        // Models -- DlssNrPreset. NVIDIA ships no letters in the binary; "Model A/B/C" is this
+        // fork's best match to the segmented selector in the developer overlay, and matches the
+        // three NVIDIA describes publicly. Default (preset index 0) is kept as a fourth button
+        // that NVIDIA's panel does not show, because it is a real, distinct state here: dropping
+        // it to match the screenshot exactly would make that state unreachable from the UI.
+        SectionCaption("Models", rowWidth);
 
-        ImGui::TextUnformatted("Read when the model is built, so a change rebuilds it after a moment.");
-
-        static const char* nrPresetNames[] = { "Default", "Preset 1", "Preset 2", "Preset 3" };
+        static const char* nrPresetNames[] = { "Default", "Model A", "Model B", "Model C" };
         int preset = (int) config->DlssNrPreset.value_or_default();
-        if (ImGui::Combo("Model preset", &preset, nrPresetNames, IM_ARRAYSIZE(nrPresetNames)))
-            config->DlssNrPreset = (uint32_t) preset;
 
-        HelpMarker("Default leaves the choice to the model."
-                       "\n\nNot the same scale as the super resolution or ray reconstruction presets --"
-                       "\nthe same number means something different here.");
+        {
+            float spacing = ImGui::GetStyle().ItemSpacing.x;
+            float btnWidth = (rowWidth - spacing * (IM_ARRAYSIZE(nrPresetNames) - 1)) / IM_ARRAYSIZE(nrPresetNames);
+
+            for (int i = 0; i < IM_ARRAYSIZE(nrPresetNames); i++)
+            {
+                if (i > 0)
+                    ImGui::SameLine();
+
+                ImGui::PushID(i);
+                if (ModelButton(nrPresetNames[i], preset == i, btnWidth))
+                {
+                    preset = i;
+                    config->DlssNrPreset = (uint32_t) preset;
+                    anyChanged = true;
+                }
+                ImGui::PopID();
+            }
+        }
+        HelpMarker("Not the same scale as the super resolution or ray reconstruction presets --"
+                   "\nthe same letter means something different here."
+                   "\n\nRead when the model is built, so a change rebuilds it after a moment.");
 
         static const char* nrStyleNames[] = { "Default (standard)", "Natural", "Cinematic" };
         int style = (int) config->DlssNrStyle.value_or_default();
-
         if (style > 2)
             style = 2;
-
-        if (ImGui::Combo("Style", &style, nrStyleNames, IM_ARRAYSIZE(nrStyleNames)))
+        if (NrCombo("Style", &style, nrStyleNames, IM_ARRAYSIZE(nrStyleNames), rowWidth))
+        {
             config->DlssNrStyle = (uint32_t) style;
-
+            anyChanged = true;
+        }
         HelpMarker("The model's own processing profiles."
-                   "\n\nDefault (standard): the strongest. Boosts local contrast and deepens"
-                   "\nlighting, and can oversaturate or look stylised -- most of what reads as"
-                   "\n'the model changed my game's look' is this profile."
-                   "\n\nNatural: the same detail work with a gentler hand. Keeps skin tones and"
-                   "\ntonal balance closer to what the game rendered."
-                   "\n\nCinematic: tones down the shine and over-processing for a film-like look."
-                   "\n\nRead when the model is built, so a change rebuilds it after a moment. The"
-                   "\nnames come from community testing; NVIDIA ships no names in the binaries.");
+                   "\n\nDefault (standard): the strongest, and most likely to look 'stylised'."
+                   "\nNatural: the same detail work with a gentler hand."
+                   "\nCinematic: tones down the shine and over-processing for a film-like look."
+                   "\n\nThe names come from community testing, unlike the panel labels above --"
+                   "\nNVIDIA ships no names for this control in the binaries.");
 
         float intensity = config->DlssNrIntensity.value_or_default();
-        if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 2.0f, "%.2f"))
+        auto rIntensity = NrSlider("Intensity", &intensity, 0.0f, 2.0f, "%.2f", rowWidth);
+        if (rIntensity.changed)
             config->DlssNrIntensity = intensity;
+        if (rIntensity.released)
+            anyChanged = true;
+        HelpMarker("The model's own strength control, applied inside it. Distinct from the Global"
+                   "\nControls above, and from Detail strength below, which scales the result"
+                   "\nafterwards.");
 
-        HelpMarker("The model's own strength control, applied inside it. Distinct from detail"
-                       "\nstrength above, which scales the result afterwards.");
+        // Frame Generation -- NVIDIA's own DLSS-G (Streamline), driven the same way the old
+        // shared menu's "MFG" combo and "Force Dynamic MFG" checkbox did: straight through
+        // config->FGDLSSGInterpolationCount / FGDLSSGForceDMFG, which DLSSG_Dx12::Dispatch()
+        // reads every frame and hands to sl::DLSSGOptions.numFramesToGenerate. Nothing here
+        // touches OptiFG (the Nukem's FSR3-based fallback used when the game has no native
+        // frame generation) -- that path is FGOutput::FSRFG/XeFG, not FGOutput::DLSSG, and is
+        // deliberately left out of this panel.
+        SectionCaption("Frame Generation", rowWidth);
 
-        float localStructure = config->DlssNrLocalStructure.value_or_default();
-        if (ImGui::SliderFloat("Local structure", &localStructure, 0.0f, 2.0f, "%.2f"))
-            config->DlssNrLocalStructure = localStructure;
-
-        float localTone = config->DlssNrLocalTone.value_or_default();
-        if (ImGui::SliderFloat("Local tone", &localTone, 0.0f, 2.0f, "%.2f"))
-            config->DlssNrLocalTone = localTone;
-
-
-        float skin = config->DlssNrSkinStructure.value_or_default();
-        if (ImGui::SliderFloat("Skin structure", &skin, -1.0f, 2.0f, "%.2f"))
-            config->DlssNrSkinStructure = skin;
-
-        HelpMarker("-1 means follow local structure, and is the model's own default -- it is not a"
-                       "\nstrength of zero. 0 and above set skin independently of the rest of the frame.");
-
-        bool autoMask = config->DlssNrAutoMask.value_or_default();
-        if (ImGui::Checkbox("Auto skin mask", &autoMask))
-            config->DlssNrAutoMask = autoMask;
-
-        HelpMarker("Lets the model find skin itself rather than treating the frame uniformly.");
-
-        ImGui::SeparatorText("Colour");
-
-        ImGui::TextDisabled("The model was trained on finished, sRGB-encoded frames. The upscaler's\n"
-                            "output is not one: it is linear and open-ended. These decide how it is\n"
-                            "mapped into something the model recognises. A frame the game reports as\n"
-                            "already tone-mapped is passed over untouched and none of this applies.");
-
+        if (state.activeFgOutput == FGOutput::DLSSG && state.currentFG != nullptr)
         {
-        float wpScale = config->DlssNrWhitePointScale.value_or_default();
-        if (ImGui::SliderFloat("Paper white", &wpScale, 0.25f, 4.0f, "%.2fx"))
-            config->DlssNrWhitePointScale = wpScale;
+            auto* fg = state.currentFG;
 
-        HelpMarker("Multiplies the white point above -- automatic or manual -- before the model"
-                       "\nsees the frame. This is the paper-white control."
-                       "\n\nAbove 1 the picture handed over is darker, so highlights sit lower on the"
-                       "\ncurve and the model treats them as less extreme; below 1, the opposite. It"
-                       "\nis the quickest way to change how strongly the model reads a bright scene."
-                       "\n\nAt strength zero the frame is still bit-identical whatever this says.");
+            bool fgActive = config->FGEnabled.value_or_default();
+            if (NrCheckbox("Frame Generation", &fgActive))
+            {
+                config->FGEnabled = fgActive;
+                state.fgChanged = true;
+                anyChanged = true;
+            }
+            HelpMarker("NVIDIA's own DLSS Frame Generation, via Streamline. Not OptiFG.");
 
-        float maxRatio = config->DlssNrMaxRatio.value_or_default();
-        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
-            config->DlssNrMaxRatio = maxRatio;
+            int maxCount = fg->GetMaxInterpolationCount();
+            if (maxCount > 1)
+            {
+                static const char* multNames[] = { "2X", "3X", "4X", "5X", "6X" };
+                int shown = std::min(maxCount, (int) IM_ARRAYSIZE(multNames));
+                int current = std::clamp((int) fg->GetInterpolatedFrameCount() - 1, 0, shown - 1);
 
-        HelpMarker("The most the pass may brighten any pixel, as a multiple of what it already"
-                       "\nwas. Darkening is not capped by this -- only growth is."
-                       "\n\nLights are where the model has least to say and where rescaling its answer"
-                       "\ninto the frame does the most damage: an early version turned every strip light"
-                       "\nin the scene into a string of coloured cells. 2x leaves detail intact while"
-                       "\nmaking that failure impossible. Raise it only if bright areas look clipped.");
+                bool dmfgForced = config->FGDLSSGForceDMFG.value_or_default();
 
+                ImGui::BeginDisabled(dmfgForced);
+                {
+                    float spacing = ImGui::GetStyle().ItemSpacing.x;
+                    float btnWidth = (rowWidth - spacing * (shown - 1)) / shown;
+
+                    for (int i = 0; i < shown; i++)
+                    {
+                        if (i > 0)
+                            ImGui::SameLine();
+
+                        ImGui::PushID(i);
+                        if (ModelButton(multNames[i], current == i, btnWidth))
+                        {
+                            LOG_DEBUG("DLSSG Interpolation Count set to: {}", i + 1);
+                            config->FGDLSSGInterpolationCount = i + 1;
+                            anyChanged = true;
+                        }
+                        ImGui::PopID();
+                    }
+                }
+                ImGui::EndDisabled();
+                HelpMarker("Sets Streamline's numFramesToGenerate directly -- how many extra frames"
+                           "\nDLSS-G inserts between real ones. 2X inserts one, 3X inserts two, and"
+                           "\nso on. Capped by what your GPU and driver report supporting."
+                           "\n\nGreyed out while Multi is on below -- the driver picks the count then.");
+
+                if (fg->GetDMFGSupport())
+                {
+                    if (NrCheckbox("Multi (Dynamic Frame Generation)", &dmfgForced))
+                    {
+                        config->FGDLSSGForceDMFG = dmfgForced;
+                        anyChanged = true;
+                    }
+                    HelpMarker("Lets NVIDIA's driver vary the multiplier itself, frame to frame, to hold"
+                               "\nthe FPS target below -- instead of a fixed 2X/3X/4X.");
+
+                    ImGui::BeginDisabled(!dmfgForced);
+                    float fpsTarget = config->FGDLSSGFramerateTargetDMFG.value_or_default();
+                    auto rFps = NrSlider("DMFG FPS Target", &fpsTarget, 0.0f, 200.0f, "%.0f", rowWidth);
+                    if (rFps.changed)
+                        config->FGDLSSGFramerateTargetDMFG = fpsTarget;
+                    if (rFps.released)
+                        anyChanged = true;
+                    ImGui::EndDisabled();
+                    HelpMarker("0 auto-detects your display's refresh rate.");
+                }
+            }
+        }
+        else
+        {
+            ImGui::TextColored(kTextDim, "NVIDIA DLSS Frame Generation is not the active output right now.");
         }
 
-        ImGui::SeparatorText("Inspect");
+        // Everything below is this fork's own instrumentation, with no equivalent in NVIDIA's
+        // developer overlay -- kept under its original names.
+        SectionCaption("Cost", rowWidth);
+
+        static int pendingScale = -1;
+        float scalePercent =
+            pendingScale >= 0 ? (float) pendingScale : config->DlssNrWorkingScale.value_or_default() * 100.0f;
+
+        auto rScale = NrSlider("Model resolution", &scalePercent, 25.0f, 100.0f, "%.0f%%", rowWidth);
+        if (rScale.changed)
+            pendingScale = (int) lroundf(scalePercent);
+
+        if (rScale.released && pendingScale >= 0)
+        {
+            config->DlssNrWorkingScale = std::clamp(pendingScale, 25, 100) / 100.0f;
+            pendingScale = -1;
+            anyChanged = true;
+        }
+        HelpMarker("What fraction of the frame the model works at. Cost falls with the square of"
+                   "\nthis, so half resolution is roughly a quarter of the time. The frame is"
+                   "\nnever reduced -- only the model's own contribution is computed small and"
+                   "\nenlarged. Applied when the handle is let go, not while it is moving.");
+
+        SectionCaption("How much of it lands", rowWidth);
+
+        float transfer = config->DlssNrTransferStrength.value_or_default();
+        auto rTransfer = NrSlider("Detail strength", &transfer, 0.0f, 2.0f, "%.2f", rowWidth);
+        if (rTransfer.changed)
+            config->DlssNrTransferStrength = transfer;
+        if (rTransfer.released)
+            anyChanged = true;
+        HelpMarker("How far the frame moves toward the model's picture. 0 gives back exactly what"
+                   "\nthe upscaler produced. 1 is the model's picture. Above 1 carries on past"
+                   "\nit in the same direction.");
+
+        float colour = config->DlssNrColourStrength.value_or_default();
+        auto rColour = NrSlider("Colour strength", &colour, 0.0f, 1.0f, "%.2f", rowWidth);
+        if (rColour.changed)
+            config->DlssNrColourStrength = colour;
+        if (rColour.released)
+            anyChanged = true;
+        HelpMarker("Whether the model's colour arrives with its light. 0 keeps the game's own hue"
+                   "\nexactly. 1 brings the model's colour as well, clamped into AP1.");
+
+        SectionCaption("Colour", rowWidth);
+
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + rowWidth);
+        ImGui::TextColored(kTextDim, "The model was trained on finished, sRGB-encoded frames. These decide how "
+                                     "the upscaler's linear output is mapped into something it recognises.");
+        ImGui::PopTextWrapPos();
+
+        float wpScale = config->DlssNrWhitePointScale.value_or_default();
+        auto rWp = NrSlider("Paper white", &wpScale, 0.25f, 4.0f, "%.2fx", rowWidth);
+        if (rWp.changed)
+            config->DlssNrWhitePointScale = wpScale;
+        if (rWp.released)
+            anyChanged = true;
+        HelpMarker("Multiplies the white point before the model sees the frame. Above 1 the picture"
+                   "\nhanded over is darker, so highlights sit lower on the curve.");
+
+        float maxRatio = config->DlssNrMaxRatio.value_or_default();
+        auto rMax = NrSlider("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx", rowWidth);
+        if (rMax.changed)
+            config->DlssNrMaxRatio = maxRatio;
+        if (rMax.released)
+            anyChanged = true;
+        HelpMarker("The most the pass may brighten any pixel, as a multiple of what it already was."
+                   "\nDarkening is not capped by this -- only growth is.");
+
+        // Both of these describe the frame to the model rather than shaping its output, which is
+        // why they sit together and away from the strength controls.
+        SectionCaption("Guide", rowWidth);
+
+        static const char* depthNames[] = { "Follow the game", "Force normal", "Force inverted" };
+        int depthMode = (int) config->DlssNrDepthConvention.value_or_default();
+        if (NrCombo("Depth", &depthMode, depthNames, IM_ARRAYSIZE(depthNames), rowWidth))
+        {
+            config->DlssNrDepthConvention = (uint32_t) depthMode;
+            anyChanged = true;
+        }
+        HelpMarker("Which way round the model is told depth runs. The game states this in the flags it"
+                   "\ncreated its own DLSS feature with, and following it is right almost always -- but"
+                   "\na game that states it wrongly needs correcting by hand."
+                   "\n\nIf the pass looks worst where geometry meets sky, try forcing the other one.");
+
+        if (bool uiCorrection = config->DlssNrUICorrection.value_or_default();
+            NrCheckbox("UI correction", &uiCorrection))
+        {
+            config->DlssNrUICorrection = uiCorrection;
+            anyChanged = true;
+        }
+        HelpMarker("Lets the model account for a UI layer laid over the frame. On is its own default"
+                   "\nand right whenever a UI resource reaches it; turn it off if the correction is"
+                   "\nitself what looks wrong."
+                   "\n\nRead when the model is built.");
+
+        SectionCaption("Inspect", rowWidth);
 
         if (DlssNr::CaptureInProgress())
         {
-            ImGui::TextDisabled("Capturing...");
+            ImGui::TextColored(kTextDim, "Capturing...");
         }
         else if (ImGui::Button("Capture 8 frames"))
         {
             DlssNr::RequestCapture(8);
         }
-
         HelpMarker("Writes eight consecutive frames twice: as the upscaler produced them, and again"
-                       "\nonce the model's edit was applied."
-                       "\n\nSame frames, same run, one variable -- which is what comparing two video"
-                       "\ncaptures can never be, since they have different camera paths and a codec in"
-                       "\nbetween that discards exactly the fine temporal detail in question."
-                       "\n\nRaw, into a dlssnr-capture folder beside OptiScaler. Bounded to eight frames,"
-                       "\nand each run overwrites the last.");
+                   "\nonce the model's edit was applied. Into a dlssnr-capture folder beside"
+                   "\nOptiScaler; each run overwrites the last.");
+
+        if (bool autoCapture = config->DlssNrAutoCapture.value_or_default();
+            NrCheckbox("Auto-capture once per session", &autoCapture))
+        {
+            config->DlssNrAutoCapture = autoCapture;
+            anyChanged = true;
+        }
+        HelpMarker("Writes one matched before/after set automatically, without anyone asking. The"
+                   "\nfolder is cleared each run, so it holds a single session and never grows.");
 
         static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
         int compare = (int) config->DlssNrCompare.value_or_default();
-        if (ImGui::Combo("Compare", &compare, compareNames, IM_ARRAYSIZE(compareNames)))
+        if (NrCombo("Compare", &compare, compareNames, IM_ARRAYSIZE(compareNames), rowWidth))
+        {
             config->DlssNrCompare = (uint32_t) compare;
-
-        HelpMarker("Shows the pass against itself, so the two can be seen at once rather than"
-                       "\ntoggled and remembered."
-                       "\n\nSide by side puts the whole frame in each half, untouched on the left and"
-                       "\nedited on the right. Both halves are squeezed horizontally to fit, so it is"
-                       "\nfor looking at rather than playing in."
-                       "\n\nWipe cuts a single frame at the split and resamples nothing, so the picture"
-                       "\nis the right shape and can be played normally. Drag the split below; it is a"
-                       "\nstored setting and stays put once the menu is closed."
-                       "\n\nNeither needs the menu open to keep working. A hairline marks the join.");
+            anyChanged = true;
+        }
+        HelpMarker("Shows the pass against itself. Side by side puts the whole frame in each half;"
+                   "\nwipe cuts a single frame at the split and plays normally. Neither needs the"
+                   "\nmenu open to keep working.");
 
         if (compare != 0)
         {
             bool swap = config->DlssNrCompareSwap.value_or_default();
-            if (ImGui::Checkbox("Swap sides", &swap))
+            if (NrCheckbox("Swap sides", &swap))
+            {
                 config->DlssNrCompareSwap = swap;
-
-            HelpMarker("Puts the edited frame on the other side."
-                           "\n\nWorth doing once you have decided which you prefer: the eye is not"
-                           "\neven-handed about left and right, and a difference can read as an"
-                           "\nimprovement purely from where it sits. If the same side still wins after"
-                           "\nswapping, it is the pass you are seeing and not the placement.");
+                anyChanged = true;
+            }
         }
 
         if (compare == 1)
         {
             float zoom = config->DlssNrCompareZoom.value_or_default();
-            if (ImGui::SliderFloat("Zoom", &zoom, 1.0f, 2.0f, "%.2f"))
+            auto rZoom = NrSlider("Zoom", &zoom, 1.0f, 2.0f, "%.2f", rowWidth);
+            if (rZoom.changed)
                 config->DlssNrCompareZoom = std::clamp(zoom, 1.0f, 2.0f);
-
-            HelpMarker("How much of the frame each half shows."
-                           "\n\nA half is half as wide as the frame and just as tall, so the frame"
-                           "\ncannot fill it and keep its shape."
-                           "\n\nAt 1 the whole frame is there at its right proportions, with bars above"
-                           "\nand below. At 2 the half is filled and the sides are cropped away"
-                           "\ninstead. Anything between trades one for the other.");
+            if (rZoom.released)
+                anyChanged = true;
         }
 
         if (compare == 2)
         {
             float split = config->DlssNrCompareSplit.value_or_default();
-            if (ImGui::SliderFloat("Split", &split, 0.0f, 1.0f, "%.2f"))
+            auto rSplit = NrSlider("Split", &split, 0.0f, 1.0f, "%.2f", rowWidth);
+            if (rSplit.changed)
                 config->DlssNrCompareSplit = std::clamp(split, 0.0f, 1.0f);
-
-            HelpMarker("Where the wipe cuts. Left of it is the frame as the upscaler produced it,"
-                           "\nright of it is the frame the model edited.");
+            if (rSplit.released)
+                anyChanged = true;
         }
 
         static const char* debugNames[] = { "Off", "Proxy (what the model sees)", "Model output (raw)",
                                             "Difference (amplified)" };
         int debugView = (int) config->DlssNrDebugView.value_or_default();
-        if (ImGui::Combo("Debug view", &debugView, debugNames, IM_ARRAYSIZE(debugNames)))
+        if (NrCombo("Debug view", &debugView, debugNames, IM_ARRAYSIZE(debugNames), rowWidth))
+        {
             config->DlssNrDebugView = (uint32_t) debugView;
+            anyChanged = true;
+        }
+        HelpMarker("Proxy is the picture handed to the model. Difference shows what the model"
+                   "\nactually changed, amplified twenty times and centred on grey.");
 
-        HelpMarker("Proxy is the picture handed to the model -- if that looks wrong, the white point"
-                       "\nis wrong and nothing downstream can be judged."
-                       "\n\nDifference shows what the model actually changed, amplified twenty times and"
-                       "\ncentred on grey. A flat grey frame there means it is doing nothing.");
+        // Both of these are experiments toward dropping the forwarder entirely, which is why they
+        // ship off. Config.h calls the probe "a diagnostic, not a feature", and the proxy path
+        // "off until it is shown to produce the same picture" -- so they are labelled as such
+        // rather than presented as ordinary settings.
+        SectionCaption("Experimental", rowWidth);
 
-        ImGui::PopItemWidth();
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + rowWidth);
+        ImGui::TextColored(kTextDim, "Both are unproven. They exist to test whether the driver's own "
+                                     "nvngx.dll can dispatch the model, which would remove the need for "
+                                     "the 165 MB copy beside OptiScaler.");
+        ImGui::PopTextWrapPos();
+
+        if (bool probe = config->DlssNrProxyProbe.value_or_default(); NrCheckbox("Probe the driver", &probe))
+        {
+            config->DlssNrProxyProbe = probe;
+            anyChanged = true;
+        }
+        HelpMarker("Asks the driver's nvngx.dll once per session whether it already knows the model."
+                   "\nWrites the answer to the log and changes nothing else."
+                   "\n\nRead when the model is built, so it applies from the next session.");
+
+        if (bool useProxy = config->DlssNrUseProxy.value_or_default(); NrCheckbox("Run through the driver", &useProxy))
+        {
+            config->DlssNrUseProxy = useProxy;
+            anyChanged = true;
+        }
+        HelpMarker("Drives the model through the driver's own nvngx.dll instead of the forwarder --"
+                   "\nthe way DLSS itself is called. If the picture matches, the forwarder is"
+                   "\nunnecessary."
+                   "\n\nCompare before trusting it: turn on Compare above and look for a difference.");
+
+        ImGui::End();
     }
+
+    ImGui::PopStyleVar(5);
+    ImGui::PopStyleColor(14);
+
+    // This overlay saves as you go rather than needing a Save button -- there is nothing else
+    // in this build's menu to put one on.
+    if (anyChanged)
+        config->SaveIni();
 }
 
 } // namespace DlssNr
-

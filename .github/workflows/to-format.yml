@@ -1,0 +1,47 @@
+name: Auto-format (clang-format)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the branch this was launched from
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the same clang-format the check pins
+        run: |
+          pip install "clang-format==20.1.8"
+          clang-format --version
+
+      - name: Format the OptiScaler tree
+        run: |
+          find OptiScaler -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
+            -not -path 'OptiScaler/include/*' -print0 |
+            xargs -0 clang-format -i --style=file
+
+      - name: Commit and push whatever changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet; then
+            echo "Already clean -- nothing to commit."
+            exit 0
+          fi
+
+          echo "Reformatted:"
+          git diff --name-only
+
+          git add -A
+          git commit -m "Auto-format with clang-format 20 (whitespace only)"
+          git push

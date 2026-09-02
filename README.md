@@ -11,6 +11,48 @@
 </div>
 <br />
 
+## DLSS 5 Developer Controls UI (this fork)
+
+This fork replaces OptiScaler's in-game menu with a standalone overlay for DLSS Neural
+Rendering, styled after NVIDIA's own DLSS 5 Developer Controls panel — its own window (no
+title bar, no graphs, no bottom bar), custom filled-track sliders, filled-square checkboxes,
+and controls renamed to NVIDIA's real terminology wherever there's a genuine match (Structure
+Intensity, Tone Intensity, Model Automask, Models A/B/C). Everything else about OptiScaler —
+the actual upscaler/frame-gen hooking — is untouched; only the settings UI is cut down to this
+one panel.
+
+<div align="center">
+  <img src="images/dlss5ui/dlss5-developer-controls-ui.png" width="420" alt="DLSS 5 Developer Controls overlay" />
+</div>
+
+### Installing
+
+**Option A — OptiScaler Manager (recommended)**
+
+A small desktop app that installs/updates this build into any number of games without manually
+copying files each time.
+
+1. Download `OptiScaler Manager Setup.exe` (or the portable `.exe`, no install needed) from the
+   [latest release](https://github.com/mrcgibb9876-hash/OptiScaler_DLSSNR/releases/tag/dlss5-ui-v1).
+2. Run it, open **Settings → Check for Updates** to pull this fork's build automatically.
+3. Add a game and click **Install**.
+4. Supply your own `nvngx_dlssnr.dll` (from an NVIDIA driver package — see below, this can't be
+   redistributed) into the same game folder.
+
+**Option B — Manual**
+
+1. Download `OptiScaler-DLSS5UI-Package.zip` from the same
+   [release page](https://github.com/mrcgibb9876-hash/OptiScaler_DLSSNR/releases/tag/dlss5-ui-v1)
+   and extract every file into your game's folder (the one with the game's `.exe`).
+2. Run `setup_windows.bat` and answer its questions.
+3. Supply `nvngx_dlssnr.dll` as in step 4 above.
+
+**Requirements:** an NVIDIA RTX 50-series GPU and driver 616.56+ for DLSS Neural Rendering
+specifically (older/other GPUs can still use the rest of OptiScaler); a game that already uses
+DLSS on DirectX 12 (DirectX 11 works through the D3D11-on-D3D12 bridge; Vulkan is not wired up
+yet). Once installed, launch the game, load a save (OptiScaler doesn't run in menus), press
+**Insert** to open the overlay, and turn **DLSS ON**.
+
 ## Table of Contents
 
 **1.** [**About**](#about)  
