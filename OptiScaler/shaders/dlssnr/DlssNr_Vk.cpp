@@ -185,17 +185,16 @@ bool DlssNr_Vk::CreateDummy(VkCommandBuffer cmdList)
 
 void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffset, VkImageView source,
                                  VkImageView model, VkImageView original, VkImageView motion, VkImageView target,
-                                 VkImageView keep)
+                                 VkImageView keep, VkImageLayout sourceLayout, VkImageLayout motionLayout)
 {
     VkDescriptorBufferInfo bufferInfo { _constantBuffer, constantOffset, sizeof(DlssNrConstants) };
 
     // A read slot standing in for nothing is bound in GENERAL, which is the layout the placeholder is
-    // left in. A real read is in SHADER_READ_ONLY_OPTIMAL, which the caller arranged.
-    const auto readInfo = [&](VkImageView v)
+    // left in. A real read is bound in the layout the caller says its image is in.
+    const auto readInfo = [&](VkImageView v, VkImageLayout layout)
     {
         return VkDescriptorImageInfo { _textureSampler, v != VK_NULL_HANDLE ? v : _dummyView,
-                                       v != VK_NULL_HANDLE ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                                           : VK_IMAGE_LAYOUT_GENERAL };
+                                       v != VK_NULL_HANDLE ? layout : VK_IMAGE_LAYOUT_GENERAL };
     };
 
     const auto writeInfo = [&](VkImageView v)
@@ -204,10 +203,10 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
                                        VK_IMAGE_LAYOUT_GENERAL };
     };
 
-    VkDescriptorImageInfo sourceInfo = readInfo(source);
-    VkDescriptorImageInfo modelInfo = readInfo(model);
-    VkDescriptorImageInfo originalInfo = readInfo(original);
-    VkDescriptorImageInfo motionInfo = readInfo(motion);
+    VkDescriptorImageInfo sourceInfo = readInfo(source, sourceLayout);
+    VkDescriptorImageInfo modelInfo = readInfo(model, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    VkDescriptorImageInfo originalInfo = readInfo(original, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    VkDescriptorImageInfo motionInfo = readInfo(motion, motionLayout);
     VkDescriptorImageInfo targetInfo = writeInfo(target);
     VkDescriptorImageInfo keepInfo = writeInfo(keep);
     VkDescriptorImageInfo samplerInfo { _textureSampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED };
@@ -236,7 +235,8 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
 
 bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InConstants, uint32_t InThreadsX,
                          uint32_t InThreadsY, VkImageView InSource, VkImageView InModel, VkImageView InOriginal,
-                         VkImageView InMotion, VkImageView InTarget, VkImageView InKeep)
+                         VkImageView InMotion, VkImageView InTarget, VkImageView InKeep,
+                         VkImageLayout InSourceLayout, VkImageLayout InMotionLayout)
 {
     if (!CanRender() || InCmdList == VK_NULL_HANDLE)
         return false;
@@ -256,7 +256,8 @@ bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InCon
     const VkDeviceSize offset = _slotStride * slot;
     std::memcpy((char*) _mappedConstantBuffer + offset, &InConstants, sizeof(DlssNrConstants));
 
-    WriteDescriptors(_descriptorSets[slot], offset, InSource, InModel, InOriginal, InMotion, InTarget, InKeep);
+    WriteDescriptors(_descriptorSets[slot], offset, InSource, InModel, InOriginal, InMotion, InTarget, InKeep,
+                     InSourceLayout, InMotionLayout);
 
     vkCmdBindPipeline(InCmdList, VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline);
     vkCmdBindDescriptorSets(InCmdList, VK_PIPELINE_BIND_POINT_COMPUTE, _pipelineLayout, 0, 1, &_descriptorSets[slot], 0,

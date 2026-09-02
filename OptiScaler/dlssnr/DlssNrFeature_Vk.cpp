@@ -9,6 +9,9 @@
 
 #include <shaders/dlssnr/DlssNr_Vk.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -86,9 +89,35 @@ struct VkState
     unsigned long long timedFrames = 0;
     std::optional<double> lastGpuTime;
 
-    // Whether the game hands over an exposure texture. Observed, not consumed -- see where it is set.
+    // Whether the game hands over an exposure texture, and what it said when it did.
     bool exposureOffered = false;
+
+    // The game's own exposure, read off its 1x1 texture, and the scale it multiplied its buffer by.
+    //
+    // gameExposure holds its last good value rather than resetting when a frame arrives without a
+    // texture: GTA V dropped it three times in one session on the D3D12 path, and falling back to a
+    // default on those frames is a flicker, not a fallback.
+    float gameExposure = 0.0f;
+    float gamePreExposure = 1.0f;
+
+    // The exposure's courier: an 8x8 R32_FLOAT image the meter writes, and a ring of host-visible
+    // buffers it is copied into. Only texel (0,0) is ever read -- the rest of the grid belongs to the
+    // frame-statistics meter that was removed from the shared shader, and 8x8 is here only so that a
+    // single 8x8 thread group lands entirely inside the image.
+    OwnedImage meter;
+    VkBuffer meterReadback[4] = {};
+    VkDeviceMemory meterReadbackMemory[4] = {};
+    void* meterMapped[4] = {};
+    unsigned long long meterFrames = 0;
 };
+
+// The grid the meter writes, and the size of one readback. 8 * 8 * sizeof(float).
+constexpr uint32_t kMeterSide = 8;
+constexpr VkDeviceSize kMeterBytes = kMeterSide * kMeterSide * sizeof(float);
+
+// Four, so the slot being read is four frames behind the slot being written and the read never waits
+// on the GPU. Same depth as the D3D12 meter's ring, for the same reason.
+constexpr unsigned long long kMeterSlots = 4;
 
 // Four frames of pairs. Three would do, four keeps the modulo cheap and the slot being written well
 // clear of the slot being read.
@@ -215,6 +244,74 @@ bool CreateImage(OwnedImage& img, uint32_t width, uint32_t height, VkFormat form
     img.ngx.ReadWrite = readWrite;
 
     return true;
+}
+
+// The ring of host-visible buffers the meter's grid is copied into, created once and mapped for
+// good. HOST_COHERENT so the read needs no invalidate; it is universally available for a buffer this
+// small and the alternative is a vkInvalidateMappedMemoryRanges on a path that runs every frame.
+bool CreateMeterReadback()
+{
+    for (unsigned long long i = 0; i < kMeterSlots; ++i)
+    {
+        if (g_vk.meterReadback[i] != VK_NULL_HANDLE)
+            continue;
+
+        VkBufferCreateInfo info {};
+        info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        info.size = kMeterBytes;
+        info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(g_vk.device, &info, nullptr, &g_vk.meterReadback[i]) != VK_SUCCESS)
+        {
+            LOG_WARN("DLSS-NR Vulkan: could not create the exposure readback buffer");
+            return false;
+        }
+
+        VkMemoryRequirements req {};
+        vkGetBufferMemoryRequirements(g_vk.device, g_vk.meterReadback[i], &req);
+
+        VkMemoryAllocateInfo alloc {};
+        alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc.allocationSize = req.size;
+        alloc.memoryTypeIndex = FindMemoryTypeIndex(
+            req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        if (alloc.memoryTypeIndex == UINT32_MAX ||
+            vkAllocateMemory(g_vk.device, &alloc, nullptr, &g_vk.meterReadbackMemory[i]) != VK_SUCCESS ||
+            vkBindBufferMemory(g_vk.device, g_vk.meterReadback[i], g_vk.meterReadbackMemory[i], 0) != VK_SUCCESS ||
+            vkMapMemory(g_vk.device, g_vk.meterReadbackMemory[i], 0, kMeterBytes, 0, &g_vk.meterMapped[i]) !=
+                VK_SUCCESS)
+        {
+            LOG_WARN("DLSS-NR Vulkan: could not back the exposure readback buffer");
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void DestroyMeterReadback()
+{
+    for (unsigned long long i = 0; i < kMeterSlots; ++i)
+    {
+        if (g_vk.meterReadbackMemory[i] != VK_NULL_HANDLE)
+        {
+            if (g_vk.meterMapped[i] != nullptr)
+                vkUnmapMemory(g_vk.device, g_vk.meterReadbackMemory[i]);
+
+            vkFreeMemory(g_vk.device, g_vk.meterReadbackMemory[i], nullptr);
+        }
+
+        if (g_vk.meterReadback[i] != VK_NULL_HANDLE)
+            vkDestroyBuffer(g_vk.device, g_vk.meterReadback[i], nullptr);
+
+        g_vk.meterMapped[i] = nullptr;
+        g_vk.meterReadbackMemory[i] = VK_NULL_HANDLE;
+        g_vk.meterReadback[i] = VK_NULL_HANDLE;
+    }
+
+    g_vk.meterFrames = 0;
 }
 
 // A layout transition with the access masks that go with it. Vulkan has no equivalent of D3D12's
@@ -391,17 +488,20 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     params->Get(NVSDK_NGX_Parameter_Depth, (void**) &depth);
     params->Get(NVSDK_NGX_Parameter_MotionVectors, (void**) &motion);
 
-    // Whether the game supplies an exposure, reported but deliberately not read.
+    // The game's exposure, now read rather than only counted.
     //
-    // Reading it means binding the game's own image in a descriptor, and a descriptor names the
-    // layout the image will be in when the shader runs. That layout is the game's business, NVIDIA's
-    // Vulkan header does not state what NGX leaves its inputs in, and naming the wrong one is
-    // undefined behaviour rather than a failure that can be caught and backed out of. Transitioning
-    // it is no safer: a barrier needs the layout it is coming from, and the one value that is always
-    // legal to claim -- UNDEFINED -- is defined to discard the contents, which are the whole point.
+    // What blocked this was the layout: a descriptor names the layout its image will be in when the
+    // shader runs, NVIDIA's Vulkan header does not use the word "layout" once, and a barrier is no
+    // safer because it needs the layout it is coming from. Three things in this tree answer it, and
+    // they agree. FSR2Feature_Vk hands this same texture to FidelityFX as COMPUTE_READ, which its
+    // Vulkan backend maps to SHADER_READ_ONLY_OPTIMAL, on a path that works in these games. The
+    // D3D12-on-Vulkan bridge transitions the game's exposure image out of SHADER_READ_ONLY_OPTIMAL,
+    // on a path that works. And the header stating nothing means there is no contract to break --
+    // the convention is the contract.
     //
-    // So this answers the question that decides whether any of that is worth doing: does a Vulkan
-    // game supply one at all? The D3D12 path found only one game in six that did.
+    // So it is bound in SHADER_READ_ONLY_OPTIMAL and no barrier is recorded: this never transitions a
+    // resource it does not own. If a game turns out to leave it somewhere else the cost is a wrong
+    // number, not a lost device, and the gate on the readback throws a wrong number away.
     NVSDK_NGX_Resource_VK* exposure = nullptr;
     float preExposure = 1.0f;
     const bool havePre =
@@ -420,6 +520,40 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     }
 
     g_vk.exposureOffered = exposure != nullptr;
+
+    if (havePre && std::isfinite(preExposure) && preExposure > 0.0f)
+        g_vk.gamePreExposure = preExposure;
+
+    // Take the grid written four frames ago. Retired by now, so this reads mapped memory rather than
+    // waiting on the GPU -- which is the whole reason for the ring.
+    if (g_vk.meterFrames >= kMeterSlots)
+    {
+        const void* mapped = g_vk.meterMapped[g_vk.meterFrames % kMeterSlots];
+
+        if (mapped != nullptr)
+        {
+            float measured = 0.0f;
+            std::memcpy(&measured, mapped, sizeof(float));
+
+            // Believed only if it could be an exposure. A texel read through a layout the game did
+            // not leave it in, or a slot the game stopped filling, fails here and the last good
+            // value stands.
+            if (std::isfinite(measured) && measured > 0.0f)
+                g_vk.gameExposure = measured;
+        }
+    }
+
+    // Said when it moves by more than a fiftieth, not every frame. Enough to see in a log that the
+    // number is the game's and that it tracks the scene, without a line per frame.
+    static float loggedExposure = -1.0f;
+
+    if (g_vk.gameExposure > 1e-6f &&
+        std::abs(loggedExposure - g_vk.gameExposure) > std::max(0.02f * g_vk.gameExposure, 1e-5f))
+    {
+        loggedExposure = g_vk.gameExposure;
+        LOG_INFO("DLSS-NR Vulkan: the game's exposure is {}, pre-exposure {}, so white point {}",
+                 g_vk.gameExposure, g_vk.gamePreExposure, g_vk.gamePreExposure / g_vk.gameExposure);
+    }
 
     if (colour == nullptr || depth == nullptr || motion == nullptr)
     {
@@ -554,6 +688,15 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
 
         const VkFormat working = VK_FORMAT_R16G16B16A16_SFLOAT;
 
+        // The meter is a fixed 8x8 whatever the frame is, so it is only built the once -- but it is
+        // built alongside the rest so that a failure here is caught by the same check.
+        const bool meterReady = (g_vk.meter.Valid() || CreateImage(g_vk.meter, kMeterSide, kMeterSide,
+                                                                   VK_FORMAT_R32_SFLOAT, true)) &&
+                                CreateMeterReadback();
+
+        if (!meterReady)
+            LOG_WARN("DLSS-NR Vulkan: no exposure meter; the white point stays on the slider");
+
         if (!CreateImage(g_vk.output, width, height, working, true) ||
             !CreateImage(g_vk.proxy, width, height, working, true) ||
             !CreateImage(g_vk.keep, width, height, working, true))
@@ -597,9 +740,22 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     // and encoding an already tone-mapped frame a second time looks washed out and banded.
     const bool linearHdr = gameSaysHdr && FormatCanHoldLinearHdr(colour->Resource.ImageViewInfo.Format);
 
-    // The slider only. The exposure source rides on the D3D12 meter's readback, which has no Vulkan
-    // counterpart yet, so this path is deliberately manual rather than quietly reading nothing.
-    const float whitePoint = cfg.DlssNrWhitePointScale.value_or_default();
+    // The same rule as the D3D12 path, deliberately spelled the same way: the game divides its frame
+    // by preExposure and multiplies by exposure, so undoing that is the divisor this pass wants, and
+    // the slider becomes a trim on top rather than the answer.
+    //
+    // The trim is bounded here, at the point of use, rather than at the slider. Someone who found 64
+    // by hand on the manual path and then switches the exposure source on keeps that 64 in their ini;
+    // bounding it in the menu would leave the picture wrong for a reason the menu no longer showed.
+    // Their value stays in the config untouched, so switching back to manual restores it.
+    const float slider = cfg.DlssNrWhitePointScale.value_or_default();
+    float whitePoint = slider;
+
+    if (cfg.DlssNrWhitePointFromExposure.value_or_default() && g_vk.gameExposure > 1e-6f)
+    {
+        const float trim = std::clamp(slider, 0.25f, 4.0f);
+        whitePoint = std::clamp(g_vk.gamePreExposure / g_vk.gameExposure * trim, 0.01f, 4096.0f);
+    }
 
     static bool saidEncoding = false;
 
@@ -642,11 +798,83 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     Transition(cmdBuffer, g_vk.proxy, VK_IMAGE_LAYOUT_GENERAL);
     Transition(cmdBuffer, g_vk.keep, VK_IMAGE_LAYOUT_GENERAL);
 
+    // Read in GENERAL, which is the layout it is actually in.
+    //
+    // This slot used to take the default and declare SHADER_READ_ONLY_OPTIMAL, which disagreed with
+    // the comment four lines up and with the resolve below -- the resolve writes this same image as a
+    // storage image, which is only legal in GENERAL, and nothing transitions it in between. It is the
+    // upscaler's output, a storage image the upscaler has just written, so GENERAL is what it is.
+    // Inert on the only hardware this model runs on, wrong everywhere it is read.
     if (!g_vk.pass->Dispatch(cmdBuffer, encode, width, height, colour->Resource.ImageViewInfo.ImageView,
-                             VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, g_vk.proxy.view, g_vk.keep.view))
+                             VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, g_vk.proxy.view, g_vk.keep.view,
+                             VK_IMAGE_LAYOUT_GENERAL))
     {
         Fail("the encode dispatch failed");
         return;
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The meter: the game's 1x1 exposure -> texel (0,0) of the grid -> a buffer the CPU can read
+    // -----------------------------------------------------------------------------------------
+
+    // The motion slot carries it, because the meter has no use for motion vectors and the shader is
+    // one shader with a fixed set of bindings. The source slot is left empty and gets the dummy.
+    //
+    // Gated on the setting that consumes the answer, which is not merely tidy. This is the only place
+    // the pass binds a resource it does not own on a guess about its layout, and the guess is good
+    // but it is still a guess. A user who has not asked for the exposure source never has the game's
+    // image touched at all, so if some engine does leave it somewhere unexpected, the blast radius is
+    // people who turned the thing on rather than everyone on Vulkan.
+    if (cfg.DlssNrWhitePointFromExposure.value_or_default() && exposure != nullptr &&
+        exposure->Type == NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW &&
+        exposure->Resource.ImageViewInfo.ImageView != VK_NULL_HANDLE && g_vk.meter.Valid())
+    {
+        const unsigned long long slot = g_vk.meterFrames % kMeterSlots;
+
+        if (g_vk.meterReadback[slot] != VK_NULL_HANDLE)
+        {
+            DlssNrConstants meter = encode;
+            meter.Mode = DlssNrMode_Meter;
+            meter.Width = kMeterSide;
+            meter.Height = kMeterSide;
+
+            Transition(cmdBuffer, g_vk.meter, VK_IMAGE_LAYOUT_GENERAL);
+
+            if (g_vk.pass->Dispatch(cmdBuffer, meter, kMeterSide, kMeterSide, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                    VK_NULL_HANDLE, exposure->Resource.ImageViewInfo.ImageView, g_vk.meter.view,
+                                    VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+            {
+                Transition(cmdBuffer, g_vk.meter, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+                VkBufferImageCopy region {};
+                region.bufferOffset = 0;
+                region.bufferRowLength = 0;
+                region.bufferImageHeight = 0;
+                region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                region.imageOffset = { 0, 0, 0 };
+                region.imageExtent = { kMeterSide, kMeterSide, 1 };
+
+                vkCmdCopyImageToBuffer(cmdBuffer, g_vk.meter.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                       g_vk.meterReadback[slot], 1, &region);
+
+                // The copy has to be visible to a host read, and only the host will read it.
+                VkBufferMemoryBarrier toHost {};
+                toHost.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+                toHost.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                toHost.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+                toHost.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toHost.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toHost.buffer = g_vk.meterReadback[slot];
+                toHost.offset = 0;
+                toHost.size = kMeterBytes;
+
+                vkCmdPipelineBarrier(cmdBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0,
+                                     nullptr, 1, &toHost, 0, nullptr);
+
+                g_vk.meterFrames++;
+            }
+        }
     }
 
     // -----------------------------------------------------------------------------------------
@@ -684,7 +912,8 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     Transition(cmdBuffer, g_vk.keep, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     if (!g_vk.pass->Dispatch(cmdBuffer, resolve, width, height, g_vk.proxy.view, g_vk.output.view, g_vk.keep.view,
-                             VK_NULL_HANDLE, colour->Resource.ImageViewInfo.ImageView, VK_NULL_HANDLE))
+                             VK_NULL_HANDLE, colour->Resource.ImageViewInfo.ImageView, VK_NULL_HANDLE,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
     {
         Fail("the resolve dispatch failed");
         return;
@@ -736,6 +965,8 @@ void ShutdownVk()
     DestroyImage(g_vk.output);
     DestroyImage(g_vk.proxy);
     DestroyImage(g_vk.keep);
+    DestroyImage(g_vk.meter);
+    DestroyMeterReadback();
 
     g_vk.pass.reset();
 

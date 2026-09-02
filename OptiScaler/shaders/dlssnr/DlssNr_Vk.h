@@ -47,7 +47,8 @@ class DlssNr_Vk : public Shader_Vk
     bool CreateDummy(VkCommandBuffer cmdList);
 
     void WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffset, VkImageView source, VkImageView model,
-                          VkImageView original, VkImageView motion, VkImageView target, VkImageView keep);
+                          VkImageView original, VkImageView motion, VkImageView target, VkImageView keep,
+                          VkImageLayout sourceLayout, VkImageLayout motionLayout);
 
   public:
     DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalDevice);
@@ -56,10 +57,19 @@ class DlssNr_Vk : public Shader_Vk
     // One dispatch of the composition shader.
     //
     // Any of the four read views may be VK_NULL_HANDLE, in which case the dummy is bound; the two
-    // written views may not, because a mode that writes nothing has no reason to run. Images are
-    // expected in SHADER_READ_ONLY_OPTIMAL for reads and GENERAL for writes -- this records the
-    // dispatch and the barrier that follows it, not the transitions that got them there.
+    // written views may not, because a mode that writes nothing has no reason to run. This records
+    // the dispatch and the barrier that follows it, not the transitions that got them there.
+    //
+    // The source and motion slots are the two that ever carry an image this pass does not own -- the
+    // frame the upscaler wrote, and the game's exposure -- and a descriptor has to name the layout
+    // its image will be in when the shader runs. Those two are therefore the caller's to state.
+    // Everything else is ours and is in the layout this pass put it in.
+    //
+    // The default is what a resource read by a compute shader is normally in, and is what every slot
+    // holding one of our own images uses.
     bool Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InConstants, uint32_t InThreadsX,
                   uint32_t InThreadsY, VkImageView InSource, VkImageView InModel, VkImageView InOriginal,
-                  VkImageView InMotion, VkImageView InTarget, VkImageView InKeep);
+                  VkImageView InMotion, VkImageView InTarget, VkImageView InKeep,
+                  VkImageLayout InSourceLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VkImageLayout InMotionLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 };
