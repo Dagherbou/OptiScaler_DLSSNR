@@ -1,0 +1,76 @@
+name: Sync upstream DLSS Neural Rendering
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily at 06:00 UTC; edit to taste
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_URL: https://github.com/Dagherbou/OptiScaler_DLSSNR.git
+  UPSTREAM_BRANCH: dlss-neural-rendering
+  MIRROR_BRANCH: dlss-neural-rendering
+  UI_BRANCH: dlss5-developer-controls-ui
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: git remote add upstream "$UPSTREAM_URL"
+
+      - name: Fetch upstream and origin branches
+        run: |
+          git fetch upstream "$UPSTREAM_BRANCH"
+          git fetch origin "$MIRROR_BRANCH" "$UI_BRANCH"
+
+      - name: Fast-forward the mirror branch to upstream
+        id: ff
+        run: |
+          git checkout "$MIRROR_BRANCH"
+          BEFORE=$(git rev-parse HEAD)
+          git merge --ff-only "upstream/$UPSTREAM_BRANCH"
+          AFTER=$(git rev-parse HEAD)
+          echo "changed=$([ "$BEFORE" != "$AFTER" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Push refreshed mirror branch
+        if: steps.ff.outputs.changed == 'true'
+        run: git push origin "$MIRROR_BRANCH"
+
+      - name: Merge refreshed mirror into your UI branch
+        if: steps.ff.outputs.changed == 'true'
+        run: |
+          git checkout "$UI_BRANCH"
+          git merge "$MIRROR_BRANCH" --no-edit
+
+      - name: Push UI branch (clean merge)
+        if: steps.ff.outputs.changed == 'true'
+        run: git push origin "$UI_BRANCH"
+
+      - name: On merge conflict, open a PR for manual resolution
+        if: failure()
+        run: |
+          git merge --abort 2>/dev/null || true
+          CONFLICT_BRANCH="upstream-sync-conflict-$(date +%Y%m%d%H%M%S)"
+          git checkout -b "$CONFLICT_BRANCH" "$MIRROR_BRANCH"
+          git push origin "$CONFLICT_BRANCH"
+          gh pr create \
+            --base "$UI_BRANCH" \
+            --head "$CONFLICT_BRANCH" \
+            --title "Upstream sync needs manual merge into $UI_BRANCH" \
+            --body "Auto-sync pulled new commits from ${UPSTREAM_URL} (branch ${UPSTREAM_BRANCH}) into ${MIRROR_BRANCH}, but merging that into ${UI_BRANCH} did not apply cleanly. Resolve the conflicts in this PR by hand."
+        env:
+          GH_TOKEN: ${{ github.token }}
