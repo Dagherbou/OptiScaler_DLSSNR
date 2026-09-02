@@ -362,6 +362,20 @@ class Config
     // Off until it is shown to produce the same picture. If it does, the forwarder can go.
     CustomOptional<bool> DlssNrUseProxy { false };
 
+    // Diagnostics: stop refreshing a guide and keep handing the model the one it already has.
+    //
+    // These answer "does the model actually use this input", which decides whether Neural Rendering
+    // can ever run in a game that has no upscaler to borrow guides from. A frozen guide is not a
+    // degenerate input -- it is perfectly valid depth or motion, just wrong for this frame -- so a
+    // model that reads it must produce a different picture once the camera moves. A model that does
+    // not read it produces an identical one.
+    //
+    // FreezeMotion is the control and is not optional to the experiment. Freezing the vectors must
+    // visibly break the picture; if it does not, the mechanism itself is broken and any conclusion
+    // drawn from FreezeDepth is worthless. Never read one without the other.
+    CustomOptional<bool> DlssNrFreezeDepth { false };
+    CustomOptional<bool> DlssNrFreezeMotion { false };
+
     // Which depth convention the model is told the guide uses.
     //
     //   0  what the game's own DLSS feature was created with, which is what it means for the upscaler

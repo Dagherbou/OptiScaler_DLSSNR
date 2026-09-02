@@ -1039,11 +1039,25 @@ ID3D12Resource* CreateGuideClone(ID3D12Device* device, ID3D12Resource* source)
 // of it when it is not. NGX requires its inputs in NON_PIXEL_SHADER_RESOURCE at evaluate time, which is
 // a documented contract rather than a guess about any one game's frame graph, so that is the state
 // transitioned away from and back to here.
+// Freezing is a diagnostic, and it reuses this function because the clone it already keeps is
+// exactly the thing a frozen guide is: a private copy the model reads instead of the live resource.
+// Freezing is then not a new mechanism but the absence of one -- stop refreshing the copy.
+//
+// A frozen guide is valid data that is wrong for this frame, which is a far better probe than a
+// constant would be. A constant is degenerate and a model may special-case it; stale depth is
+// ordinary depth that simply disagrees with the picture, and anything reading it has to notice.
 ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
-                              ID3D12Resource* source, ID3D12Resource** clone)
+                              ID3D12Resource* source, ID3D12Resource** clone, bool freeze)
 {
-    if (source == nullptr || !IsTypeless(source->GetDesc().Format))
+    if (source == nullptr)
         return source;
+
+    // Normally only a typeless guide needs a copy. A frozen one always does, because the whole point
+    // is to read something other than what the game just wrote.
+    if (!freeze && !IsTypeless(source->GetDesc().Format))
+        return source;
+
+    bool justCreated = false;
 
     if (*clone == nullptr)
     {
@@ -1052,9 +1066,16 @@ ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* c
         if (*clone == nullptr)
             return nullptr;
 
-        LOG_DEBUG("DLSS-NR cloned a typeless guide as format {}",
+        justCreated = true;
+
+        LOG_DEBUG("DLSS-NR cloned a guide as format {}",
                  (int) TypedGuideFormat(source->GetDesc().Format));
     }
+
+    // A clone that has never been filled holds nothing, so the first frame of a freeze still copies.
+    // After that the copy is skipped and the model keeps reading the frame it was given.
+    if (freeze && !justCreated)
+        return *clone;
 
     Barrier(cmdList, source, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -1866,8 +1887,33 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         modelInput = g_nr.colorSmall;
     }
 
-    ID3D12Resource* depthIn = ReadableGuide(device, cmdList, depth, &g_nr.depthClone);
-    ID3D12Resource* motionIn = ReadableGuide(device, cmdList, motion, &g_nr.motionClone);
+    // Diagnostics. See Config -- FreezeMotion is the control for FreezeDepth and neither reading
+    // means anything without the other.
+    const bool freezeDepth = cfg.DlssNrFreezeDepth.value_or_default();
+    const bool freezeMotion = cfg.DlssNrFreezeMotion.value_or_default();
+
+    {
+        static bool saidDepth = false, saidMotion = false;
+
+        if (saidDepth != freezeDepth)
+        {
+            saidDepth = freezeDepth;
+            LOG_WARN("DLSS-NR diagnostic: depth is now {} -- if the picture does not change while the "
+                     "camera moves, the model is not reading depth",
+                     freezeDepth ? "FROZEN" : "live again");
+        }
+
+        if (saidMotion != freezeMotion)
+        {
+            saidMotion = freezeMotion;
+            LOG_WARN("DLSS-NR diagnostic: motion vectors are now {} -- this is the control, and it "
+                     "MUST visibly break the picture",
+                     freezeMotion ? "FROZEN" : "live again");
+        }
+    }
+
+    ID3D12Resource* depthIn = ReadableGuide(device, cmdList, depth, &g_nr.depthClone, freezeDepth);
+    ID3D12Resource* motionIn = ReadableGuide(device, cmdList, motion, &g_nr.motionClone, freezeMotion);
 
     if (depthIn == nullptr || motionIn == nullptr)
     {
@@ -2118,11 +2164,15 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     }
 
     // Put any guide clones back where the next frame's copy expects to find them.
-    if (g_nr.depthClone != nullptr)
+    // A clone left in NON_PIXEL_SHADER_RESOURCE by a frozen frame was never transitioned back to
+    // COPY_DEST, because a frozen frame does not copy. Putting it back unconditionally would be a
+    // barrier from a state it is not in, so the frozen case is skipped here and picked up by the
+    // first live frame after the toggle goes off -- which is a copy, and copies transition it.
+    if (g_nr.depthClone != nullptr && !freezeDepth)
         Barrier(cmdList, g_nr.depthClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COPY_DEST);
 
-    if (g_nr.motionClone != nullptr)
+    if (g_nr.motionClone != nullptr && !freezeMotion)
         Barrier(cmdList, g_nr.motionClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COPY_DEST);
 

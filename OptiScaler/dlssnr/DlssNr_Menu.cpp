@@ -466,6 +466,33 @@ void RenderMenu(Config* config, float menuResScale)
 
         ImGui::SeparatorText("Inspect");
 
+        {
+            bool freezeDepth = config->DlssNrFreezeDepth.value_or_default();
+            if (ImGui::Checkbox("Freeze depth (diagnostic)", &freezeDepth))
+                config->DlssNrFreezeDepth = freezeDepth;
+
+            HelpMarker("Keeps handing the model the depth from the frame this was switched on,"
+                           "\nwhile everything else stays live."
+                           "\n\nThis answers whether the model reads depth at all. A frozen guide is"
+                           "\nnot broken data -- it is ordinary depth that simply disagrees with the"
+                           "\npicture -- so anything reading it has to notice once the camera moves."
+                           "\n\nMove the camera. If the picture is unchanged, the model is not using"
+                           "\ndepth, and Neural Rendering could run in games that have no upscaler to"
+                           "\nborrow a depth buffer from.");
+
+            bool freezeMotion = config->DlssNrFreezeMotion.value_or_default();
+            if (ImGui::Checkbox("Freeze motion vectors (control)", &freezeMotion))
+                config->DlssNrFreezeMotion = freezeMotion;
+
+            HelpMarker("The control for the test above, and not optional to it."
+                           "\n\nFreezing the vectors MUST visibly break the picture while the camera"
+                           "\nmoves. If it does not, the freezing mechanism itself is broken and"
+                           "\n\"freezing depth changed nothing\" means nothing."
+                           "\n\nCheck this one first. Confirm it breaks, switch it off, then test"
+                           "\ndepth.");
+        }
+
+
         if (DlssNr::CaptureInProgress())
         {
             ImGui::TextDisabled("Capturing...");
