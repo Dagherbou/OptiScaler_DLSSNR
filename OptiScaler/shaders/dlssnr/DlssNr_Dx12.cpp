@@ -2260,7 +2260,7 @@ void ProbeD3D11(void* d3d11Device)
         return;
 
     auto probe = (int (*)(const wchar_t*)) GetProcAddress(g_nr.forwarder, "dlssnr_d3d11_probe");
-    auto init = (int (*)(const wchar_t*, const wchar_t*, void*, int)) GetProcAddress(
+    auto init = (int (*)(const wchar_t*, const wchar_t*, void*, int, int*, int*)) GetProcAddress(
         g_nr.forwarder, "dlssnr_d3d11_init");
 
     if (probe == nullptr || init == nullptr)
@@ -2330,20 +2330,35 @@ void ProbeD3D11(void* d3d11Device)
         return;
     }
 
-    // The question the bridge was built around. A refusal appears here, before any feature exists.
+    // Four ways of asking, since the feature has already said it supports this platform.
+    int attempt = 0;
+    int results[4] = { -9, -9, -9, -9 };
+
     const int result = init(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                            d3d11Device, 0x0000015);
+                            d3d11Device, 0x0000015, &attempt, results);
+
+    static const char* kNames[4] = { "Init_Ext on our own copy", "Init on our own copy",
+                                     "Init_Ext on the shared module", "Init on the shared module" };
+
+    for (int i = 0; i < 4; ++i)
+    {
+        LOG_INFO("DLSS-NR D3D11:   {} -> {} ({})", kNames[i], results[i],
+                 results[i] == -2   ? "module not loaded"
+                 : results[i] == -3 ? "export missing"
+                 : results[i] == -9 ? "not reached"
+                                    : NgxResultName((unsigned int) results[i]));
+    }
 
     if (result == 1)
-        LOG_WARN("DLSS-NR D3D11: the model initialised on a Direct3D 11 device. The bridge may not be "
-                 "necessary -- next step is a feature create on a device context.");
-    else if (result == -1)
-        // Our own failure, not the model's. Reporting this as "the bridge is required" would be the
-        // exact wrong conclusion, and it is the conclusion this probe exists to avoid drawing.
-        LOG_INFO("DLSS-NR D3D11: the probe could not load its own copy of the model, so nothing was "
-                 "asked and nothing is known");
+        LOG_WARN("DLSS-NR D3D11: initialised, via {}. The feature already said this platform is "
+                 "supported; now the call works too. Next is a feature create on a device context.",
+                 attempt > 0 ? kNames[attempt - 1] : "?");
     else
-        LOG_INFO("DLSS-NR D3D11: init refused with {} ({}), so the bridge is required after all",
+        // Deliberately not "so the bridge is required". GetFeatureRequirements answers 0x0 SUPPORTED
+        // with a minimum architecture this card meets, so the platform is not the obstacle and saying
+        // otherwise here would be printing a conclusion the evidence does not carry.
+        LOG_WARN("DLSS-NR D3D11: every init variant refused, last {} ({}) -- though the feature itself "
+                 "reports this platform as supported, so the obstacle is in how it is being called",
                  result, NgxResultName((unsigned int) result));
 }
 

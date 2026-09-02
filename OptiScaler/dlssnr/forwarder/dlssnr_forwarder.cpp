@@ -432,26 +432,106 @@ __declspec(dllexport) int dlssnr_d3d11_probe(const wchar_t *snippetPath) {
     return bits;
 }
 
-// Initialises NGX on a D3D11 device. This is the call that decides the question: if the snippet
-// wanted nothing to do with D3D11 it would refuse here, before any feature exists.
+// The non-_Ext init. Different export, and it puts the feature info before the version -- the reverse
+// of _Ext, which is the whole reason the two exist.
+using PFN_NrD3D11InitPlain = int(__cdecl *)(unsigned long long, const wchar_t *, void *, const void *, int);
+
+// Initialises NGX on a D3D11 device, four ways, reporting each.
+//
+// The feature itself says D3D11 is supported -- GetFeatureRequirements answers 0x0 with a minimum
+// architecture of Blackwell, which is the card this runs on. So a refusal from Init is about the
+// call, not the platform, and the candidates are few enough to try in one run:
+//
+//   1  _Ext on our own private copy of the snippet
+//   2  plain Init on that copy
+//   3  _Ext on the shared module the D3D12 path already initialised
+//   4  plain Init on that shared module
+//
+// Three and four use the module the D3D12 path owns. That is what the review warned against, because
+// one snippet keeps one global core and a D3D11 init could leave it holding a D3D11 device. They run
+// last, after D3D12 has had its turn, and only behind the flag -- but they are also the variants most
+// likely to work, since the snippet may expect to be reached through a core that is already up.
+//
+// Returns the first result that succeeds, or the last failure. attemptOut says which one answered.
 __declspec(dllexport) int dlssnr_d3d11_init(const wchar_t *snippetPath, const wchar_t *dataPath,
-                                            void *device, int sdkVersion) {
-    if (!loadD3D11Snippet(snippetPath) || g_d3d11.init == nullptr || device == nullptr) {
+                                            void *device, int sdkVersion, int *attemptOut,
+                                            int *resultsOut) {
+    if (device == nullptr) {
         return -1;
     }
 
     if (g_d3d11.initialised) {
+        if (attemptOut != nullptr) *attemptOut = 0;
         return 1;
     }
 
-    // Assigned rather than returned: a tail call becomes a jmp and the snippet resolves its caller
-    // past this module, which the gate rejects before reading an argument.
-    volatile int result = g_d3d11.init(0x24480451ull, dataPath, device, sdkVersion, nullptr);
+    const bool haveCopy = loadD3D11Snippet(snippetPath);
+    const bool haveShared = loadSnippet(snippetPath);
 
-    dlssnr_d3d11_last_init = (int) result;
-    g_d3d11.initialised = result == 1;
+    struct Attempt { HMODULE module; bool ext; };
 
-    return (int) result;
+    const Attempt attempts[4] = {
+        { haveCopy ? g_d3d11.module : nullptr, true },
+        { haveCopy ? g_d3d11.module : nullptr, false },
+        { haveShared ? g_snip.module : nullptr, true },
+        { haveShared ? g_snip.module : nullptr, false },
+    };
+
+    int last = -1;
+
+    for (int i = 0; i < 4; ++i) {
+        if (attempts[i].module == nullptr) {
+            if (resultsOut != nullptr) resultsOut[i] = -2;
+            continue;
+        }
+
+        volatile int result = 0;
+
+        if (attempts[i].ext) {
+            auto fn = (PFN_NrD3D11Init) GetProcAddress(attempts[i].module, "NVSDK_NGX_D3D11_Init_Ext");
+
+            if (fn == nullptr) {
+                if (resultsOut != nullptr) resultsOut[i] = -3;
+                continue;
+            }
+
+            result = fn(0x24480451ull, dataPath, device, sdkVersion, nullptr);
+        } else {
+            auto fn = (PFN_NrD3D11InitPlain) GetProcAddress(attempts[i].module, "NVSDK_NGX_D3D11_Init");
+
+            if (fn == nullptr) {
+                if (resultsOut != nullptr) resultsOut[i] = -3;
+                continue;
+            }
+
+            result = fn(0x24480451ull, dataPath, device, nullptr, sdkVersion);
+        }
+
+        last = (int) result;
+
+        if (resultsOut != nullptr) resultsOut[i] = last;
+
+        if (last == 1) {
+            g_d3d11.module = attempts[i].module;
+            g_d3d11.create = (PFN_NrD3D11Create) GetProcAddress(attempts[i].module,
+                                                                "NVSDK_NGX_D3D11_CreateFeature");
+            g_d3d11.evaluate = (PFN_NrD3D11Evaluate) GetProcAddress(attempts[i].module,
+                                                                    "NVSDK_NGX_D3D11_EvaluateFeature");
+            g_d3d11.release = (PFN_NrRelease) GetProcAddress(attempts[i].module,
+                                                             "NVSDK_NGX_D3D11_ReleaseFeature");
+            g_d3d11.initialised = true;
+
+            if (attemptOut != nullptr) *attemptOut = i + 1;
+
+            dlssnr_d3d11_last_init = last;
+            return last;
+        }
+    }
+
+    if (attemptOut != nullptr) *attemptOut = 0;
+
+    dlssnr_d3d11_last_init = last;
+    return last;
 }
 
 // Creates the feature on a D3D11 device context. Tuning is set here for the same reason it is on the
