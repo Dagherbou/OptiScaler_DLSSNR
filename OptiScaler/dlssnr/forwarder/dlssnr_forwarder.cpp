@@ -344,6 +344,61 @@ bool loadD3D11Snippet(const wchar_t *path) {
     return g_d3d11.create != nullptr && g_d3d11.evaluate != nullptr;
 }
 
+// Ask the feature what it needs, rather than asking the device to start it.
+//
+// GetFeatureRequirements is the query NGX provides for exactly this question, and unlike Init it
+// creates nothing and touches no device. A feature that genuinely does not run on an API answers here,
+// and it answers without our having to interpret a failure that might have been ours.
+//
+// Worth asking because the first attempt proved less than it looked. Init_Ext returned
+// FAIL_FeatureNotSupported, but the same process shows the driver's own NGX core initialising on
+// D3D11 successfully -- so D3D11 NGX works here, and it was specifically the snippet's own init,
+// called directly by us, that declined. The snippet carries the string "Error: Not called from NGX
+// runtime", which is a check we may simply be failing rather than a statement about the platform.
+using PFN_NrD3D11Requirements = int(__cdecl *)(const void *, const void *, void *);
+
+__declspec(dllexport) int dlssnr_d3d11_requirements(const wchar_t *snippetPath, unsigned int *outFlags) {
+    if (!loadD3D11Snippet(snippetPath)) {
+        return -2;
+    }
+
+    auto req = (PFN_NrD3D11Requirements) GetProcAddress(g_d3d11.module,
+                                                        "NVSDK_NGX_D3D11_GetFeatureRequirements");
+
+    if (req == nullptr) {
+        return -1;
+    }
+
+    // NVSDK_NGX_FeatureDiscoveryInfo: SDK version, feature id, application identifier, log level,
+    // feature-specific info. Only the first two matter for the answer.
+    struct {
+        int sdkVersion;
+        int featureId;
+        struct { int idType; unsigned long long appId; } identifier;
+        const wchar_t *dataPath;
+        const void *loggingInfo;
+        const void *featureInfo;
+    } discovery {};
+
+    discovery.sdkVersion = 0x0000015;
+    discovery.featureId = 18;
+    discovery.identifier.idType = 0;
+    discovery.identifier.appId = 0x24480451ull;
+    discovery.dataPath = L".";
+
+    // NVSDK_NGX_FeatureRequirement: the outputs. Generous so a longer struct cannot overrun.
+    unsigned char requirement[512] = {};
+
+    volatile int result = req(nullptr, &discovery, requirement);
+
+    if (outFlags != nullptr) {
+        // First field is FeatureSupported, a bit field: 0 means supported, non-zero names the reason.
+        *outFlags = *reinterpret_cast<unsigned int *>(requirement);
+    }
+
+    return (int) result;
+}
+
 __declspec(dllexport) int dlssnr_d3d11_last_init = 0;
 __declspec(dllexport) int dlssnr_d3d11_last_create = 0;
 

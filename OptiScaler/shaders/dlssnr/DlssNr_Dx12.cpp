@@ -2280,6 +2280,20 @@ void ProbeD3D11(void* d3d11Device)
     // Four bits, one per entry point: init 1, create 2, evaluate 4, release 8.
     const int bits = probe(snippet->wstring().c_str());
 
+    // And the question NGX has an API for. Asked first because it creates nothing: if the feature
+    // declines D3D11 here, that is the feature's own answer rather than our reading of a failed init.
+    auto requirements = (int (*)(const wchar_t*, unsigned int*)) GetProcAddress(
+        g_nr.forwarder, "dlssnr_d3d11_requirements");
+
+    if (requirements != nullptr)
+    {
+        unsigned int supported = 0xFFFFFFFFu;
+        const int rc = requirements(snippet->wstring().c_str(), &supported);
+
+        LOG_INFO("DLSS-NR D3D11: GetFeatureRequirements returned {} ({}), FeatureSupported bits 0x{:X}",
+                 rc, NgxResultName((unsigned int) rc), supported);
+    }
+
     LOG_INFO("DLSS-NR D3D11: entry points resolved {}/15 (init {}, create {}, evaluate {}, release {})",
              bits, (bits & 1) ? "yes" : "no", (bits & 2) ? "yes" : "no", (bits & 4) ? "yes" : "no",
              (bits & 8) ? "yes" : "no");
