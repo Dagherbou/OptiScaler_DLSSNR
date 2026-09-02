@@ -384,6 +384,55 @@ void RenderMenu(Config* config, float menuResScale)
 
 
 
+        // What the frame says its own scale is, offered rather than applied.
+        //
+        // Not a taste setting. The composition divides the frame by paper white so the colour maths
+        // runs in a normalised range, and the right divisor is whatever lands this game's buffer in
+        // [0,1]. Nioh 3 needs about 240 because its linear buffer holds values near two hundred; below
+        // that the frame is never normalised, the hue correction is handed values far outside the range
+        // its cube root was built for, and the picture takes on the green tint people report.
+        //
+        // Measured every frame from the untouched copy the encode keeps, never from the frame this pass
+        // writes. That is the difference between this and the white point meter that was removed: that
+        // one read its own output and chased it.
+        //
+        // Shown only when nothing else is driving the white point, and never applied on its own. The
+        // button moves the slider, so the number stays visible and adjustable afterwards.
+        {
+            const auto calib = DlssNr::Calibration();
+            const auto offer = DlssNr::GameExposureStatus();
+            const bool exposureDriving =
+                config->DlssNrWhitePointFromExposure.value_or_default() && offer.everOffered && !vulkan;
+
+            if (!exposureDriving && calib.suggestion > 0.0f && calib.samples > 8)
+            {
+                const float confidence = calib.confidence;
+                const ImVec4 tint = confidence > 0.75f  ? ImVec4(0.45f, 0.80f, 0.45f, 1.0f)
+                                    : confidence > 0.4f ? ImVec4(0.85f, 0.75f, 0.35f, 1.0f)
+                                                        : ImVec4(0.85f, 0.55f, 0.35f, 1.0f);
+
+                ImGui::TextColored(tint, "This scene suggests %.2fx  (%.0f%% settled)", calib.suggestion,
+                                   confidence * 100.0f);
+
+                ImGui::SameLine();
+
+                if (ImGui::SmallButton("Use it"))
+                    config->DlssNrWhitePointScale = calib.suggestion;
+
+                HelpMarker("What this game's buffer is actually scaled by, measured from the frame"
+                               "\nbefore this pass touches it."
+                               "\n\nIt is not a brightness preference. The composition divides the frame"
+                               "\nby paper white so the colour maths works in a normalised range. Too low"
+                               "\nand the frame is never normalised, the hue correction runs far outside"
+                               "\nthe range it was built for, and the picture takes on a tint."
+                               "\n\nSettled is how much recent readings agree. High means the number has"
+                               "\nheld still and is worth taking. Low means the scene is changing under"
+                               "\nthe measurement -- stand somewhere lit, stay still, and read it again."
+                               "\n\nNothing is applied until you press the button, and it only moves the"
+                               "\nslider, so you can adjust from there.");
+            }
+        }
+
         float wpScale = config->DlssNrWhitePointScale.value_or_default();
         if (ImGui::SliderFloat(fromExposure ? "Paper white (x exposure)" : "Paper white", &wpScale, 0.25f,
                                2000.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))

@@ -48,6 +48,30 @@ void RenderMenu(::Config* config, float menuResScale);
 void RetryAfterFailure();
 
 
+// Asks the model whether it will work on Direct3D 11 at all, once, and logs the answer.
+//
+// The bridge exists because of a claim nobody tested: "the model refuses on DX11, it answers
+// FeatureNotSupported". Nothing in this project has ever called the snippet's own D3D11 entry points
+// -- it exports ten of them, implemented in ngx_d3d11.cpp and sharing CreateFeatureCommon and
+// EvaluateFeatureCommon with the D3D12 path. Nothing is created and nothing changes; it resolves the
+// entry points and initialises on the game's own device, which is where a refusal would appear.
+void ProbeD3D11(void* d3d11Device);
+
+// What scale this game's buffer is on, measured from the untouched copy of each frame.
+//
+// A suggestion only. Nothing applies it: the menu shows it and the user takes it or does not, which
+// keeps the number visible and adjustable rather than a value that moved on its own. Confidence is
+// how settled recent readings are -- 1 means they agree, 0 means the scene is changing under the
+// measurement and no single value would serve.
+struct CalibrationReading
+{
+    float suggestion = 0.0f;
+    float confidence = 0.0f;
+    unsigned long long samples = 0;
+};
+
+CalibrationReading Calibration();
+
 // Whether the model is loaded and running, for the overlay.
 bool IsRunning();
 

@@ -210,6 +210,22 @@ struct NrState
     ID3D12Resource* meter = nullptr;
     ID3D12Resource* meterReadback[4] = {};
 
+    // The calibration grid: what scale the game's buffer is on, measured from the untouched copy.
+    // Its own surface and ring rather than sharing the meter's, because the two run at different
+    // sizes -- the meter fetches one texel and this reads the whole frame.
+    ID3D12Resource* calib = nullptr;
+    ID3D12Resource* calibReadback[4] = {};
+    unsigned long long calibFrames = 0;
+
+    // The last few answers, so the menu can say how settled the number is. A suggestion taken during
+    // a fade or a loading screen is worth less than one taken while standing still, and the spread
+    // across recent frames is what tells them apart.
+    static constexpr unsigned int kCalibHistory = 32;
+    float calibHistory[kCalibHistory] = {};
+    unsigned int calibCount = 0;
+    float calibSuggestion = 0.0f;
+    float calibConfidence = 0.0f;
+
     // Whether the frame that filled each readback slot actually had an exposure texture bound.
     //
     // The meter writes tile 0 from whatever sits in the exposure slot, and DispatchPass substitutes
@@ -652,6 +668,36 @@ constexpr unsigned int kMeterRowBytes = kDlssNrMeterGrid * sizeof(float);
 constexpr unsigned int kMeterBytes = kMeterRowBytes * kDlssNrMeterGrid;
 
 // Records the copy of this frame's grid into whichever readback buffer is furthest from being read.
+// Same shape as the meter's copy, against the calibration surface and its own ring.
+void CopyCalibrationToReadback(ID3D12GraphicsCommandList* cmdList)
+{
+    const unsigned int slot = (unsigned int) (g_nr.calibFrames % 4);
+
+    if (g_nr.calibReadback[slot] == nullptr || g_nr.calib == nullptr)
+        return;
+
+    D3D12_TEXTURE_COPY_LOCATION srcLoc {};
+    srcLoc.pResource = g_nr.calib;
+    srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    srcLoc.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION dst {};
+    dst.pResource = g_nr.calibReadback[slot];
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint.Offset = 0;
+    dst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32_FLOAT;
+    dst.PlacedFootprint.Footprint.Width = kDlssNrMeterGrid;
+    dst.PlacedFootprint.Footprint.Height = kDlssNrMeterGrid;
+    dst.PlacedFootprint.Footprint.Depth = 1;
+    dst.PlacedFootprint.Footprint.RowPitch = kMeterRowBytes;
+
+    Barrier(cmdList, g_nr.calib, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    cmdList->CopyTextureRegion(&dst, 0, 0, 0, &srcLoc, nullptr);
+    Barrier(cmdList, g_nr.calib, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    g_nr.calibFrames++;
+}
+
 void CopyMeterToReadback(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device,
                          bool exposureBound)
 {
@@ -691,6 +737,76 @@ void CopyMeterToReadback(ID3D12GraphicsCommandList* cmdList, ID3D12Device* devic
 // off a frame this pass writes is a feedback loop rather than a measurement. What is left is a
 // courier -- the game's exposure is a 1x1 texture in a resource state this pass did not set and must
 // not transition, so the shader reads it as an SRV and it rides home on a readback that exists.
+// Reads the calibration grid written four frames ago and turns it into one number.
+//
+// A high percentile of tile peaks, not the maximum: the maximum is a sun or a specular hit and would
+// normalise the whole picture into the dark. The 90th percentile is high enough to sit at the top of
+// the real range and common enough that no single highlight decides it.
+void ConsumeCalibrationReadback()
+{
+    if (g_nr.calibFrames < 4)
+        return;
+
+    const unsigned int slot = (unsigned int) (g_nr.calibFrames % 4);
+    ID3D12Resource* buffer = g_nr.calibReadback[slot];
+
+    if (buffer == nullptr)
+        return;
+
+    void* mapped = nullptr;
+    D3D12_RANGE range { 0, kMeterBytes };
+
+    if (FAILED(buffer->Map(0, &range, &mapped)) || mapped == nullptr)
+        return;
+
+    const float* src = (const float*) mapped;
+
+    std::vector<float> tiles;
+    tiles.reserve(kDlssNrMeterGrid * kDlssNrMeterGrid);
+
+    for (unsigned int i = 0; i < kDlssNrMeterGrid * kDlssNrMeterGrid; ++i)
+    {
+        if (std::isfinite(src[i]) && src[i] > 1e-6f)
+            tiles.push_back(src[i]);
+    }
+
+    D3D12_RANGE nothingWritten { 0, 0 };
+    buffer->Unmap(0, &nothingWritten);
+
+    if (tiles.size() < 16)
+        return;
+
+    const size_t nth = (size_t) ((float) (tiles.size() - 1) * 0.90f);
+    std::nth_element(tiles.begin(), tiles.begin() + nth, tiles.end());
+
+    const float suggestion = std::clamp(tiles[nth], 0.25f, 2000.0f);
+
+    g_nr.calibHistory[g_nr.calibCount % NrState::kCalibHistory] = suggestion;
+    g_nr.calibCount++;
+    g_nr.calibSuggestion = suggestion;
+
+    // Confidence is the spread of recent answers, not their absolute size. A number that has held
+    // still for a second is one worth taking; one that is swinging means the scene is changing under
+    // the measurement, and no single value would serve anyway.
+    const unsigned int have = std::min<unsigned int>(g_nr.calibCount, NrState::kCalibHistory);
+
+    if (have >= 8)
+    {
+        float lo = g_nr.calibHistory[0];
+        float hi = g_nr.calibHistory[0];
+
+        for (unsigned int i = 0; i < have; ++i)
+        {
+            lo = std::min(lo, g_nr.calibHistory[i]);
+            hi = std::max(hi, g_nr.calibHistory[i]);
+        }
+
+        // A spread of 1.0x is perfect agreement and 2x or worse is none.
+        const float spread = lo > 1e-6f ? hi / lo : 1000.0f;
+        g_nr.calibConfidence = std::clamp(1.0f - (spread - 1.0f), 0.0f, 1.0f);
+    }
+}
+
 void ConsumeMeterReadback()
 {
     if (g_nr.meterFrames < 4)
@@ -1326,6 +1442,32 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     // The meter's grid and the buffers it is read back through. Independent of the frame's size, so
     // they are built once and survive every resolution change.
+    if (g_nr.calib == nullptr)
+    {
+        g_nr.calib = CreateScratch(device, DXGI_FORMAT_R32_FLOAT, kDlssNrMeterGrid, kDlssNrMeterGrid);
+
+        D3D12_HEAP_PROPERTIES cReadback {};
+        cReadback.Type = D3D12_HEAP_TYPE_READBACK;
+
+        D3D12_RESOURCE_DESC cBuffer {};
+        cBuffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        cBuffer.Width = kMeterBytes;
+        cBuffer.Height = 1;
+        cBuffer.DepthOrArraySize = 1;
+        cBuffer.MipLevels = 1;
+        cBuffer.Format = DXGI_FORMAT_UNKNOWN;
+        cBuffer.SampleDesc.Count = 1;
+        cBuffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        for (auto& r : g_nr.calibReadback)
+        {
+            if (FAILED(device->CreateCommittedResource(&cReadback, D3D12_HEAP_FLAG_NONE, &cBuffer,
+                                                       D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                       IID_PPV_ARGS(&r))))
+                r = nullptr;
+        }
+    }
+
     if (g_nr.meter == nullptr)
     {
         g_nr.meter = CreateScratch(device, DXGI_FORMAT_R32_FLOAT, kDlssNrMeterGrid, kDlssNrMeterGrid);
@@ -1573,6 +1715,29 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // The transitions double as the wait for the encode's writes.
     Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    // Measure the buffer's scale from the copy the encode just kept -- untouched, so there is no path
+    // from what this pass writes back into what this reads. Cheap and always on: the number is only a
+    // suggestion in the menu until someone takes it.
+    if (g_nr.calib != nullptr)
+    {
+        Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+        DlssNrConstants calibParams {};
+        calibParams.Mode = DlssNrMode_Calibrate;
+        calibParams.Width = kDlssNrMeterGrid;
+        calibParams.Height = kDlssNrMeterGrid;
+
+        DispatchPass(cmdList, calibParams, g_nr.hdrCopy, nullptr, nullptr, nullptr, nullptr, g_nr.calib,
+                     nullptr);
+
+        Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        CopyCalibrationToReadback(cmdList);
+        ConsumeCalibrationReadback();
+    }
+
     Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
@@ -2020,6 +2185,70 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
 // The pass. Resources in, nothing read from anywhere the caller cannot see.
 
+void ProbeD3D11(void* d3d11Device)
+{
+    static bool done = false;
+
+    if (done || d3d11Device == nullptr)
+        return;
+
+    done = true;
+
+    if (!EnsureForwarder())
+        return;
+
+    auto probe = (int (*)(const wchar_t*)) GetProcAddress(g_nr.forwarder, "dlssnr_d3d11_probe");
+    auto init = (int (*)(const wchar_t*, const wchar_t*, void*, int)) GetProcAddress(
+        g_nr.forwarder, "dlssnr_d3d11_init");
+
+    if (probe == nullptr || init == nullptr)
+    {
+        LOG_INFO("DLSS-NR D3D11: this forwarder has no D3D11 probe");
+        return;
+    }
+
+    auto snippet = Util::FindFilePath(g_dllDir, "nvngx_dlssnr.dll");
+
+    if (!snippet.has_value())
+        snippet = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssnr.dll");
+
+    if (!snippet.has_value())
+        return;
+
+    // Four bits, one per entry point: init 1, create 2, evaluate 4, release 8.
+    const int bits = probe(snippet->wstring().c_str());
+
+    LOG_INFO("DLSS-NR D3D11: entry points resolved {}/15 (init {}, create {}, evaluate {}, release {})",
+             bits, (bits & 1) ? "yes" : "no", (bits & 2) ? "yes" : "no", (bits & 4) ? "yes" : "no",
+             (bits & 8) ? "yes" : "no");
+
+    if (bits != 15)
+    {
+        LOG_INFO("DLSS-NR D3D11: incomplete surface, the bridge stays the only route");
+        return;
+    }
+
+    // The question the bridge was built around. A refusal appears here, before any feature exists.
+    const int result = init(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
+                            d3d11Device, 0x0000015);
+
+    if (result == 1)
+        LOG_WARN("DLSS-NR D3D11: the model initialised on a Direct3D 11 device. The bridge may not be "
+                 "necessary -- next step is a feature create on a device context.");
+    else
+        LOG_INFO("DLSS-NR D3D11: init refused with {} ({}), so the bridge is required after all",
+                 result, NgxResultName((unsigned int) result));
+}
+
+CalibrationReading Calibration()
+{
+    CalibrationReading r {};
+    r.suggestion = g_nr.calibSuggestion;
+    r.confidence = g_nr.calibConfidence;
+    r.samples = g_nr.calibCount;
+    return r;
+}
+
 bool IsRunning() { return g_nr.feature != nullptr && !g_nr.failed; }
 
 const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
@@ -2098,6 +2327,26 @@ void Shutdown()
         g_nr.meter->Release();
         g_nr.meter = nullptr;
     }
+
+    if (g_nr.calib != nullptr)
+    {
+        g_nr.calib->Release();
+        g_nr.calib = nullptr;
+    }
+
+    for (auto& r : g_nr.calibReadback)
+    {
+        if (r != nullptr)
+        {
+            r->Release();
+            r = nullptr;
+        }
+    }
+
+    g_nr.calibFrames = 0;
+    g_nr.calibCount = 0;
+    g_nr.calibSuggestion = 0.0f;
+    g_nr.calibConfidence = 0.0f;
 
     for (auto& rb : g_nr.meterReadback)
     {
