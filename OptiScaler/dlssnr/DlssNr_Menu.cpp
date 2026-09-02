@@ -95,7 +95,15 @@ void RenderMenu(Config* config, float menuResScale)
         // that is demonstrably running.
         const bool vulkan = DlssNr::IsRunningVk();
 
-        if (!DlssNr::IsRunning() && !vulkan)
+        // Turning the pass off does not release the model, so the feature handle stays alive and
+        // IsRunning keeps answering yes. Reporting a cost from that was wrong in the way that matters
+        // most: the toggle is how anyone A/Bs this, so the one moment the number is read is the one
+        // moment it describes the frame before last.
+        if (!enabled)
+        {
+            ImGui::TextDisabled("Off. The model stays loaded, so turning this back on is immediate.");
+        }
+        else if (!DlssNr::IsRunning() && !vulkan)
         {
             const char* reason = DlssNr::FailureReason();
 
