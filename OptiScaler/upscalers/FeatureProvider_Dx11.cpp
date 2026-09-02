@@ -147,7 +147,16 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
 
             auto* dc = contextData->feature.get();
             // Use given params if using DLSS passthrough
-            const bool isPassthrough = state.newBackend == Upscaler::DLSSD || state.newBackend == Upscaler::DLSS;
+            //
+            // DLSS_on12 belongs here for the same reason the other two do: it is DLSS underneath, and
+            // it wants the game's own parameter block rather than a synthetic one. Without it a
+            // mid-session switch -- from the menu, on a resolution change, or through the auto-exposure
+            // re-init -- rebuilt the feature from GetNGXParameters carrying only flags, resolutions and
+            // quality, which quietly replaced the game's render presets with the default. That made
+            // "pick dlss_12 in the menu" and "set dlss_12 in the ini" two different code paths, which
+            // is a poor thing to discover while testing a fix.
+            const bool isPassthrough = state.newBackend == Upscaler::DLSSD || state.newBackend == Upscaler::DLSS ||
+                                       state.newBackend == Upscaler::DLSS_on12;
 
             contextData->createParams = isPassthrough ? parameters : GetNGXParameters(API::DX11, false);
             contextData->createParams->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, dc->GetFeatureFlags());
