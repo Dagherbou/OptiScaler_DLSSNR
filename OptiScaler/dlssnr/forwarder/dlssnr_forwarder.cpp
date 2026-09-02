@@ -357,7 +357,9 @@ bool loadD3D11Snippet(const wchar_t *path) {
 // runtime", which is a check we may simply be failing rather than a statement about the platform.
 using PFN_NrD3D11Requirements = int(__cdecl *)(const void *, const void *, void *);
 
-__declspec(dllexport) int dlssnr_d3d11_requirements(const wchar_t *snippetPath, unsigned int *outFlags) {
+__declspec(dllexport) int dlssnr_d3d11_requirements(const wchar_t *snippetPath, void *adapter,
+                                                    unsigned int *outFlags, unsigned int *outArch,
+                                                    unsigned int *outOsVersion) {
     if (!loadD3D11Snippet(snippetPath)) {
         return -2;
     }
@@ -389,11 +391,25 @@ __declspec(dllexport) int dlssnr_d3d11_requirements(const wchar_t *snippetPath, 
     // NVSDK_NGX_FeatureRequirement: the outputs. Generous so a longer struct cannot overrun.
     unsigned char requirement[512] = {};
 
-    volatile int result = req(nullptr, &discovery, requirement);
+    // The adapter is not optional. Passing null the first time produced AdapterUnsupported, which
+    // reads like an answer about the hardware and is actually an answer about the question.
+    volatile int result = req(adapter, &discovery, requirement);
 
+    const unsigned int *out = reinterpret_cast<const unsigned int *>(requirement);
+
+    // NVSDK_NGX_FeatureRequirement: FeatureSupported bit field, then the minimum architecture, then
+    // the minimum OS version. The last two are worth having -- they say what it wanted, not just that
+    // it was unhappy.
     if (outFlags != nullptr) {
-        // First field is FeatureSupported, a bit field: 0 means supported, non-zero names the reason.
-        *outFlags = *reinterpret_cast<unsigned int *>(requirement);
+        *outFlags = out[0];
+    }
+
+    if (outArch != nullptr) {
+        *outArch = out[1];
+    }
+
+    if (outOsVersion != nullptr) {
+        *outOsVersion = out[2];
     }
 
     return (int) result;

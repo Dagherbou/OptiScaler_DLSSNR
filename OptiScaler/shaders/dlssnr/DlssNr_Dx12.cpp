@@ -2282,16 +2282,42 @@ void ProbeD3D11(void* d3d11Device)
 
     // And the question NGX has an API for. Asked first because it creates nothing: if the feature
     // declines D3D11 here, that is the feature's own answer rather than our reading of a failed init.
-    auto requirements = (int (*)(const wchar_t*, unsigned int*)) GetProcAddress(
-        g_nr.forwarder, "dlssnr_d3d11_requirements");
+    auto requirements = (int (*)(const wchar_t*, void*, unsigned int*, unsigned int*, unsigned int*))
+        GetProcAddress(g_nr.forwarder, "dlssnr_d3d11_requirements");
 
     if (requirements != nullptr)
     {
-        unsigned int supported = 0xFFFFFFFFu;
-        const int rc = requirements(snippet->wstring().c_str(), &supported);
+        // The adapter the game is actually running on. Without it the query answers
+        // AdapterUnsupported, which looks like a verdict on the hardware and is really a verdict on
+        // the question -- that is what the first attempt got, on a 5080.
+        IDXGIAdapter* adapter = nullptr;
+        IDXGIFactory1* factory = nullptr;
 
-        LOG_INFO("DLSS-NR D3D11: GetFeatureRequirements returned {} ({}), FeatureSupported bits 0x{:X}",
-                 rc, NgxResultName((unsigned int) rc), supported);
+        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) && factory != nullptr)
+            factory->EnumAdapters(0, &adapter);
+
+        unsigned int supported = 0xFFFFFFFFu;
+        unsigned int minArch = 0;
+        unsigned int minOs = 0;
+        const int rc = requirements(snippet->wstring().c_str(), adapter, &supported, &minArch, &minOs);
+
+        const char* meaning = supported == 0        ? "SUPPORTED"
+                              : (supported & 16)    ? "NotImplemented -- the feature has no D3D11 path"
+                              : (supported & 4)     ? "AdapterUnsupported"
+                              : (supported & 2)     ? "DriverVersionUnsupported"
+                              : (supported & 8)     ? "OSVersionBelowMinimum"
+                              : (supported & 1)     ? "CheckNotPresent"
+                                                    : "unknown";
+
+        LOG_WARN("DLSS-NR D3D11: GetFeatureRequirements {} ({}), FeatureSupported 0x{:X} -- {}. "
+                 "minimum architecture 0x{:X}, minimum OS 0x{:X}",
+                 rc, NgxResultName((unsigned int) rc), supported, meaning, minArch, minOs);
+
+        if (adapter != nullptr)
+            adapter->Release();
+
+        if (factory != nullptr)
+            factory->Release();
     }
 
     LOG_INFO("DLSS-NR D3D11: entry points resolved {}/15 (init {}, create {}, evaluate {}, release {})",
