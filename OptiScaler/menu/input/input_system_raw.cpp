@@ -707,9 +707,9 @@ bool HandleRawInputLocked(HRAWINPUT rawInputHandle)
     // input never calls GetRawInputData if the message never arrives, so the sanitiser's careful
     // per-key verdict -- pass this release, the game is owed it -- was decided and then discarded
     // one line later. The key stayed held with no way to clear it.
-    const bool mustReachGame = input->header.dwType == RIM_TYPEKEYBOARD &&
-                               GetRawInputSanitizeDecisionLocked(rawInputHandle, *input).Action ==
-                                   RawSanitizeAction::Pass;
+    const bool mustReachGame =
+        input->header.dwType == RIM_TYPEKEYBOARD &&
+        GetRawInputSanitizeDecisionLocked(rawInputHandle, *input).Action == RawSanitizeAction::Pass;
 
     UpdateStateFromRawInputLocked(*input);
 

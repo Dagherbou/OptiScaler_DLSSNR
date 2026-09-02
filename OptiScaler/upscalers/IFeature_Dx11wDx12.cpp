@@ -413,8 +413,8 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         if (!reportedNrOffer)
         {
             reportedNrOffer = true;
-            LOG_INFO("DLSS-NR: the D3D11 bridge reached the hand-off (upscale ok: {}, enabled: {})",
-                     dx12EvalResult, Config::Instance()->DlssNrEnabled.value_or_default());
+            LOG_INFO("DLSS-NR: the D3D11 bridge reached the hand-off (upscale ok: {}, enabled: {})", dx12EvalResult,
+                     Config::Instance()->DlssNrEnabled.value_or_default());
         }
 
         if (dx12EvalResult && Config::Instance()->DlssNrEnabled.value_or_default())

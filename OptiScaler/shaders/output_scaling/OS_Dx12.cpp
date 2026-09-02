@@ -77,8 +77,8 @@ bool OS_Dx12::Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InR
     const auto dstW = (uint32_t) dstDesc.Width;
     const auto dstH = (uint32_t) dstDesc.Height;
 
-    FsrEasuCon(fsr1Constants.const0, fsr1Constants.const1, fsr1Constants.const2, fsr1Constants.const3, srcW, srcH,
-               srcW, srcH, dstW, dstH);
+    FsrEasuCon(fsr1Constants.const0, fsr1Constants.const1, fsr1Constants.const2, fsr1Constants.const3, srcW, srcH, srcW,
+               srcH, dstW, dstH);
 
     constants.srcWidth = srcW;
     constants.srcHeight = srcH;
