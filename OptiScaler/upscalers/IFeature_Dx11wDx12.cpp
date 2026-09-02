@@ -227,9 +227,64 @@ bool IFeature_Dx11wDx12::Init(ID3D11Device* InDevice, ID3D11DeviceContext* InCon
 
     SetInitParameters(InParameters);
 
-    // Non-DLSS upscalers don't use the cmdList during Init
-    // We have more than one cmdList so unsure how that would even work
-    SetInit(dx12Feature->Init(_dx11on12Device, Dx12CommandList[0], InParameters));
+    // The list has to be recording, and what is recorded on it has to run.
+    //
+    // Every command list here is closed the moment it is created, and the note this replaces said
+    // non-DLSS upscalers do not use the list during Init -- which was true, and stopped being true the
+    // day DLSS got a bridge variant. DLSS and Ray Reconstruction are the only features whose
+    // InitInternal touches the argument at all: NVSDK_NGX_D3D12_CreateFeature records the model's
+    // weight upload and history initialisation onto it, and documents that the caller must submit it
+    // afterwards.
+    //
+    // Recorded onto a closed list, all of that is discarded. ID3D12GraphicsCommandList methods return
+    // void, so nothing fails, nothing logs, and CreateFeature still answers Success -- the model then
+    // runs against state that was never uploaded. That is the posterised, flat-blocked picture, and it
+    // gets worse with model size: the old CNN degraded to soft, the transformer collapses to blocks.
+    //
+    // So: open the list, let Init record into it, submit it, and wait. The wait is not optional --
+    // the first Evaluate resets this same allocator, and doing that under work still in flight is a
+    // device removal rather than a bad picture.
+    HRESULT prep = Dx12CommandAllocator[0]->Reset();
+
+    if (prep != S_OK)
+        LOG_WARN("Init: allocator reset before feature creation failed: {:X}", (UINT) prep);
+
+    prep = Dx12CommandList[0]->Reset(Dx12CommandAllocator[0], nullptr);
+
+    if (prep != S_OK)
+        LOG_WARN("Init: command list reset before feature creation failed: {:X}", (UINT) prep);
+
+    const bool initialised = dx12Feature->Init(_dx11on12Device, Dx12CommandList[0], InParameters);
+
+    SetInit(initialised);
+
+    if (Dx12CommandList[0]->Close() == S_OK && Dx12CommandQueue != nullptr)
+    {
+        ID3D12CommandList* lists[] = { Dx12CommandList[0] };
+        Dx12CommandQueue->ExecuteCommandLists(1, lists);
+
+        // Recorded against allocator 0, so allocator 0 must not be reset until this has retired. That
+        // is what Dx12CommandAllocatorFenceValue is for, and ProcessDx11Textures already honours it.
+        const UINT64 signalled = ++Dx12FenceValue;
+
+        if (Dx12CommandQueue->Signal(Dx12Fence, signalled) == S_OK)
+        {
+            Dx12CommandAllocatorFenceValue[0] = signalled;
+
+            if (Dx12Fence->GetCompletedValue() < signalled &&
+                Dx12Fence->SetEventOnCompletion(signalled, Dx12FenceEvent) == S_OK)
+            {
+                WaitForSingleObject(Dx12FenceEvent, INFINITE);
+            }
+        }
+
+        LOG_INFO("Init: feature creation work submitted and waited on (fence {})", signalled);
+    }
+    else
+    {
+        LOG_WARN("Init: could not submit the feature creation work; a feature that records during "
+                 "creation will be missing it");
+    }
 
     return IsInited();
 }
