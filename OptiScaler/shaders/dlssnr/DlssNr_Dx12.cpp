@@ -224,7 +224,10 @@ struct NrState
     float calibHistory[kCalibHistory] = {};
     unsigned int calibCount = 0;
     float calibSuggestion = 0.0f;
-    float calibConfidence = 0.0f;
+    float calibSteadiness = 0.0f;
+    bool calibUsable = false;
+    const char* calibWhy = "measuring...";
+    bool calibPassthrough = false;
 
     // Whether the frame that filled each readback slot actually had an exposure texture bound.
     //
@@ -642,6 +645,18 @@ void TickNrRetired()
     }
 }
 
+// The inject point decides which buffer is being measured -- the upscaler's linear output or the
+// finished frame in swapchain format -- so a reading taken before a change describes a different
+// picture to one taken after. Everything else that depends on the format is invalidated here.
+void ForgetCalibration()
+{
+    g_nr.calibCount = 0;
+    g_nr.calibSuggestion = 0.0f;
+    g_nr.calibSteadiness = 0.0f;
+    g_nr.calibUsable = false;
+    g_nr.calibWhy = "measuring...";
+}
+
 void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
 {
     if (g_nr.output == nullptr || g_nr.output->GetDesc().Format == needed)
@@ -649,6 +664,8 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
 
     LOG_INFO("DLSS-NR rebuilding surfaces: format {} -> {} (inject point changed)",
              (int) g_nr.output->GetDesc().Format, (int) needed);
+
+    ForgetCalibration();
 
     ParkNrFeature(g_nr.feature);
 
@@ -779,7 +796,39 @@ void ConsumeCalibrationReadback()
     const size_t nth = (size_t) ((float) (tiles.size() - 1) * 0.90f);
     std::nth_element(tiles.begin(), tiles.begin() + nth, tiles.end());
 
-    const float suggestion = std::clamp(tiles[nth], 0.25f, 2000.0f);
+    // How much of the frame carries light, measured against its own brightest tile rather than an
+    // absolute threshold -- the units here are the game's and there is no absolute scale.
+    //
+    // This is what separates "the buffer is scaled by 240" from "I am standing in a dark cave". A
+    // percentile of tile peaks is a statement about scene content; it only describes the buffer when
+    // enough of the picture is lit for the top of the range to actually appear in it.
+    float brightest = 0.0f;
+
+    for (float v : tiles)
+        brightest = std::max(brightest, v);
+
+    unsigned int lit = 0;
+
+    for (float v : tiles)
+    {
+        if (v > brightest * 0.10f)
+            ++lit;
+    }
+
+    const float litFraction = tiles.empty() ? 0.0f : (float) lit / (float) tiles.size();
+
+    // A torn readback survives isfinite and would clamp to exactly the ceiling, which since the
+    // ceiling became 2000 is a value the slider can hold -- so a garbage frame could be offered as a
+    // real answer. Reject rather than clamp.
+    if (!(tiles[nth] > 0.0f) || tiles[nth] >= 1999.0f)
+        return;
+
+    const float suggestion = std::clamp(tiles[nth], 0.25f, 1990.0f);
+
+    g_nr.calibUsable = !g_nr.calibPassthrough && litFraction > 0.20f;
+    g_nr.calibWhy = g_nr.calibPassthrough  ? "this game hands over a frame it already tone mapped, so there is nothing to normalise"
+                    : litFraction <= 0.20f ? "too little of this scene is lit to say where the top of the range is"
+                                           : "";
 
     g_nr.calibHistory[g_nr.calibCount % NrState::kCalibHistory] = suggestion;
     g_nr.calibCount++;
@@ -802,8 +851,8 @@ void ConsumeCalibrationReadback()
         }
 
         // A spread of 1.0x is perfect agreement and 2x or worse is none.
-        const float spread = lo > 1e-6f ? hi / lo : 1000.0f;
-        g_nr.calibConfidence = std::clamp(1.0f - (spread - 1.0f), 0.0f, 1.0f);
+        const float spread = hi / lo;
+        g_nr.calibSteadiness = std::clamp(1.0f - (spread - 1.0f), 0.0f, 1.0f);
     }
 }
 
@@ -1723,6 +1772,10 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
+        // The resolve ignores paper white entirely on an already tone-mapped frame, so a suggestion
+        // there would be a number the button cannot act on.
+        g_nr.calibPassthrough = !isHdrBuffer;
+
         DlssNrConstants calibParams {};
         calibParams.Mode = DlssNrMode_Calibrate;
         calibParams.Width = kDlssNrMeterGrid;
@@ -2192,6 +2245,10 @@ void ProbeD3D11(void* d3d11Device)
     if (done || d3d11Device == nullptr)
         return;
 
+    // Every other entry point in this file takes the lock before touching g_nr; this one was reaching
+    // EnsureForwarder without it.
+    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+
     // Opt in only. See the note on DlssNrProbeD3D11: this is the one call in the pass that reaches
     // into a subsystem on the game's own device rather than reading something we already hold.
     if (!Config::Instance()->DlssNrProbeD3D11.value_or_default())
@@ -2240,6 +2297,11 @@ void ProbeD3D11(void* d3d11Device)
     if (result == 1)
         LOG_WARN("DLSS-NR D3D11: the model initialised on a Direct3D 11 device. The bridge may not be "
                  "necessary -- next step is a feature create on a device context.");
+    else if (result == -1)
+        // Our own failure, not the model's. Reporting this as "the bridge is required" would be the
+        // exact wrong conclusion, and it is the conclusion this probe exists to avoid drawing.
+        LOG_INFO("DLSS-NR D3D11: the probe could not load its own copy of the model, so nothing was "
+                 "asked and nothing is known");
     else
         LOG_INFO("DLSS-NR D3D11: init refused with {} ({}), so the bridge is required after all",
                  result, NgxResultName((unsigned int) result));
@@ -2249,8 +2311,10 @@ CalibrationReading Calibration()
 {
     CalibrationReading r {};
     r.suggestion = g_nr.calibSuggestion;
-    r.confidence = g_nr.calibConfidence;
+    r.steadiness = g_nr.calibSteadiness;
     r.samples = g_nr.calibCount;
+    r.usable = g_nr.calibUsable;
+    r.why = g_nr.calibWhy;
     return r;
 }
 
@@ -2351,7 +2415,9 @@ void Shutdown()
     g_nr.calibFrames = 0;
     g_nr.calibCount = 0;
     g_nr.calibSuggestion = 0.0f;
-    g_nr.calibConfidence = 0.0f;
+    g_nr.calibSteadiness = 0.0f;
+    g_nr.calibUsable = false;
+    g_nr.calibWhy = "measuring...";
 
     for (auto& rb : g_nr.meterReadback)
     {

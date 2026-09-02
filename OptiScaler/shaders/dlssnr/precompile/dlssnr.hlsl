@@ -357,8 +357,15 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         const uint ty0 = (uint) (((float) id.y * (float) fullH) / (float) gHeight);
         const uint ty1 = (uint) (((float) (id.y + 1) * (float) fullH) / (float) gHeight);
 
-        const uint stepX = max((tx1 - tx0) / 8u, 1u);
-        const uint stepY = max((ty1 - ty0) / 8u, 1u);
+        // Sixteen samples a side rather than eight, and offset half a step in so the lattice does not
+        // sit on the tile's own corner.
+        //
+        // A fixed sample count over a growing tile means a shrinking fraction of it is read: eight per
+        // side covers about 17% of a tile at 1080p but only 4% at 4K, so the same scene reported a
+        // lower peak -- and therefore a smaller suggested divisor -- the higher the resolution. That is
+        // a measurement that changes with the setting rather than with the game.
+        const uint stepX = max((tx1 - tx0) / 16u, 1u);
+        const uint stepY = max((ty1 - ty0) / 16u, 1u);
 
         float peak = 0.0;
 

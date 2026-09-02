@@ -283,7 +283,11 @@ __declspec(dllexport) int dlssnr_query_scaling_ratio(const wchar_t *snippetPath,
 // before anything is created.
 // ---------------------------------------------------------------------------------------------
 
-using PFN_NrD3D11Init = int(__cdecl *)(unsigned long long, const wchar_t *, void *, const void *, int);
+// The _Ext variant puts the version BEFORE the feature info. That is the entire difference between
+// NVSDK_NGX_D3D11_Init and NVSDK_NGX_D3D11_Init_Ext, and getting it backwards is not a wrong answer,
+// it is a fault: NGX would take the version as a pointer and dereference 0x15 to read PathListInfo.
+// The correct order is in this repo already, at proxies/NVNGX_Proxy.h.
+using PFN_NrD3D11Init = int(__cdecl *)(unsigned long long, const wchar_t *, void *, int, const void *);
 using PFN_NrD3D11Create = int(__cdecl *)(void *, int, const void *, void **);
 using PFN_NrD3D11Evaluate = int(__cdecl *)(void *, const void *, const void *, void *);
 
@@ -303,7 +307,30 @@ bool loadD3D11Snippet(const wchar_t *path) {
         return g_d3d11.create != nullptr;
     }
 
-    g_d3d11.module = LoadLibraryExW(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+    // Loading the same path twice does not give two modules -- Windows returns the same HMODULE with
+    // the reference count raised. So this would share one snippet's global NGX core with the D3D12
+    // path: one device pointer, one set of caches, two independent "initialised" flags over the top.
+    // Initialising it for D3D11 could then leave the D3D12 core holding a D3D11 device, which is a
+    // device removal rather than a wrong answer.
+    //
+    // A probe must not be able to break the thing it is probing, so it takes its own copy under a
+    // different name and the two cores never meet. If the copy cannot be made, the probe declines
+    // rather than falling back to the shared module.
+    wchar_t probeCopy[MAX_PATH] = {};
+    wchar_t probeDir[MAX_PATH] = {};
+
+    if (GetTempPathW(MAX_PATH, probeDir) == 0) {
+        return false;
+    }
+
+    wcscpy_s(probeCopy, probeDir);
+    wcscat_s(probeCopy, L"nvngx.dll_dlssnr_d3d11probe.dll");
+
+    if (!CopyFileW(path, probeCopy, FALSE)) {
+        return false;
+    }
+
+    g_d3d11.module = LoadLibraryExW(probeCopy, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
 
     if (!g_d3d11.module) {
         return false;
@@ -348,7 +375,7 @@ __declspec(dllexport) int dlssnr_d3d11_init(const wchar_t *snippetPath, const wc
 
     // Assigned rather than returned: a tail call becomes a jmp and the snippet resolves its caller
     // past this module, which the gate rejects before reading an argument.
-    volatile int result = g_d3d11.init(0x24480451ull, dataPath, device, nullptr, sdkVersion);
+    volatile int result = g_d3d11.init(0x24480451ull, dataPath, device, sdkVersion, nullptr);
 
     dlssnr_d3d11_last_init = (int) result;
     g_d3d11.initialised = result == 1;

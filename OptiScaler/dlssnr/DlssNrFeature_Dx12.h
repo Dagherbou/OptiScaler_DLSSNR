@@ -66,8 +66,20 @@ void ProbeD3D11(void* d3d11Device);
 struct CalibrationReading
 {
     float suggestion = 0.0f;
-    float confidence = 0.0f;
+
+    // How much recent readings agree. This is steadiness, not correctness: a frozen frame agrees with
+    // itself perfectly, so a loading screen scores full marks for a number that means nothing. Read it
+    // together with usable.
+    float steadiness = 0.0f;
+
     unsigned long long samples = 0;
+
+    // Whether the scene is worth measuring at all. False when the frame is already tone mapped -- the
+    // divisor does nothing there and the reading would be a meaningless 0.9 -- or when too little of
+    // the picture is lit to say where the top of the range is. A dark cave gives a small number very
+    // steadily, which is the trap this exists to close.
+    bool usable = false;
+    const char* why = "";
 };
 
 CalibrationReading Calibration();

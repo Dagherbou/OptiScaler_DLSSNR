@@ -36,9 +36,13 @@
 //
 // Four frames is not enough. Frame generation deliberately runs the GPU several frames behind the CPU,
 // and the constants live in an UPLOAD heap written at record time -- so a wrap while the GPU is still
-// reading a slot rewrites descriptors and constants underneath it. Thirty-two gives eight frames at
-// today's dispatch count, and six if a fifth is ever added.
-#define DLSSNR_NUM_OF_HEAPS 32
+// reading a slot rewrites descriptors and constants underneath it.
+//
+// A fifth dispatch has since been added -- the calibration grid -- which at thirty-two slots would
+// have left six frames, spending exactly the headroom the previous note set aside. Forty-eight
+// restores eight frames at five dispatches. If a sixth is ever added, raise this with it rather than
+// spending the margin again.
+#define DLSSNR_NUM_OF_HEAPS 48
 
 class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
 {

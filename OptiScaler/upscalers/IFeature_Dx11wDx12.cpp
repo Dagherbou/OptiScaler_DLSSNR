@@ -416,14 +416,18 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             LOG_INFO("DLSS-NR: the D3D11 bridge reached the hand-off (upscale ok: {}, enabled: {})",
                      dx12EvalResult, Config::Instance()->DlssNrEnabled.value_or_default());
 
-            // While we are here on a real D3D11 device, ask the model whether it needs this bridge at
-            // all. Nothing is created; see ProbeD3D11. If it says yes, DX11 games could keep DLSS as
-            // their upscaler instead of trading it for a bridged one.
-            DlssNr::ProbeD3D11(Dx11Device);
         }
 
         if (dx12EvalResult && Config::Instance()->DlssNrEnabled.value_or_default())
+        {
             DlssNr::EvaluateAfterUpscale(cmdList, InParameters, Dx12CommandQueue);
+
+            // Asked only after the D3D12 path has had its turn. Probing first would have made a D3D11
+            // init the very first thing to ever touch the snippet, and if that had left its core
+            // holding a D3D11 device the D3D12 create would have failed -- killing the feature in
+            // exactly the games the probe was written to help. Off by default regardless.
+            DlssNr::ProbeD3D11(Dx11Device);
+        }
 
     } while (false);
 

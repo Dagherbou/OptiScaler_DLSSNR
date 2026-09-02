@@ -404,20 +404,30 @@ void RenderMenu(Config* config, float menuResScale)
             const bool exposureDriving =
                 config->DlssNrWhitePointFromExposure.value_or_default() && offer.everOffered && !vulkan;
 
-            if (!exposureDriving && calib.suggestion > 0.0f && calib.samples > 8)
+            if (!exposureDriving && calib.samples > 8)
             {
-                const float confidence = calib.confidence;
-                const ImVec4 tint = confidence > 0.75f  ? ImVec4(0.45f, 0.80f, 0.45f, 1.0f)
-                                    : confidence > 0.4f ? ImVec4(0.85f, 0.75f, 0.35f, 1.0f)
+                if (!calib.usable)
+                {
+                    // Say why rather than offering a number that cannot mean anything. The worst
+                    // outcome here would be a confident-looking suggestion taken in a dark room or in
+                    // a game where the divisor does nothing at all.
+                    ImGui::TextDisabled("Cannot measure here: %s.", calib.why);
+                }
+                else
+                {
+                    const float steady = calib.steadiness;
+                    const ImVec4 tint = steady > 0.75f  ? ImVec4(0.45f, 0.80f, 0.45f, 1.0f)
+                                        : steady > 0.4f ? ImVec4(0.85f, 0.75f, 0.35f, 1.0f)
                                                         : ImVec4(0.85f, 0.55f, 0.35f, 1.0f);
 
-                ImGui::TextColored(tint, "This scene suggests %.2fx  (%.0f%% settled)", calib.suggestion,
-                                   confidence * 100.0f);
+                    ImGui::TextColored(tint, "This scene suggests %.2fx  (%.0f%% steady)",
+                                       calib.suggestion, steady * 100.0f);
 
-                ImGui::SameLine();
+                    ImGui::SameLine();
 
-                if (ImGui::SmallButton("Use it"))
-                    config->DlssNrWhitePointScale = calib.suggestion;
+                    if (ImGui::SmallButton("Use it"))
+                        config->DlssNrWhitePointScale = calib.suggestion;
+                }
 
                 HelpMarker("What this game's buffer is actually scaled by, measured from the frame"
                                "\nbefore this pass touches it."
@@ -425,11 +435,12 @@ void RenderMenu(Config* config, float menuResScale)
                                "\nby paper white so the colour maths works in a normalised range. Too low"
                                "\nand the frame is never normalised, the hue correction runs far outside"
                                "\nthe range it was built for, and the picture takes on a tint."
-                               "\n\nSettled is how much recent readings agree. High means the number has"
-                               "\nheld still and is worth taking. Low means the scene is changing under"
-                               "\nthe measurement -- stand somewhere lit, stay still, and read it again."
-                               "\n\nNothing is applied until you press the button, and it only moves the"
-                               "\nslider, so you can adjust from there.");
+                               "\n\nSteady is how much recent readings agree -- and only that. It is not"
+                               "\na claim that the number is right: a paused frame agrees with itself"
+                               "\nperfectly. It is withheld entirely where it could not be meaningful,"
+                               "\nso a reading you can see is one worth considering."
+                               "\n\nA lit scene with some range in it measures best. Nothing is applied"
+                               "\nuntil you press the button, and it only moves the slider.");
             }
         }
 
