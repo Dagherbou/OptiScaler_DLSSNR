@@ -7,6 +7,7 @@
 #include <imgui/imgui.h>
 
 #include <cctype>
+#include <cfloat>
 #include <string>
 
 namespace DlssNr
@@ -50,40 +51,79 @@ static void HelpMarker(const char* tip)
     }
 }
 
-// Upper-cased, letter-tracked captions, matching NVIDIA's own panel ("GLOBAL CONTROLS", ...).
-static std::string Tracked(const char* text)
+// Upper-cased captions, matching NVIDIA's own panel ("GLOBAL CONTROLS", ...).
+static std::string Caps(const char* text)
 {
     std::string out;
 
     for (const char* p = text; *p; ++p)
-    {
-        if (*p == ' ')
-        {
-            out += "   ";
-            continue;
-        }
-
         out += (char) std::toupper((unsigned char) *p);
-        out += ' ';
-    }
-
-    if (!out.empty() && out.back() == ' ')
-        out.pop_back();
 
     return out;
 }
 
+// How far apart the caption letters sit, as a fraction of the font size. NVIDIA's panel tracks
+// by roughly a seventh of a character -- open enough to read as styling, nowhere near the full
+// space per letter that a plain ImGui text call would force.
+static constexpr float kTracking = 0.14f;
+
+// Letter-tracked text.
+//
+// ImGui cannot express sub-character tracking in a text call: its only lever is inserting whole
+// spaces, which is several times too wide and reads as sprayed apart. So the run is drawn glyph
+// by glyph through the draw list, advancing by each glyph's own width plus the tracking, and a
+// Dummy of the measured width reserves the layout box afterwards. Drawing starts at the cursor
+// and the box matches what was drawn, so SameLine, the (?) markers and the right-aligned
+// checkboxes all land exactly where they would after ordinary text.
+static void TrackedText(const char* text)
+{
+    ImFont* font = ImGui::GetFont();
+    const float fontSize = ImGui::GetFontSize();
+    const float tracking = fontSize * kTracking;
+    const ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
+
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    float x = 0.0f;
+
+    for (const char* p = text; *p; ++p)
+    {
+        const char* begin = p;
+        const char* end = p + 1;
+
+        dl->AddText(font, fontSize, ImVec2(origin.x + x, origin.y), col, begin, end);
+        x += font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, begin, end).x + tracking;
+    }
+
+    // The tracking belongs between letters, so the last one does not carry it.
+    if (x > 0.0f)
+        x -= tracking;
+
+    ImGui::Dummy(ImVec2(x, ImGui::GetTextLineHeight()));
+}
+
 static void SectionCaption(const char* text, float rowWidth)
 {
-    ImGui::Spacing();
+    const ImVec2 sp = ImGui::GetStyle().ItemSpacing;
+
+    // A caption heads the rows beneath it, so it sits nearer to them than to the section
+    // above: a little air on top, very little between the caption, its rule and the first
+    // row. Fractions of ItemSpacing rather than fixed pixels, so it tracks the menu scale.
+    ImGui::Dummy(ImVec2(0.0f, sp.y * 0.75f));
+
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(sp.x, sp.y * 0.30f));
+
     ImGui::PushStyleColor(ImGuiCol_Text, kCaption);
-    ImGui::TextUnformatted(Tracked(text).c_str());
+    TrackedText(Caps(text).c_str());
     ImGui::PopStyleColor();
 
     ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImGui::GetWindowDrawList()->AddLine(p0, ImVec2(p0.x + rowWidth, p0.y),
                                         ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.14f)), 1.0f);
-    ImGui::Dummy(ImVec2(rowWidth, 6.0f));
+    ImGui::Dummy(ImVec2(rowWidth, sp.y * 0.30f));
+
+    ImGui::PopStyleVar();
 }
 
 struct SliderResult
@@ -307,7 +347,10 @@ static bool NrCheckbox(const char* label, bool* v, bool caps = false)
     // Section-level rows ("DLSS ON", "MODEL AUTOMASK", "DEVELOPER MASKING") are letter-tracked
     // caps in the caption colour; the per-object rows under them stay sentence case.
     ImGui::PushStyleColor(ImGuiCol_Text, caps ? kCaption : kText);
-    ImGui::TextUnformatted(caps ? Tracked(label).c_str() : label);
+    if (caps)
+        TrackedText(Caps(label).c_str());
+    else
+        ImGui::TextUnformatted(label);
     ImGui::PopStyleColor();
 
     ImGui::PopID();
@@ -343,8 +386,8 @@ void RenderMenu(Config* config, float menuResScale)
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 18.0f) * menuResScale);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 13.0f * menuResScale));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 14.0f) * menuResScale);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 9.0f * menuResScale));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
 
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
@@ -363,10 +406,9 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::Dummy(ImVec2(rowWidth, 0.0f));
 
         ImGui::PushStyleColor(ImGuiCol_Text, kTitle);
-        ImGui::TextUnformatted(Tracked("DLSS 5 Developer Controls").c_str());
+        TrackedText(Caps("DLSS 5 Developer Controls").c_str());
         ImGui::PopStyleColor();
 
-        ImGui::Spacing();
         ImGui::Spacing();
 
         bool enabled = config->DlssNrEnabled.value_or_default();
