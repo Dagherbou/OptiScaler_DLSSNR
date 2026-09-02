@@ -26,6 +26,7 @@
 #include <imgui/imgui_impl_win32.h>
 #include <imgui/imgui_impl_uwp.h>
 
+#include <map>
 #include <mutex>
 #include <cstdarg>
 
@@ -6880,6 +6881,20 @@ void MenuCommon::RenderApiAndTextureSettings(RenderMenuContext& ctx)
             ImGui::Text("Will might be applied after RESOLUTION/PRESET change !!!");
         }
     }
+}
+
+void MenuCommon::RenderKeybindRow(const char* label, int id, CustomOptional<int>& configKey)
+{
+    // Keyed by id so each row keeps its own "waiting for a key" state across frames, the same way
+    // the statics in RenderKeybindSettings do.
+    static std::map<int, Keybind> rows;
+
+    auto it = rows.find(id);
+
+    if (it == rows.end())
+        it = rows.try_emplace(id, label, id).first;
+
+    it->second.Render(configKey);
 }
 
 void MenuCommon::RenderKeybindSettings(RenderMenuContext& ctx)

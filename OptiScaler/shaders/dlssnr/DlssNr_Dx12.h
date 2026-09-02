@@ -59,8 +59,7 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
 
     // Records one pass. Resources that a given mode does not read may be null; a stand-in is bound in
     // their place so every descriptor in the table is valid.
-    bool Dispatch(ID3D12GraphicsCommandList* InCmdList, const DlssNrConstants& InConstants,
-                  ID3D12Resource* InSource, ID3D12Resource* InModel, ID3D12Resource* InOriginal,
-                  ID3D12Resource* InMotion, ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget,
-                  ID3D12Resource* OutKeep);
+    bool Dispatch(ID3D12GraphicsCommandList* InCmdList, const DlssNrConstants& InConstants, ID3D12Resource* InSource,
+                  ID3D12Resource* InModel, ID3D12Resource* InOriginal, ID3D12Resource* InMotion,
+                  ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget, ID3D12Resource* OutKeep);
 };
