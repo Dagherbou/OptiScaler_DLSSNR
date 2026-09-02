@@ -1395,6 +1395,39 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         guideHeight = height;
     }
 
+    // What the game rendered wins over how big the texture is.
+    //
+    // The comment above says the sizes come from the resources so there is one less thing a call site
+    // can get wrong, and that was right about call sites and wrong about the game. A dynamic
+    // resolution title allocates its depth once at the maximum it will ever need and renders into
+    // the corner; the resource then describes the allocation, not the picture, and the model gets
+    // handed the stale margin as though it were scene.
+    //
+    // Bounded by the resource because a subrect larger than the texture is a game bug that would
+    // otherwise become a read off the end of it.
+    if (frame.RenderSubrectWidth != 0 && frame.RenderSubrectHeight != 0)
+    {
+        const unsigned int subW = std::min(frame.RenderSubrectWidth, guideWidth);
+        const unsigned int subH = std::min(frame.RenderSubrectHeight, guideHeight);
+
+        if (subW != guideWidth || subH != guideHeight)
+        {
+            static unsigned int saidW = 0, saidH = 0;
+
+            if (saidW != subW || saidH != subH)
+            {
+                saidW = subW;
+                saidH = subH;
+                LOG_INFO("DLSS-NR guides: the game renders {}x{} into a {}x{} texture, so the model is "
+                         "told the smaller number",
+                         subW, subH, guideWidth, guideHeight);
+            }
+        }
+
+        guideWidth = subW;
+        guideHeight = subH;
+    }
+
     g_nr.guideWidth = guideWidth;
     g_nr.guideHeight = guideHeight;
     g_nr.guideDepthInverted = frame.DepthInverted;
@@ -1406,7 +1439,15 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     g_nr.guideMvScaleY = frame.MvScaleY;
 
     if (frame.Reset)
+    {
         g_nr.reset = true;
+
+        static unsigned long long resets = 0;
+        ++resets;
+
+        if (resets <= 3 || resets % 100 == 0)
+            LOG_INFO("DLSS-NR: the game asked for a history reset ({} so far)", resets);
+    }
 
     // Logged whenever it changes, not once per session.
     //
@@ -2126,6 +2167,23 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         return;
     }
 
+    // Which of the game's APIs this evaluate arrived through.
+    //
+    // Says out loud what was previously only reasoned about: an FSR or XeSS title reaches this pass
+    // transitively, because those shims call OptiScaler's own NVSDK_NGX_D3D12_EvaluateFeature and
+    // this pass hangs off that. Nothing needed adding to the shims -- a call there would run the
+    // model twice -- but "nothing needed adding" is a claim, and this is the line that checks it.
+    {
+        static ApiUpscalerInput saidApi = (ApiUpscalerInput) -1;
+        const ApiUpscalerInput api = State::Instance().currentInputApiName;
+
+        if (saidApi != api)
+        {
+            saidApi = api;
+            LOG_INFO("DLSS-NR reached through the game's {} input", ApiUpscalerInputName(api));
+        }
+    }
+
     ID3D12Resource* target = GetResource(params, NVSDK_NGX_Parameter_Output, "DLSSD.Output");
     ID3D12Resource* depth = GetResource(params, NVSDK_NGX_Parameter_Depth, "DLSSD.Depth");
     ID3D12Resource* motion = GetResource(params, NVSDK_NGX_Parameter_MotionVectors, "DLSSD.MotionVectors");
@@ -2146,6 +2204,25 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     DlssNrFrameInfo frame {};
     frame.DepthInverted = (createFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
     frame.ColourIsLinearHdr = (createFlags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0;
+
+    // The game telling the upscaler to forget everything it has accumulated: a cut, a teleport, a
+    // load. Every upscaler in this tree reads it and this pass did not, so the model's history was
+    // only ever reset by things that happened to us -- a resize, a rebuild, a recovery from failure
+    // -- and never by anything that happened in the game. Across a cut the model was reprojecting
+    // the previous scene onto the new one and being asked to reconcile them.
+    //
+    // Read the same way FFXFeature_Dx12 reads it, including leaving it alone when the parameter is
+    // absent: a game that never sets it is not asking for a reset every frame.
+    {
+        unsigned int gameReset = 0;
+
+        if (params->Get(NVSDK_NGX_Parameter_Reset, &gameReset) == NVSDK_NGX_Result_Success)
+            frame.Reset = gameReset != 0;
+    }
+
+    // How much of the guides is real. See DlssNrFrameInfo -- zero means the game did not say.
+    params->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, &frame.RenderSubrectWidth);
+    params->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, &frame.RenderSubrectHeight);
 
     if (params->Get(NVSDK_NGX_Parameter_MV_Scale_X, &frame.MvScaleX) != NVSDK_NGX_Result_Success)
         frame.MvScaleX = 1.0f;

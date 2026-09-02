@@ -83,6 +83,19 @@ struct DlssNrFrameInfo
     // The scale the game multiplied its buffer by for float precision, which DLSS is told so it can
     // undo it. Usually 1. Divided out before the exposure is applied, exactly as FSR's PrepareRgb does.
     float PreExposure = 1.0f;
+
+    // How much of the depth and motion vector textures the game actually rendered into.
+    //
+    // Not the same thing as how big those textures are, and the difference is the whole point. A game
+    // with dynamic resolution allocates its guides once at the largest size it will ever need and
+    // then renders into the top-left corner of them, telling the upscaler how much is real through
+    // DLSS.Render.Subrect.Dimensions. Sizing the guides from the resource instead means handing the
+    // model whatever was left in the margin -- stale depth and stale vectors -- and calling it scene.
+    //
+    // Zero means the game did not say, in which case the resource's own size is the best answer
+    // available and is what gets used.
+    unsigned int RenderSubrectWidth = 0;
+    unsigned int RenderSubrectHeight = 0;
 };
 
 struct alignas(256) DlssNrConstants

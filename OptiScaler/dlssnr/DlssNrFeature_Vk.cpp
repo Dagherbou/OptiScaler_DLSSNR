@@ -736,6 +736,25 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     const bool gameSaysHdr = (createFlags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0;
     const bool depthInverted = (createFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
 
+    // The game asking the upscaler to forget its history -- a cut, a teleport, a load. Same omission
+    // as the D3D12 path had: the model's history was only ever reset by things that happened to us,
+    // never by anything that happened in the game.
+    {
+        unsigned int gameReset = 0;
+
+        if (params->Get(NVSDK_NGX_Parameter_Reset, &gameReset) == NVSDK_NGX_Result_Success &&
+            gameReset != 0)
+        {
+            g_vk.reset = true;
+
+            static unsigned long long resets = 0;
+            ++resets;
+
+            if (resets <= 3 || resets % 100 == 0)
+                LOG_INFO("DLSS-NR Vulkan: the game asked for a history reset ({} so far)", resets);
+        }
+    }
+
     // Both have to agree. A game can set the HDR flag on a buffer that cannot hold open-ended light,
     // and encoding an already tone-mapped frame a second time looks washed out and banded.
     const bool linearHdr = gameSaysHdr && FormatCanHoldLinearHdr(colour->Resource.ImageViewInfo.Format);
