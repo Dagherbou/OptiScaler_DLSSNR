@@ -41,6 +41,15 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::Checkbox("Enable Neural Rendering", &enabled))
             config->DlssNrEnabled = enabled;
 
+        bool beforeSr = config->DlssNrRunBeforeSr.value_or_default();
+        if (ImGui::Checkbox("Apply before SR", &beforeSr))
+            config->DlssNrRunBeforeSr = beforeSr;
+
+        HelpMarker("Applies Neural Rendering to the input frame immediately before DLSS Super Resolution "
+                   "\nruns (at render resolution), instead of afterwards on the upscaled frame."
+                   "\n\nAllows synthesised detail to pass through DLSS SR's temporal accumulation, and "
+                   "\ncosts render-resolution compute instead of display-resolution compute.");
+
         HelpMarker("Synthesises detail in the upscaler's output, before frame generation sees it."
                        "\n\nNeeds two similarly named files beside OptiScaler, one character apart:"
                        "\n  nvngx_dlssnr.dll       NVIDIA's model (~165 MB) -- you supply it"

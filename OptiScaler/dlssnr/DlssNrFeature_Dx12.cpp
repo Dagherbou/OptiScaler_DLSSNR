@@ -763,8 +763,8 @@ void ReportSkipOnce(const char* reason)
         LOG_INFO("DLSS-NR did not run: {}", reason);
 }
 
-void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                          ID3D12CommandQueue* timingQueue)
+void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params, bool beforeUpscale,
+                      ID3D12CommandQueue* timingQueue)
 {
     std::lock_guard<std::mutex> nrLock(g_nrMutex);
     const Config& cfg = *Config::Instance();
@@ -782,7 +782,12 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         return;
     }
 
-    ID3D12Resource* target = GetResource(params, NVSDK_NGX_Parameter_Output, "DLSSD.Output");
+    if (cfg.DlssNrRunBeforeSr.value_or_default() != beforeUpscale)
+        return;
+
+    ID3D12Resource* target = beforeUpscale
+                                 ? GetResource(params, NVSDK_NGX_Parameter_Color, "DLSSD.Color")
+                                 : GetResource(params, NVSDK_NGX_Parameter_Output, "DLSSD.Output");
     ID3D12Resource* depth = GetResource(params, NVSDK_NGX_Parameter_Depth, "DLSSD.Depth");
     ID3D12Resource* motion = GetResource(params, NVSDK_NGX_Parameter_MotionVectors, "DLSSD.MotionVectors");
 
@@ -790,7 +795,8 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     // carry none of it -- so it stays quiet and tries again next frame.
     if (target == nullptr || depth == nullptr || motion == nullptr)
     {
-        ReportSkipOnce(target == nullptr    ? "the parameters carried no output texture"
+        ReportSkipOnce(target == nullptr    ? (beforeUpscale ? "the parameters carried no color texture"
+                                                              : "the parameters carried no output texture")
                        : depth == nullptr   ? "the parameters carried no depth"
                                             : "the parameters carried no motion vectors");
         return;
@@ -800,26 +806,32 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     if (FAILED(target->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
     {
-        ReportSkipOnce("the output texture belongs to no D3D12 device");
+        ReportSkipOnce("the target texture belongs to no D3D12 device");
         return;
     }
 
     const D3D12_RESOURCE_DESC desc = target->GetDesc();
     const auto width = (unsigned int) desc.Width;
     const auto height = desc.Height;
+    const bool targetSupportsUav = (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
 
-    // Depth and motion vectors are the upscaler's inputs and so are at render resolution, while colour
-    // and output are at display resolution. The model takes that as a subrect per resource rather than
-    // needing them resampled, which is why nothing here rescales anything.
     unsigned int guideWidth = 0;
     unsigned int guideHeight = 0;
-    params->Get(NVSDK_NGX_Parameter_Width, &guideWidth);
-    params->Get(NVSDK_NGX_Parameter_Height, &guideHeight);
-
-    if (guideWidth == 0 || guideHeight == 0)
+    if (beforeUpscale)
     {
         guideWidth = width;
         guideHeight = height;
+    }
+    else
+    {
+        params->Get(NVSDK_NGX_Parameter_Width, &guideWidth);
+        params->Get(NVSDK_NGX_Parameter_Height, &guideHeight);
+
+        if (guideWidth == 0 || guideHeight == 0)
+        {
+            guideWidth = width;
+            guideHeight = height;
+        }
     }
 
     // The game states its depth convention in the flags it created its own feature with, so there is no
@@ -1079,18 +1091,24 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     encodeParams.Width = width;
     encodeParams.Height = height;
 
-    Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    if (!beforeUpscale)
+        Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
     g_compose->Dispatch(cmdList, encodeParams, target, nullptr, nullptr, nullptr, nullptr,
                         g_nr.colorCopy, g_nr.hdrCopy);
 
-    Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     // The transitions double as the wait for the encode's writes.
     Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    // Preserve the state the post-upscale path used to expose to its caller until resolve completes.
+    // A Color input is already readable and remains so until the pre-SR resolve writes it.
+    if (!beforeUpscale && targetSupportsUav)
+        Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     // Below full resolution the model is shown a filtered shrink of the proxy; the edit it returns is
     // enlarged during the resolve while the frame underneath stays full size and untouched.
@@ -1226,10 +1244,37 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        g_compose->Dispatch(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, motionIn,
-                            nullptr, target, nullptr);
-        Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        ID3D12Resource* resolveOriginal = targetSupportsUav ? g_nr.hdrCopy : target;
+        ID3D12Resource* resolveTarget = targetSupportsUav ? target : g_nr.hdrCopy;
+
+        if (beforeUpscale && targetSupportsUav)
+            Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        else if (!targetSupportsUav)
+            Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        g_compose->Dispatch(cmdList, resolveParams, modelInput, g_nr.output, resolveOriginal, motionIn,
+                            nullptr, resolveTarget, nullptr);
+
+        if (targetSupportsUav)
+        {
+            Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
+        else
+        {
+            Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_COPY_SOURCE);
+            Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COPY_DEST);
+            cmdList->CopyResource(target, g_nr.hdrCopy);
+            Barrier(cmdList, target, D3D12_RESOURCE_STATE_COPY_DEST,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
 
         // On-demand capture works in this path too: the staging copy still holds the frame as the
         // upscaler produced it, and the edited frame is the output itself. The write happens a few
@@ -1239,7 +1284,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         {
             g_capture.record(cmdList, device, g_nr.colorCopy,
                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, target,
-                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
             if (g_capture.readyToWrite() && g_captureWriteAtFrame == 0)
                 g_captureWriteAtFrame = g_frames + 8;
@@ -1293,6 +1338,18 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     device->Release();
+}
+
+void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
+                          ID3D12CommandQueue* timingQueue)
+{
+    EvaluateInternal(cmdList, params, false, timingQueue);
+}
+
+void EvaluateBeforeUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
+                           ID3D12CommandQueue* timingQueue)
+{
+    EvaluateInternal(cmdList, params, true, timingQueue);
 }
 
 bool IsRunning() { return g_nr.feature != nullptr && !g_nr.failed; }

@@ -257,6 +257,8 @@ class Config
     // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
     CustomOptional<bool> DlssNrEnabled { false };
+    // Applies DLSS NR before SR takes place on the immediate frame DLSS SR receives, instead of afterwards on the upscaled frame.
+    CustomOptional<bool> DlssNrRunBeforeSr { false };
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.
     CustomOptional<int> DlssNrToggleKey { UnboundKey };
