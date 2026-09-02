@@ -4,6 +4,8 @@
 
 #include <Config.h>
 
+#include <menu/menu_common.h>
+
 #include <imgui/imgui.h>
 
 #include <cctype>
@@ -424,7 +426,12 @@ void RenderMenu(Config* config, float menuResScale)
                    "\n  nvngx.dll_dlssnr.dll   the forwarder (~13 KB) -- ships in this package"
                    "\nUndocumented and driven directly, so none of this is officially supported.");
 
-        ImGui::TextColored(kTextDim, "Can be toggled with a key -- bind it under Keybinds, \"Neural Rendering\".");
+        // This used to read "bind it under Keybinds" -- but this build renders only this panel, so
+        // that section is unreachable and the instruction pointed nowhere. The row itself lives
+        // here now.
+        MenuCommon::RenderKeybindRow("Toggle key", 14, config->DlssNrToggleKey);
+        HelpMarker("Toggles Neural Rendering without opening this panel. Press the button, then the"
+                   "\nkey you want. Escape cancels, Backspace unbinds, R resets it.");
 
         if (!DlssNr::IsRunning())
         {
@@ -779,6 +786,15 @@ void RenderMenu(Config* config, float menuResScale)
                    "\nonce the model's edit was applied. Into a dlssnr-capture folder beside"
                    "\nOptiScaler; each run overwrites the last.");
 
+        if (bool autoCapture = config->DlssNrAutoCapture.value_or_default();
+            NrCheckbox("Auto-capture once per session", &autoCapture))
+        {
+            config->DlssNrAutoCapture = autoCapture;
+            anyChanged = true;
+        }
+        HelpMarker("Writes one matched before/after set automatically, without anyone asking. The"
+                   "\nfolder is cleared each run, so it holds a single session and never grows.");
+
         static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
         int compare = (int) config->DlssNrCompare.value_or_default();
         if (NrCombo("Compare", &compare, compareNames, IM_ARRAYSIZE(compareNames), rowWidth))
@@ -830,6 +846,37 @@ void RenderMenu(Config* config, float menuResScale)
         }
         HelpMarker("Proxy is the picture handed to the model. Difference shows what the model"
                    "\nactually changed, amplified twenty times and centred on grey.");
+
+        // Both of these are experiments toward dropping the forwarder entirely, which is why they
+        // ship off. Config.h calls the probe "a diagnostic, not a feature", and the proxy path
+        // "off until it is shown to produce the same picture" -- so they are labelled as such
+        // rather than presented as ordinary settings.
+        SectionCaption("Experimental", rowWidth);
+
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + rowWidth);
+        ImGui::TextColored(kTextDim, "Both are unproven. They exist to test whether the driver's own "
+                                     "nvngx.dll can dispatch the model, which would remove the need for "
+                                     "the 165 MB copy beside OptiScaler.");
+        ImGui::PopTextWrapPos();
+
+        if (bool probe = config->DlssNrProxyProbe.value_or_default(); NrCheckbox("Probe the driver", &probe))
+        {
+            config->DlssNrProxyProbe = probe;
+            anyChanged = true;
+        }
+        HelpMarker("Asks the driver's nvngx.dll once per session whether it already knows the model."
+                   "\nWrites the answer to the log and changes nothing else."
+                   "\n\nRead when the model is built, so it applies from the next session.");
+
+        if (bool useProxy = config->DlssNrUseProxy.value_or_default(); NrCheckbox("Run through the driver", &useProxy))
+        {
+            config->DlssNrUseProxy = useProxy;
+            anyChanged = true;
+        }
+        HelpMarker("Drives the model through the driver's own nvngx.dll instead of the forwarder --"
+                   "\nthe way DLSS itself is called. If the picture matches, the forwarder is"
+                   "\nunnecessary."
+                   "\n\nCompare before trusting it: turn on Compare above and look for a difference.");
 
         ImGui::End();
     }
