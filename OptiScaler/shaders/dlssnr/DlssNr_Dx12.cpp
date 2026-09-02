@@ -2192,6 +2192,11 @@ void ProbeD3D11(void* d3d11Device)
     if (done || d3d11Device == nullptr)
         return;
 
+    // Opt in only. See the note on DlssNrProbeD3D11: this is the one call in the pass that reaches
+    // into a subsystem on the game's own device rather than reading something we already hold.
+    if (!Config::Instance()->DlssNrProbeD3D11.value_or_default())
+        return;
+
     done = true;
 
     if (!EnsureForwarder())

@@ -302,6 +302,14 @@ class Config
     // Off by default until it has been seen to work in more than one game.
     CustomOptional<bool> DlssNrWhitePointFromExposure { true };
 
+    // Ask the model, once, whether it will run on Direct3D 11 without the bridge.
+    //
+    // Off by default and deliberately so. Everything else this pass does reads memory it already owns;
+    // this one initialises an NVIDIA subsystem on the game's live D3D11 device, in a process where the
+    // D3D12 NGX instance is already running. It should return an error code and nothing more, but
+    // "should" is doing work in that sentence and it ships into games nobody can test first.
+    CustomOptional<bool> DlssNrProbeD3D11 { false };
+
     // 0 off, 1 the picture the model was shown, 2 its raw answer, 3 what it changed, amplified.
     CustomOptional<uint32_t> DlssNrDebugView { 0 };
 
