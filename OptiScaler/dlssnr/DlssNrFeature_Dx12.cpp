@@ -785,6 +785,10 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
     if (cfg.DlssNrRunBeforeSr.value_or_default() != beforeUpscale)
         return;
 
+    // Color and Output can use different surface formats even though DLSS treats them as the same
+    // frame color space. Use Output as the shared authority so switching the injection point does not
+    // silently change the HDR/sRGB branch just because the selected target has a different format.
+    ID3D12Resource* output = GetResource(params, NVSDK_NGX_Parameter_Output, "DLSSD.Output");
     ID3D12Resource* target = beforeUpscale
                                  ? GetResource(params, NVSDK_NGX_Parameter_Color, "DLSSD.Color")
                                  : GetResource(params, NVSDK_NGX_Parameter_Output, "DLSSD.Output");
@@ -1016,9 +1020,10 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
     unsigned int dlssFlags = 0;
     params->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &dlssFlags);
     // Both have to agree: the flag says what the game intends, the format says what the surface can
-    // actually hold.
+    // actually hold. Output is used for both injection points so the color-space decision is stable.
     const bool gameSaysHdr = (dlssFlags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0;
-    const bool isHdrBuffer = gameSaysHdr && FormatCanHoldLinearHdr(desc.Format);
+    const bool isHdrBuffer = gameSaysHdr && FormatCanHoldLinearHdr(output != nullptr ? output->GetDesc().Format
+                                                                                       : desc.Format);
 
     static bool reportedHdr = false;
 
