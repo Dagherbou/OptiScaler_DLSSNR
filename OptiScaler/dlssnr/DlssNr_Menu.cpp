@@ -399,8 +399,25 @@ void RenderMenu(Config* config, float menuResScale)
         // scene-referred buffer and the finished frame, which is that exposure by definition.
 
         float wpScale = config->DlssNrWhitePointScale.value_or_default();
-        if (ImGui::SliderFloat(fromExposure ? "Paper white (x exposure)" : "Paper white", &wpScale, 0.25f,
-                               2000.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
+        // The range follows the meaning, because the control is two different things.
+        //
+        // Driving the white point itself it has to reach whatever scale a game's buffer is on -- Nioh
+        // 3 needs about 240. Sitting on top of an exposure the game supplied, it is a trim, and the
+        // useful span is small: at 240 it would be multiplying a correct answer by two hundred, which
+        // is how a working automatic path gets made to look broken.
+        //
+        // Narrowing the range rather than disabling the control keeps the trim available -- someone
+        // may genuinely want a little more or less than the game's own number -- while making a
+        // ruinous value unreachable. A greyed-out slider would remove a real control, and untoggling
+        // on touch would fight the user rather than help them.
+        const float wpMax = fromExposure ? 4.0f : 2000.0f;
+        const float wpMin = fromExposure ? 0.25f : 0.25f;
+
+        if (wpScale > wpMax)
+            wpScale = wpMax;
+
+        if (ImGui::SliderFloat(fromExposure ? "Paper white (x exposure)" : "Paper white", &wpScale, wpMin,
+                               wpMax, "%.2fx", ImGuiSliderFlags_Logarithmic))
             config->DlssNrWhitePointScale = wpScale;
 
         HelpMarker("What the frame is divided by before the model sees it. There is no other white"
