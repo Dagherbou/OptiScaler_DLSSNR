@@ -332,6 +332,20 @@ class Config
     //   1  force normal
     //   2  force inverted
     //
+    // This comment described the option long before there was one to describe: the value was read
+    // straight from the game's create flags with no way to correct it, and a game that states its
+    // convention wrongly had no remedy.
+    CustomOptional<uint32_t> DlssNrDepthConvention { 0 };
+
+    // The model's global tone control. Distinct from LocalToneStrength, which is what the panel's
+    // "Tone Intensity" drives -- this one applies across the frame rather than per region. The
+    // forwarder has always plumbed it; it was passed as a constant 1.0 until it became adjustable.
+    CustomOptional<float> DlssNrGlobalTone { 1.0f };
+
+    // Whether the model corrects for a UI layer. Its own default is on, and on is right whenever a
+    // UI resource is fed to it; off is worth having when the correction is itself the artifact.
+    CustomOptional<bool> DlssNrUICorrection { true };
+
     // Writes one set of matched before/after frames per session, without anyone having to ask. The
     // folder is cleared at the start of each run, so it holds one session's worth and never grows.
     CustomOptional<bool> DlssNrAutoCapture { true };
