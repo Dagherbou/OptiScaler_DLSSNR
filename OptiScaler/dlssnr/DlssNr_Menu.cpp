@@ -384,65 +384,19 @@ void RenderMenu(Config* config, float menuResScale)
 
 
 
-        // What the frame says its own scale is, offered rather than applied.
+        // A measured suggestion for paper white used to sit here and has been withdrawn.
         //
-        // Not a taste setting. The composition divides the frame by paper white so the colour maths
-        // runs in a normalised range, and the right divisor is whatever lands this game's buffer in
-        // [0,1]. Nioh 3 needs about 240 because its linear buffer holds values near two hundred; below
-        // that the frame is never normalised, the hue correction is handed values far outside the range
-        // its cube root was built for, and the picture takes on the green tint people report.
+        // It took the 90th percentile of per-tile peak luminance from the untouched frame, which is a
+        // statement about scene content rather than about the buffer's scale. In Nioh 3, where the
+        // right answer is about 240, it offered 8 -- because most tiles are shadow and the percentile
+        // sits wherever most tiles are. The guard meant to catch that compared each tile against the
+        // frame's own brightest, which is scale-free and therefore passes on a black screen: the same
+        // relative-threshold mistake the white point meter was removed for, made a second time.
         //
-        // Measured every frame from the untouched copy the encode keeps, never from the frame this pass
-        // writes. That is the difference between this and the white point meter that was removed: that
-        // one read its own output and chased it.
-        //
-        // Shown only when nothing else is driving the white point, and never applied on its own. The
-        // button moves the slider, so the number stays visible and adjustable afterwards.
-        {
-            const auto calib = DlssNr::Calibration();
-            const auto offer = DlssNr::GameExposureStatus();
-            const bool exposureDriving =
-                config->DlssNrWhitePointFromExposure.value_or_default() && offer.everOffered && !vulkan;
-
-            if (!exposureDriving && calib.samples > 8)
-            {
-                if (!calib.usable)
-                {
-                    // Say why rather than offering a number that cannot mean anything. The worst
-                    // outcome here would be a confident-looking suggestion taken in a dark room or in
-                    // a game where the divisor does nothing at all.
-                    ImGui::TextDisabled("Cannot measure here: %s.", calib.why);
-                }
-                else
-                {
-                    const float steady = calib.steadiness;
-                    const ImVec4 tint = steady > 0.75f  ? ImVec4(0.45f, 0.80f, 0.45f, 1.0f)
-                                        : steady > 0.4f ? ImVec4(0.85f, 0.75f, 0.35f, 1.0f)
-                                                        : ImVec4(0.85f, 0.55f, 0.35f, 1.0f);
-
-                    ImGui::TextColored(tint, "This scene suggests %.2fx  (%.0f%% steady)",
-                                       calib.suggestion, steady * 100.0f);
-
-                    ImGui::SameLine();
-
-                    if (ImGui::SmallButton("Use it"))
-                        config->DlssNrWhitePointScale = calib.suggestion;
-                }
-
-                HelpMarker("What this game's buffer is actually scaled by, measured from the frame"
-                               "\nbefore this pass touches it."
-                               "\n\nIt is not a brightness preference. The composition divides the frame"
-                               "\nby paper white so the colour maths works in a normalised range. Too low"
-                               "\nand the frame is never normalised, the hue correction runs far outside"
-                               "\nthe range it was built for, and the picture takes on a tint."
-                               "\n\nSteady is how much recent readings agree -- and only that. It is not"
-                               "\na claim that the number is right: a paused frame agrees with itself"
-                               "\nperfectly. It is withheld entirely where it could not be meaningful,"
-                               "\nso a reading you can see is one worth considering."
-                               "\n\nA lit scene with some range in it measures best. Nothing is applied"
-                               "\nuntil you press the button, and it only moves the slider.");
-            }
-        }
+        // A wrong number offered confidently is worse than no number, so nothing is offered. What
+        // replaces it has to be a measurement of the game's own exposure rather than of its scenery:
+        // the exposure texture where a game supplies one, and otherwise the ratio between the
+        // scene-referred buffer and the finished frame, which is that exposure by definition.
 
         float wpScale = config->DlssNrWhitePointScale.value_or_default();
         if (ImGui::SliderFloat(fromExposure ? "Paper white (x exposure)" : "Paper white", &wpScale, 0.25f,
