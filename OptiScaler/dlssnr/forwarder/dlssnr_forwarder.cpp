@@ -167,6 +167,101 @@ bool loadVkSnippet(const wchar_t *path) {
     return g_vk.create != nullptr && g_vk.evaluate != nullptr;
 }
 
+// ---------------------------------------------------------------------------------------------
+// The model's own scaling ratio, asked for the way NVIDIA asks for it.
+//
+// The snippet publishes callbacks into a parameter block through PopulateParameters_Impl -- the same
+// mechanism DLSS uses for DLSSOptimalSettingsCallback. The strings in nvngx_dlssnr.dll spell the
+// contract out in order: DLSSNRComputeScalingRatioCallback, ComputeScalingRatioCommon,
+// PerfQualityValue, then the two failures "missing PerfQualityValue for DLSSNR scaling ratio
+// computation" and "unsupported PerfQualityValue %u ...", then DLSSNR.ScalingRatio itself.
+//
+// So: populate a block, read the callback out of it, set PerfQualityValue, call it, read the ratio
+// back. Read-only -- it creates no feature and changes no feature state, which is exactly why it is
+// worth doing before anything is built on the answer.
+//
+// It lives here rather than in the host because PopulateParameters_Impl is the snippet's own export
+// and the snippet resolves its caller's module path.
+// ---------------------------------------------------------------------------------------------
+
+using PFN_NrPopulate = int(__cdecl *)(void *);
+using PFN_NrRatioCallback = int(__cdecl *)(void *);
+
+// Getters mirror setters eight slots up -- the same rule that put the resource getter at 8 opposite
+// the 64-bit setter at 0. A pointer published into the block is written as a 64-bit value, so it comes
+// back through slot 8; a float comes back through the discovered float slot plus eight.
+constexpr int VT_GET_ULL = VT_SET_ULL + 8;
+
+using PFN_GetULL = int(__thiscall *)(void *, const char *, unsigned long long *);
+using PFN_GetFloat = int(__thiscall *)(void *, const char *, float *);
+
+__declspec(dllexport) int dlssnr_last_ratio_result = 0;
+__declspec(dllexport) int dlssnr_last_ratio_stage = 0;
+
+// Asks the model what resolution it wants for a given quality level.
+//
+// perfQuality is NVSDK_NGX_PerfQuality_Value: 0 MaxPerf, 1 Balanced, 2 MaxQuality, 3 UltraPerformance,
+// 4 UltraQuality, 5 DLAA. Returns 1 and writes outRatio on success. 0 means the callback was never
+// published, so the mechanism is not live in this snippet; -1 means it was published and refused, which
+// for this callback means the quality value is not one it supports. dlssnr_last_ratio_stage says how
+// far it got, so a zero can be told apart from a snippet that would not load at all.
+__declspec(dllexport) int dlssnr_query_scaling_ratio(const wchar_t *snippetPath, void *capabilityParams,
+                                                     unsigned int perfQuality, float *outRatio) {
+    dlssnr_last_ratio_stage = 0;
+
+    if (!loadSnippet(snippetPath) || !capabilityParams || !outRatio) {
+        return 0;
+    }
+
+    dlssnr_last_ratio_stage = 1;
+
+    // Publishing is what puts the callback in the block. Harmless if it has already happened.
+    auto populate = (PFN_NrPopulate) GetProcAddress(g_snip.module, "NVSDK_NGX_D3D12_PopulateParameters_Impl");
+
+    if (populate != nullptr) {
+        volatile int populated = populate(capabilityParams);
+        (void) populated;
+        dlssnr_last_ratio_stage = 2;
+    }
+
+    void **vt = *reinterpret_cast<void ***>(capabilityParams);
+    unsigned long long raw = 0;
+
+    if (reinterpret_cast<PFN_GetULL>(vt[VT_GET_ULL])(capabilityParams, "DLSSNRComputeScalingRatioCallback",
+                                                     &raw) != 1 ||
+        raw == 0) {
+        return 0;
+    }
+
+    dlssnr_last_ratio_stage = 3;
+
+    setUInt(capabilityParams, "PerfQualityValue", perfQuality);
+
+    // Cleared first so a callback that writes nothing cannot be mistaken for one that wrote zero.
+    setFloat(capabilityParams, "DLSSNR.ScalingRatio", -1.0f);
+
+    // Assigned rather than returned, for the same reason every other call through this module is.
+    volatile int result = reinterpret_cast<PFN_NrRatioCallback>((void *) raw)(capabilityParams);
+    dlssnr_last_ratio_result = (int) result;
+
+    if (result != 1) {
+        return -1;
+    }
+
+    dlssnr_last_ratio_stage = 4;
+
+    float ratio = -1.0f;
+
+    if (reinterpret_cast<PFN_GetFloat>(vt[g_floatSlot + 8])(capabilityParams, "DLSSNR.ScalingRatio",
+                                                            &ratio) != 1) {
+        return -1;
+    }
+
+    dlssnr_last_ratio_stage = 5;
+    *outRatio = ratio;
+    return 1;
+}
+
 __declspec(dllexport) int dlssnr_vk_last_init = 0;
 __declspec(dllexport) int dlssnr_vk_last_create = 0;
 

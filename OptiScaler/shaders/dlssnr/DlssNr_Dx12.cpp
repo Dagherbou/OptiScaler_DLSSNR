@@ -172,6 +172,10 @@ struct NrState
     PFN_NrSetFloatSlot setFloatSlot = nullptr;
     PFN_NrProbeFloat probeFloat = nullptr;
     bool floatSlotKnown = false;
+
+    // The scaling-ratio probe, resolved alongside the other forwarder entry points.
+    int (*queryRatio)(const wchar_t*, void*, unsigned int, float*) = nullptr;
+    const int* lastRatioStage = nullptr;
     int* lastInit = nullptr;
     int* lastCreate = nullptr;
 
@@ -404,6 +408,10 @@ bool EnsureForwarder()
         return false;
     }
 
+    g_nr.queryRatio = (int (*)(const wchar_t*, void*, unsigned int, float*)) GetProcAddress(
+        g_nr.forwarder, "dlssnr_query_scaling_ratio");
+    g_nr.lastRatioStage = (const int*) GetProcAddress(g_nr.forwarder, "dlssnr_last_ratio_stage");
+
     g_nr.create = (PFN_NrCreate) GetProcAddress(g_nr.forwarder, "dlssnr_call_create");
     g_nr.evaluate = (PFN_NrEvaluate) GetProcAddress(g_nr.forwarder, "dlssnr_call_evaluate");
     g_nr.release = (PFN_NrRelease) GetProcAddress(g_nr.forwarder, "dlssnr_call_release");
@@ -427,6 +435,7 @@ bool EnsureForwarder()
 // The model needs the driver core's own capability block: it carries the snippet and preset callbacks a
 // feature expects at create time, which a freshly allocated block does not have.
 void DiscoverFloatSlot(NVSDK_NGX_Parameter* params);
+void ReportScalingRatios();
 
 bool EnsureCapabilityParams(ID3D12Device* device)
 {
@@ -455,7 +464,69 @@ bool EnsureCapabilityParams(ID3D12Device* device)
 
     // Before anything is written to it, work out where this block keeps floats.
     DiscoverFloatSlot(g_nr.capabilityParams);
+
+    // Ask the model what scaling ratio it wants, once, for every quality level it might accept.
+    //
+    // Read-only and answered before any feature exists. The point is to find out whether NVIDIA's own
+    // performance mode for this model is reachable: the snippet has ComputeScalingRatioCommon and the
+    // kernel table has _ds, _upsample and _upsample_tilesync variants of every fused Swin block, which
+    // together suggest the model can run its interior below display resolution natively -- rather than
+    // being handed a picture we shrank ourselves, which costs an extra resample of the edit on the way
+    // back and quantises the Swin grid to a lattice we chose rather than the one it was trained on.
+    ReportScalingRatios();
     return true;
+}
+
+// What the model says it wants to run at, per quality level. Logged once, used for nothing yet.
+//
+// Answered by the snippet's own callback rather than chosen by us. If it answers, NVIDIA ships a
+// performance mode for Neural Rendering and the resolution slider is a worse hand-rolled version of
+// it. If it does not, the slider is all there is and that is worth knowing too.
+void ReportScalingRatios()
+{
+    if (g_nr.queryRatio == nullptr || g_nr.capabilityParams == nullptr)
+        return;
+
+    auto snippet = Util::FindFilePath(g_dllDir, "nvngx_dlssnr.dll");
+
+    if (!snippet.has_value())
+        snippet = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssnr.dll");
+
+    if (!snippet.has_value())
+        return;
+
+    static const char* kNames[] = { "MaxPerf",         "Balanced",    "MaxQuality",
+                                    "UltraPerformance", "UltraQuality", "DLAA" };
+
+    char line[512] = {};
+    size_t used = 0;
+    bool any = false;
+
+    for (unsigned int q = 0; q < 6; ++q)
+    {
+        float ratio = -1.0f;
+        const int rc = g_nr.queryRatio(snippet->wstring().c_str(), g_nr.capabilityParams, q, &ratio);
+        int written = 0;
+
+        if (rc == 1)
+        {
+            any = true;
+            written = snprintf(line + used, sizeof(line) - used, "%s=%.4f ", kNames[q], ratio);
+        }
+        else if (rc == -1)
+        {
+            written = snprintf(line + used, sizeof(line) - used, "%s=refused ", kNames[q]);
+        }
+
+        if (written > 0)
+            used += (size_t) written;
+    }
+
+    if (any)
+        LOG_INFO("DLSS-NR the model's own scaling ratios: {}", line);
+    else
+        LOG_INFO("DLSS-NR scaling ratio callback not published by this snippet (stage {})",
+                 g_nr.lastRatioStage != nullptr ? *g_nr.lastRatioStage : -1);
 }
 
 // Works out which vtable slot this parameter block keeps floats in, by writing a known value through
