@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "SysUtils.h"
 #include "State.h"
@@ -404,8 +404,13 @@ class Config
 
     CustomOptional<bool> DlssNrScanMeter { false };
 
-    CustomOptional<float> DlssNrScanAnchorValue { 0.0f };
-    CustomOptional<float> DlssNrScanAnchorWhitePoint { 0.0f };
+    CustomOptional<float> DlssNrScanAnchorValue { 0.0f };       // legacy single anchor, migrated then unused
+    CustomOptional<float> DlssNrScanAnchorWhitePoint { 0.0f };  // legacy single anchor, migrated then unused
+
+    // The multi-point anchor table, serialised as "scan:white;scan:white;..." ascending. See
+    // dlssnr/design/multi-point-anchoring.md. Replaces the single pair above; a pre-existing single
+    // anchor is migrated into a one-row table on first load.
+    CustomOptional<std::string> DlssNrScanAnchors { std::string() };
 
     // Whether the scan's number rises or falls with the light.
     //

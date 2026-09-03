@@ -104,6 +104,44 @@ std::vector<Candidate> Report();
 const char* Status();
 bool Scanning();
 
+// ---------------------------------------------------------------------------------------------
+// Multi-point anchoring. See dlssnr/design/multi-point-anchoring.md.
+//
+// The white point driven by the scan is calibrated from one or more points the user placed --
+// (scanValue, whitePoint) pairs -- and interpolated between them in log space. One point is the
+// original single-anchor ratio law; two or more fit the buffer's actual, possibly nonlinear,
+// relationship so it holds across the whole lighting range rather than only near one anchor.
+//
+// The table is guarded by the same lock as the rest of the scan, so the menu (any thread) and the
+// pass (render thread) never tear it.
+struct AnchorPoint
+{
+    float scan;   // the scan's value when this point was captured
+    float white;  // the white point that looked right there
+};
+
+// A snapshot for the menu to draw, sorted by scan ascending.
+std::vector<AnchorPoint> Anchors();
+
+// Add the current point. Rejected (returns false) if the scan value is out of range or within a
+// small factor of an existing point's -- a near-duplicate would divide by ~zero in the interpolation.
+bool AnchorAdd(float scan, float white);
+
+// Edit the white point of an existing row (the slider, when a row is selected).
+void AnchorSetWhite(int index, float white);
+
+void AnchorRemove(int index);
+void AnchorClear();
+
+// The interpolated white point for the current best scan value, already trimmed and clamped. Returns
+// 0 when there is no usable anchor, so the caller falls through to its other sources. `inverted` only
+// affects the single-point ratio law; with two or more points the direction is encoded in the data.
+float AnchoredWhitePoint(float scanNow, bool inverted, float trim);
+
+// Config round-trip: "v0:w0;v1:w1;..." ascending. Load replaces the table; Serialize is for saving.
+void LoadAnchors(const std::string& serialized);
+std::string SerializeAnchors();
+
 void Shutdown();
 
 } // namespace ExposureScan

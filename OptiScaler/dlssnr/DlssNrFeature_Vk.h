@@ -62,6 +62,6 @@ std::optional<double> LastGpuTimeVk();
 // whether reading it is worth the risk on any real Vulkan game.
 bool ExposureOfferedVk();
 
-void ShutdownVk();
+void ShutdownVk(bool deviceAlive = true);
 
 } // namespace DlssNr

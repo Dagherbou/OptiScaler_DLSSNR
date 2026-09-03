@@ -594,10 +594,12 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     g_vk.instance = instance;
     g_vk.physicalDevice = physicalDevice;
 
-    // A device change invalidates everything. Rebuild rather than reuse handles from a dead device.
+    // A device change invalidates everything. The OLD device is presumed dead here -- the game
+    // destroyed it, which already freed every resource made on it -- so abandon those handles rather
+    // than call vkDestroy*/wait-idle on a dead device (that would be use-after-free). Rebuild fresh.
     if (g_vk.device != device)
     {
-        ShutdownVk();
+        ShutdownVk(false);
         g_vk.device = device;
         g_vk.instance = instance;
         g_vk.physicalDevice = physicalDevice;
@@ -696,6 +698,16 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     if (g_vk.width != width || g_vk.height != height || g_vk.workWidth != workWidth ||
         g_vk.workHeight != workHeight)
     {
+        // This block releases the feature and frees the surfaces below IMMEDIATELY. A frame-size
+        // change is already fenced by the game -- it recreates the swapchain around it -- but moving
+        // the working-scale slider is not: the game is mid-flight and previous frames' command
+        // buffers still reference the feature and images about to be destroyed. Freeing a Vulkan
+        // resource that in-flight GPU work still touches is device removal (ERR_GFX_STATE, reproduced
+        // on RDR2 and Enshrouded by dragging the model-resolution slider). Drain the device first.
+        // Only the rare resize path reaches here, so the CPU stall is a one-off hitch, not per-frame.
+        if (g_vk.device != VK_NULL_HANDLE)
+            vkDeviceWaitIdle(g_vk.device);
+
         if (g_vk.feature != nullptr && g_vk.release != nullptr)
         {
             g_vk.release(g_vk.feature);
@@ -1026,8 +1038,53 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     }
 }
 
-void ShutdownVk()
+void ShutdownVk(bool deviceAlive)
 {
+    if (!deviceAlive)
+    {
+        // The device these handles belong to is gone (a device change was detected). Destroying a
+        // VkDevice already frees every resource created on it, so touch NOTHING on the old device --
+        // no wait-idle, no vkDestroy*, no NGX release, and crucially no DlssNr_Vk destructor (it would
+        // vkDestroy its pipelines on the dead device). Abandon the handles; the driver reclaimed them
+        // when the device died. The one-off CPU-side leak of the pass object is the rare cost of a
+        // device recreation, and far cheaper than the use-after-free it replaces. Zeroing the
+        // OwnedImage/meter handles matters: the resize path gates on `.Valid()`, so a stale non-null
+        // handle from the dead device would be reused on the NEW device and crash.
+        g_vk.pass.release();
+        g_vk.feature = nullptr;
+        g_vk.capabilityParams = nullptr;
+        g_vk.queryPool = VK_NULL_HANDLE;
+        g_vk.output = OwnedImage {};
+        g_vk.proxy = OwnedImage {};
+        g_vk.proxySmall = OwnedImage {};
+        g_vk.keep = OwnedImage {};
+        g_vk.meter = OwnedImage {};
+
+        for (int i = 0; i < 4; ++i)
+        {
+            g_vk.meterReadback[i] = VK_NULL_HANDLE;
+            g_vk.meterReadbackMemory[i] = VK_NULL_HANDLE;
+            g_vk.meterMapped[i] = nullptr;
+        }
+
+        g_vk.device = VK_NULL_HANDLE;
+        g_vk.width = 0;
+        g_vk.height = 0;
+        g_vk.workWidth = 0;
+        g_vk.workHeight = 0;
+        g_vk.timedFrames = 0;
+        g_vk.meterFrames = 0;
+        g_vk.lastGpuTime.reset();
+        g_vk.ngxInitialised = false;
+        g_vk.reset = true;
+        return;
+    }
+
+    // The device is alive (real teardown): drain before freeing so nothing the GPU is still using is
+    // destroyed under it, the same rule as the resize path.
+    if (g_vk.device != VK_NULL_HANDLE)
+        vkDeviceWaitIdle(g_vk.device);
+
     if (g_vk.feature != nullptr && g_vk.release != nullptr)
         g_vk.release(g_vk.feature);
 

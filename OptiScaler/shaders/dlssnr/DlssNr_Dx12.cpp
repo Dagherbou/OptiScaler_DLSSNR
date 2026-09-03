@@ -994,21 +994,15 @@ float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
     // unreachable rather than merely unlikely.
     if (cfg.DlssNrWhitePointSource.value_or_default() == 2)
     {
-        const float anchorValue = cfg.DlssNrScanAnchorValue.value_or_default();
-        const float anchorWhite = cfg.DlssNrScanAnchorWhitePoint.value_or_default();
-        const float now = DlssNr::ExposureScan::BestValue();
+        // Multi-point: one or more calibration points the user placed, interpolated in log space by
+        // the current scan value. One point is the original ratio law; more fit the buffer's actual
+        // relationship so the white point holds across the whole range, not only near one anchor.
+        const float w = DlssNr::ExposureScan::AnchoredWhitePoint(
+            DlssNr::ExposureScan::BestValue(), cfg.DlssNrScanInverted.value_or_default(),
+            cfg.DlssNrScanTrim.value_or_default());
 
-        if (anchorValue > 1e-9f && anchorWhite > 1e-6f && now > 1e-9f)
-        {
-            // An exposure is a multiplier that falls as the scene brightens, so the white point
-            // follows the anchor over the current value. A buffer holding the reciprocal moves the
-            // other way, which is what the inverted setting is for.
-            const float ratio = cfg.DlssNrScanInverted.value_or_default() ? now / anchorValue
-                                                                         : anchorValue / now;
-
-            const float trim = std::clamp(cfg.DlssNrScanTrim.value_or_default(), 0.25f, 4.0f);
-            return std::clamp(anchorWhite * ratio * trim, 0.01f, 4096.0f);
-        }
+        if (w > 0.0f)
+            return w;
     }
 
     if (cfg.DlssNrWhitePointSource.value_or_default() == 1 && g_nr.gameExposure > 1e-6f)

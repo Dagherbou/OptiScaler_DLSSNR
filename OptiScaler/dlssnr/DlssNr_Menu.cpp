@@ -13,6 +13,8 @@
 #include <string>
 #include <unordered_map>
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 
 namespace DlssNr
 {
@@ -327,10 +329,8 @@ void RenderMenu(Config* config, float menuResScale)
             const bool vk = DlssNr::IsRunningVk();
             const bool haveExposure = vk ? DlssNr::ExposureOfferedVk() : ex.everOffered;
 
-            float anchorNow = 0.0f;
-            const bool haveAnchor = config->DlssNrScanAnchorValue.value_or_default() > 1e-9f &&
-                                    config->DlssNrScanAnchorWhitePoint.value_or_default() > 1e-6f;
-            anchorNow = DlssNr::ExposureScan::BestValue();
+            const float anchorNow = DlssNr::ExposureScan::BestValue();
+            const bool haveAnchor = !DlssNr::ExposureScan::Anchors().empty();
 
             static const char* sourceNames[] = { "Paper white only", "The game's own exposure",
                                                  "A buffer the scan found" };
@@ -359,9 +359,9 @@ void RenderMenu(Config* config, float menuResScale)
                            "\nsupplies one."
                            "\n\nA buffer the scan found -- for games that compute an exposure and"
                            "\nnever pass it on. A GUESS: candidates are matched by shape, and in"
-                           "\nGTA V the best one turned out to be an accumulator that climbed"
-                           "\nsteadily while the real exposure sat still. Needs anchoring once,"
-                           "\nand checking afterwards.");
+                           "\nGTA V the best one tracks the real exposure but at its own scale,"
+                           "\nwhich the anchor's ratio cancels. Needs anchoring once, and checking"
+                           "\nafterwards.");
 
             // Availability, in colour, for the option currently chosen.
             if (source == 1)
@@ -411,14 +411,11 @@ void RenderMenu(Config* config, float menuResScale)
                                        "right, then press Anchor here.");
                 else
                 {
-                    const float trim =
-                        std::clamp(config->DlssNrScanTrim.value_or_default(), 0.25f, 4.0f);
-                    const float ratio = config->DlssNrScanInverted.value_or_default()
-                                            ? anchorNow / config->DlssNrScanAnchorValue.value_or_default()
-                                            : config->DlssNrScanAnchorValue.value_or_default() / anchorNow;
+                    const float w = DlssNr::ExposureScan::AnchoredWhitePoint(
+                        anchorNow, config->DlssNrScanInverted.value_or_default(),
+                        config->DlssNrScanTrim.value_or_default());
                     ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                       "Anchored. Scan %.5f  ->  white point %.2f", anchorNow,
-                                       config->DlssNrScanAnchorWhitePoint.value_or_default() * ratio * trim);
+                                       "Anchored. Scan %.5f  ->  white point %.2f", anchorNow, w);
                 }
             }
             else if (haveExposure)
@@ -472,13 +469,65 @@ void RenderMenu(Config* config, float menuResScale)
         // absolute white point, so there must be an absolute slider to set. Showing a trim there
         // asked people to "set paper white below" next to a control that was not paper white.
         const int wpSource = (int) config->DlssNrWhitePointSource.value_or_default();
-        const bool scanAnchored = config->DlssNrScanAnchorValue.value_or_default() > 1e-9f &&
-                                  config->DlssNrScanAnchorWhitePoint.value_or_default() > 1e-6f;
-        const bool showTrim = wpSource == 1 || (wpSource == 2 && scanAnchored);
 
-        if (showTrim)
+        // Which anchor row the paper-white slider edits, or -1 for the live unanchored point. Menu-
+        // local and not persisted; the anchor block below sets it when a row is clicked. Declared
+        // here because both the slider (this block) and the table (below) read it in the same frame.
+        static int selectedAnchor = -1;
+        auto anchors = DlssNr::ExposureScan::Anchors();
+        if (selectedAnchor >= (int) anchors.size())
+            selectedAnchor = -1;
+
+        if (wpSource == 2)
         {
-            const bool ofScan = wpSource == 2;
+            // The scanned source is calibrated by the anchor table below. The slider here is the
+            // paper white: it edits the selected row's white point, or -- with nothing selected --
+            // the live value the next Anchor press will capture.
+            const bool editingRow = selectedAnchor >= 0 && selectedAnchor < (int) anchors.size();
+
+            float pw = editingRow ? anchors[selectedAnchor].white
+                                  : config->DlssNrWhitePointScale.value_or_default();
+
+            char lbl[48];
+            if (editingRow)
+                snprintf(lbl, sizeof(lbl), "Paper white (editing point %d)", selectedAnchor + 1);
+            else
+                snprintf(lbl, sizeof(lbl), "Paper white");
+
+            if (ImGui::SliderFloat(lbl, &pw, 0.25f, 2000.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
+            {
+                if (editingRow)
+                {
+                    DlssNr::ExposureScan::AnchorSetWhite(selectedAnchor, pw);
+                    config->DlssNrScanAnchors = DlssNr::ExposureScan::SerializeAnchors();
+                }
+                else
+                    config->DlssNrWhitePointScale = pw;
+            }
+
+            HelpMarker("The white point for the selected calibration point, or -- with no row"
+                           "\nselected -- the value the next Anchor press captures."
+                           "\n\nSet it until the picture looks right here, then Anchor. Move to very"
+                           "\ndifferent light and do it again: two points fix the buffer's real"
+                           "\nrelationship and the white point holds between them. Click a row below"
+                           "\nto come back and adjust that point; click it again to let go.");
+
+            // A global multiplier on the interpolated result, kept for parity with the other
+            // sources. The points themselves are the real control here, so this stays near 1.
+            float trim = config->DlssNrScanTrim.value_or_default();
+
+            if (ImGui::SliderFloat("Trim (x the scan)", &trim, 0.25f, 4.0f, "%.2fx",
+                                   ImGuiSliderFlags_Logarithmic))
+                config->DlssNrScanTrim = std::clamp(trim, 0.25f, 4.0f);
+
+            ImGui::SameLine();
+
+            if (ImGui::SmallButton("Reset##scantrim"))
+                config->DlssNrScanTrim = 1.0f;
+        }
+        else if (wpSource == 1)
+        {
+            const bool ofScan = false;
 
             float trim = ofScan ? config->DlssNrScanTrim.value_or_default()
                                 : config->DlssNrWhitePointTrim.value_or_default();
@@ -603,76 +652,120 @@ void RenderMenu(Config* config, float menuResScale)
                 float low = 0.0f, high = 0.0f;
                 const float live = DlssNr::ExposureScan::BestValue(&which, &low, &high);
 
-                const float anchorValue = config->DlssNrScanAnchorValue.value_or_default();
-                const float anchorWhite = config->DlssNrScanAnchorWhitePoint.value_or_default();
-                const bool anchored = anchorValue > 1e-9f && anchorWhite > 1e-6f;
+                const bool isSource = config->DlssNrWhitePointSource.value_or_default() == 2;
 
-                // Greyed only when the scan is NOT the chosen source -- that is, when the scan is
-                // running alongside something else and anchoring it would achieve nothing.
-                //
-                // This read the old WhitePointFromExposure flag, which consumption had already
-                // stopped using. It defaults to true, so in a game with an exposure texture the
-                // button was greyed and the panel announced "the scan is only watching" while the
-                // dropdown right above it said the scan was the source. The setting had been
-                // replaced and one of its readers had not been told.
+                // Anchor captures (currentScan, currentPaperWhite) and ADDS a row -- it does not
+                // replace. One row is the old single-anchor ratio law; add a second in different
+                // light and the white point is interpolated between the points, so it holds across
+                // the whole range instead of only near one anchor. Greyed unless the scan is the
+                // chosen source and it currently has a value to capture.
+                ImGui::BeginDisabled(live <= 0.0f || !isSource);
 
-                ImGui::BeginDisabled(live <= 0.0f || config->DlssNrWhitePointSource.value_or_default() != 2);
-
-                if (ImGui::Button(anchored ? "Re-anchor here" : "Anchor here"))
+                if (ImGui::Button("Anchor here"))
                 {
-                    config->DlssNrScanAnchorValue = live;
-                    config->DlssNrScanAnchorWhitePoint =
-                        std::max(0.01f, config->DlssNrWhitePointScale.value_or_default());
+                    if (DlssNr::ExposureScan::AnchorAdd(
+                            live, std::max(0.01f, config->DlssNrWhitePointScale.value_or_default())))
+                    {
+                        config->DlssNrScanAnchors = DlssNr::ExposureScan::SerializeAnchors();
+                        selectedAnchor = -1;
+                    }
                 }
 
                 ImGui::EndDisabled();
 
-                if (anchored)
-                {
-                    ImGui::SameLine();
+                HelpMarker("Set the paper white above until the picture looks right, then press this."
+                               "\n\nThe first press calibrates one point -- the white point then"
+                               "\nfollows the scan by ratio from there, as before. Walk into very"
+                               "\ndifferent light, set paper white again, and press it again: the"
+                               "\nsecond point pins down the buffer's real curve and everything"
+                               "\nbetween the two is right, not just near one anchor. Up to eight."
+                               "\n\nThe table is per game and shareable: one person calibrates a game"
+                               "\nand the numbers are the same for everyone who takes the profile.");
 
-                    if (ImGui::Button("Clear anchor"))
-                    {
-                        config->DlssNrScanAnchorValue = 0.0f;
-                        config->DlssNrScanAnchorWhitePoint = 0.0f;
-                    }
-                }
-
-                HelpMarker("Set the paper white above until the picture looks right, then press"
-                               "\nthis. That is the only manual step, and it is once per game."
-                               "\n\nAfter it, the white point follows the scan: walk into a cave and"
-                               "\nit rises, step into daylight and it falls, without being touched."
-                               "\nOnly the RATIO against the anchored value is used, so the buffer's"
-                               "\nunits never have to be known -- they cancel."
-                               "\n\nThis is also the shape that makes shared per-game profiles work."
-                               "\nOne person anchors a game and the number is the same for everyone"
-                               "\nelse, which is the only version of this that scales past the people"
-                               "\nwilling to tune sliders.");
-
-                if (config->DlssNrWhitePointSource.value_or_default() != 2)
+                if (!isSource)
                     ImGui::TextDisabled("(the scan is only watching -- the white point above comes "
                                         "from somewhere else)");
 
-                if (anchored)
+                if (!anchors.empty())
                 {
-                    // Deliberately NOT under Advanced. Get this wrong and the feature works
-                    // backwards rather than merely imprecisely, and it is the second half of a
-                    // two-click setup: anchor, then flip it if the picture moves the wrong way.
+                    // The row nearest the live scan value (in log space) is the one driving the
+                    // picture right now; mark it so the user can see which calibration is in effect.
+                    int active = 0;
+                    float bestDist = 1e30f;
+                    const float liveLog = std::log(std::max(live, 1e-6f));
+
+                    for (size_t i = 0; i < anchors.size(); ++i)
+                    {
+                        const float d =
+                            std::fabs(std::log(std::max(anchors[i].scan, 1e-6f)) - liveLog);
+                        if (d < bestDist)
+                        {
+                            bestDist = d;
+                            active = (int) i;
+                        }
+                    }
+
+                    for (size_t i = 0; i < anchors.size(); ++i)
+                    {
+                        ImGui::PushID((int) i);
+
+                        // Delete first, so its click is never swallowed by the row-wide Selectable.
+                        if (ImGui::SmallButton("x"))
+                        {
+                            DlssNr::ExposureScan::AnchorRemove((int) i);
+                            config->DlssNrScanAnchors = DlssNr::ExposureScan::SerializeAnchors();
+                            if (selectedAnchor == (int) i)
+                                selectedAnchor = -1;
+                            else if (selectedAnchor > (int) i)
+                                --selectedAnchor;
+                            ImGui::PopID();
+                            continue;
+                        }
+
+                        ImGui::SameLine();
+
+                        const bool sel = (int) i == selectedAnchor;
+                        char row[96];
+                        snprintf(row, sizeof(row), "%s scan %.4f  ->  white %.2f%s",
+                                 ((int) i == active && isSource) ? ">" : "  ", anchors[i].scan,
+                                 anchors[i].white, sel ? "   [editing]" : "");
+
+                        // Click selects the row (slider edits it); click again deselects (slider
+                        // returns to the live unanchored point).
+                        if (ImGui::Selectable(row, sel))
+                            selectedAnchor = sel ? -1 : (int) i;
+
+                        ImGui::PopID();
+                    }
+
+                    ImGui::TextDisabled("Click a row to edit it with the slider above; click it again"
+                                        " to control the live point. > is the point in use now.");
+                }
+
+                // The direction flag only means anything with a single point; with two or more the
+                // direction the white point moves is already fixed by the data.
+                if (anchors.size() == 1)
+                {
                     bool inverted = config->DlssNrScanInverted.value_or_default();
                     if (ImGui::Checkbox("The number runs the other way", &inverted))
                         config->DlssNrScanInverted = inverted;
 
                     HelpMarker("Flip this if the picture gets worse in the direction it should be"
-                                   "\ngetting better."
-                                   "\n\nMost engines store an exposure, which falls as the scene"
-                                   "\nbrightens. Some store its reciprocal, and nothing in a buffer"
-                                   "\nfound by its shape says which. Guessing would be silently wrong"
-                                   "\nin half the games, so it is one click instead.");
+                                   "\ngetting better. Most engines store an exposure that falls as"
+                                   "\nthe scene brightens; some store its reciprocal, and a buffer"
+                                   "\nfound by shape does not say which. Add a second anchor point in"
+                                   "\ndifferent light and this is decided for you, so it disappears.");
+                }
 
-                    const float ratio = inverted ? live / anchorValue : anchorValue / live;
+                if (isSource && live > 0.0f && !anchors.empty())
+                {
+                    const float w = DlssNr::ExposureScan::AnchoredWhitePoint(
+                        live, config->DlssNrScanInverted.value_or_default(),
+                        config->DlssNrScanTrim.value_or_default());
+
                     ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                       "Anchored at %.5f -> paper white %.2f. Now %.5f, so %.2f",
-                                       anchorValue, anchorWhite, live, anchorWhite * ratio);
+                                       "Scan %.5f  ->  white point %.2f   (%u point%s)", live, w,
+                                       (unsigned) anchors.size(), anchors.size() == 1 ? "" : "s");
                 }
 
                 // Everything below is read-out rather than control: what the scan is looking at and
