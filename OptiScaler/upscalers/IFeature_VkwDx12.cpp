@@ -2101,8 +2101,7 @@ bool IFeature_VkwDx12::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter
         LOG_DEBUG("Dispatch!!");
         dx12EvalResult = dx12Feature->Evaluate(cmdList, InParameters);
 
-        const bool nrExposureThisFrame =
-            vkExp.Dx12Resource != nullptr && vkExp.VkSourceImage != VK_NULL_HANDLE;
+        const bool nrExposureThisFrame = vkExp.Dx12Resource != nullptr && vkExp.VkSourceImage != VK_NULL_HANDLE;
         InParameters->Set(NVSDK_NGX_Parameter_ExposureTexture,
                           nrExposureThisFrame ? (void*) vkExp.Dx12Resource : nullptr);
 
@@ -2113,8 +2112,8 @@ bool IFeature_VkwDx12::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter
         if (!reportedNrOffer)
         {
             reportedNrOffer = true;
-            LOG_INFO("DLSS-NR: the Vulkan bridge reached the hand-off (upscale ok: {}, enabled: {})",
-                     dx12EvalResult, Config::Instance()->DlssNrEnabled.value_or_default());
+            LOG_INFO("DLSS-NR: the Vulkan bridge reached the hand-off (upscale ok: {}, enabled: {})", dx12EvalResult,
+                     Config::Instance()->DlssNrEnabled.value_or_default());
         }
 
         if (dx12EvalResult && Config::Instance()->DlssNrEnabled.value_or_default())

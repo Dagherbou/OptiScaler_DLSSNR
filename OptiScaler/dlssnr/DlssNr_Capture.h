@@ -216,13 +216,11 @@ class FrameCapture
         buf.SampleDesc.Count = 1;
         buf.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-        return SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buf,
-                                                         D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                                         IID_PPV_ARGS(&shot.readback)));
+        return SUCCEEDED(device->CreateCommittedResource(
+            &heap, D3D12_HEAP_FLAG_NONE, &buf, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&shot.readback)));
     }
 
-    static void copy(ID3D12GraphicsCommandList* cmd, ID3D12Resource* src, D3D12_RESOURCE_STATES state,
-                     Shot& shot)
+    static void copy(ID3D12GraphicsCommandList* cmd, ID3D12Resource* src, D3D12_RESOURCE_STATES state, Shot& shot)
     {
         if (shot.readback == nullptr)
             return;
@@ -320,11 +318,10 @@ class FrameCapture
         {
             std::fprintf(f, "frames %u\n", captured_);
             std::fprintf(f, "before width %llu height %u format %d rowPitch %u\n",
-                         (unsigned long long) beforeDesc_.Width, beforeDesc_.Height,
-                         (int) beforeDesc_.Format,
+                         (unsigned long long) beforeDesc_.Width, beforeDesc_.Height, (int) beforeDesc_.Format,
                          beforeShots_.empty() ? 0 : beforeShots_[0].layout.Footprint.RowPitch);
-            std::fprintf(f, "after width %llu height %u format %d rowPitch %u\n",
-                         (unsigned long long) afterDesc_.Width, afterDesc_.Height, (int) afterDesc_.Format,
+            std::fprintf(f, "after width %llu height %u format %d rowPitch %u\n", (unsigned long long) afterDesc_.Width,
+                         afterDesc_.Height, (int) afterDesc_.Format,
                          afterShots_.empty() ? 0 : afterShots_[0].layout.Footprint.RowPitch);
             std::fprintf(f, "\nbefore_NN.raw is the frame as the upscaler produced it.\n");
             std::fprintf(f, "after_NN.raw is the same frame once the model's edit was applied.\n");

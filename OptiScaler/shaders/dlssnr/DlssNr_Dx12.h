@@ -88,10 +88,9 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     // their place so every descriptor in the table is valid.
     // One compute pass. The public entry below drives three of these plus the model.
     bool DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssNrConstants& InConstants,
-                  ID3D12Resource* InSource, ID3D12Resource* InModel, ID3D12Resource* InOriginal,
-                  ID3D12Resource* InMotion,
-                  // t4. The game's 1x1 exposure when it is usable and Effective, otherwise the
-                  // 1x1 dummy (E = 1). Null falls back to the dummy; it must not fall back to InSource.
-                  ID3D12Resource* InExposure, ID3D12Resource* OutTarget,
-                  ID3D12Resource* OutKeep);
+                      ID3D12Resource* InSource, ID3D12Resource* InModel, ID3D12Resource* InOriginal,
+                      ID3D12Resource* InMotion,
+                      // t4. The game's 1x1 exposure when it is usable and Effective, otherwise the
+                      // 1x1 dummy (E = 1). Null falls back to the dummy; it must not fall back to InSource.
+                      ID3D12Resource* InExposure, ID3D12Resource* OutTarget, ID3D12Resource* OutKeep);
 };
