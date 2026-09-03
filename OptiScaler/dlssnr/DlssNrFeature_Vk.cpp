@@ -843,7 +843,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     // but it is still a guess. A user who has not asked for the exposure source never has the game's
     // image touched at all, so if some engine does leave it somewhere unexpected, the blast radius is
     // people who turned the thing on rather than everyone on Vulkan.
-    if (cfg.DlssNrWhitePointFromExposure.value_or_default() && exposure != nullptr &&
+    if (cfg.DlssNrWhitePointSource.value_or_default() == 1 && exposure != nullptr &&
         exposure->Type == NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW &&
         exposure->Resource.ImageViewInfo.ImageView != VK_NULL_HANDLE && g_vk.meter.Valid())
     {

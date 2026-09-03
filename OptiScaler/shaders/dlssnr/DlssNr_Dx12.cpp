@@ -8,7 +8,6 @@
 #include <dlssnr/DlssNr_Capture.h>
 #include <dlssnr/DlssNr_Proxy.h>
 #include <dlssnr/DlssNr_ExposureScan.h>
-#include <dlssnr/DlssNr_ExposureScan.h>
 
 #include "DlssNr_Dx12.h"
 
@@ -1877,7 +1876,10 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // own output -- one Enshrouded session walked it from 0.010 to 97.910, and toggling NR at a fixed
     // spot read 41.31 off against 0.46 on. What remains dispatches a single thread to copy the game's
     // 1x1 exposure texture into tile 0. That is a courier, not a measurement, and cannot feed back.
-    const bool exposureSettingOn = cfg.DlssNrWhitePointFromExposure.value_or_default();
+    // Gated on the source the menu actually writes. This read the retired WhitePointFromExposure
+    // flag while consumption keyed on WhitePointSource == 1, so choosing "the game's own exposure"
+    // never dispatched the meter and the white point silently fell back to the slider.
+    const bool exposureSettingOn = cfg.DlssNrWhitePointSource.value_or_default() == 1;
 
     // Nothing held from before the option was switched off may survive switching it back on. See
     // InvalidateExposureMeter for what froze and why it read as a colour cast.
@@ -1983,6 +1985,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         modelInput = g_nr.colorSmall;
     }
+
+    // Read the exposure scan's candidates on the pass's own command list, once a frame.
+    DlssNr::ExposureScan::Tick(device, cmdList);
 
     ID3D12Resource* depthIn = ReadableGuide(device, cmdList, depth, &g_nr.depthClone);
     ID3D12Resource* motionIn = ReadableGuide(device, cmdList, motion, &g_nr.motionClone);

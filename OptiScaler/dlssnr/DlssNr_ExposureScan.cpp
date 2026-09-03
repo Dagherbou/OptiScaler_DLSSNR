@@ -28,7 +28,10 @@ constexpr unsigned int kSlots = 4;
 
 // Every candidate's value lands in one buffer, at its own offset, so there is one copy per candidate
 // but only one buffer per slot. 16 bytes each is enough for the widest format worth reading.
-constexpr unsigned int kStride = 16;
+// D3D12 requires a placed-footprint offset to be a multiple of
+// D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT (512). A texture candidate at index i copies to i*kStride,
+// so the stride is that alignment; buffer copies have no such rule and are unaffected by the waste.
+constexpr unsigned int kStride = 512;
 
 // What an exposure could plausibly be. Outside these it is a flag, a counter, a sentinel or a
 // zeroed buffer nobody has written yet -- Nioh 3 offers all four, including one holding 1000000.
@@ -41,6 +44,7 @@ struct Tracked
     std::string shape;
     bool isBuffer = false;
     unsigned int bytes = 4;
+    DXGI_FORMAT texFormat = DXGI_FORMAT_UNKNOWN;  // the source texture's format, for CopyTextureRegion
 
     float latest = 0.0f;
     float lowest = 0.0f;
@@ -69,8 +73,12 @@ std::mutex g_scanMutex;
 // previous frame's value, or a target it is easing toward. Anything wider is a picture rather than a
 // number. Integer formats are excluded because an exposure is a scale and a normalised integer
 // cannot hold one.
-bool PlausibleFormat(DXGI_FORMAT f, unsigned int* outBytes, const char** outName)
+// outBytes is the size of the FIRST channel only -- that is the one texel this reads back, and a
+// two-channel format that stored 4 or 8 there would be decoded as the wrong type. The copy uses the
+// real format (outFormat) so it matches the source texture; the read uses outBytes.
+bool PlausibleFormat(DXGI_FORMAT f, unsigned int* outBytes, const char** outName, DXGI_FORMAT* outFormat)
 {
+    *outFormat = f;
     switch (f)
     {
     case DXGI_FORMAT_R32_FLOAT:
@@ -82,11 +90,11 @@ bool PlausibleFormat(DXGI_FORMAT f, unsigned int* outBytes, const char** outName
         *outName = "R16_FLOAT";
         return true;
     case DXGI_FORMAT_R32G32_FLOAT:
-        *outBytes = 8;
+        *outBytes = 4;
         *outName = "R32G32_FLOAT";
         return true;
     case DXGI_FORMAT_R16G16_FLOAT:
-        *outBytes = 4;
+        *outBytes = 2;
         *outName = "R16G16_FLOAT";
         return true;
     default:
@@ -207,7 +215,7 @@ bool Wanted()
 // history, and some put the whole thing in a four-channel texture and use one channel. The filter
 // only has to be tight enough that the list stays readable.
 bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsigned int* outBytes,
-                      bool* outIsBuffer)
+                      bool* outIsBuffer, DXGI_FORMAT* outFormat)
 {
     // An exposure is computed, so it is written by a shader. This is the one condition worth being
     // strict about: it removes almost everything without removing anything that could be the answer.
@@ -223,7 +231,7 @@ bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsi
 
         const char* name = nullptr;
 
-        if (!PlausibleFormat(rd.Format, outBytes, &name))
+        if (!PlausibleFormat(rd.Format, outBytes, &name, outFormat))
             return false;
 
         *outIsBuffer = false;
@@ -233,6 +241,8 @@ bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsi
 
     if (rd.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
     {
+        *outFormat = DXGI_FORMAT_UNKNOWN;
+
         // Unreal moved eye adaptation off a texture and onto a buffer, so buffers have to be in
         // scope or a whole engine's worth of games is invisible.
         //
@@ -252,7 +262,8 @@ bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsi
     return false;
 }
 
-void Adopt(ID3D12Resource* resource, const std::string& shape, unsigned int bytes, bool isBuffer)
+void Adopt(ID3D12Resource* resource, const std::string& shape, unsigned int bytes, bool isBuffer,
+           DXGI_FORMAT texFormat)
 {
     for (const Tracked& t : g_scan.tracked)
     {
@@ -278,6 +289,7 @@ void Adopt(ID3D12Resource* resource, const std::string& shape, unsigned int byte
     t.shape = shape;
     t.isBuffer = isBuffer;
     t.bytes = bytes;
+    t.texFormat = texFormat;
     resource->AddRef();
 
     g_scan.tracked.push_back(t);
@@ -296,14 +308,15 @@ void NoteResource(const D3D12_RESOURCE_DESC* desc, ID3D12Resource* resource)
     std::string shape;
     unsigned int bytes = 4;
     bool isBuffer = false;
+    DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
 
     std::lock_guard<std::mutex> lock(g_scanMutex);
     g_scan.examined++;
 
-    if (!LooksLikeANumber(*desc, &shape, &bytes, &isBuffer))
+    if (!LooksLikeANumber(*desc, &shape, &bytes, &isBuffer, &fmt))
         return;
 
-    Adopt(resource, shape, bytes, isBuffer);
+    Adopt(resource, shape, bytes, isBuffer, fmt);
 }
 
 unsigned int Examined()
@@ -335,14 +348,15 @@ void NoteUav(ID3D12Resource* resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* d
     std::string shape;
     unsigned int bytes = 4;
     bool isBuffer = false;
+    DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
 
     std::lock_guard<std::mutex> lock(g_scanMutex);
     g_scan.examined++;
 
-    if (!LooksLikeANumber(rd, &shape, &bytes, &isBuffer))
+    if (!LooksLikeANumber(rd, &shape, &bytes, &isBuffer, &fmt))
         return;
 
-    Adopt(resource, shape, bytes, isBuffer);
+    Adopt(resource, shape, bytes, isBuffer, fmt);
 }
 
 void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
@@ -353,6 +367,13 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
     if (device == nullptr || cmdList == nullptr)
         return;
 
+    // Before the lock, deliberately. EnsureReadback creates a committed resource, and that call is
+    // detoured to hkCreateCommittedResource -> NoteResource, which takes g_scanMutex. Holding it
+    // here would be a self-deadlock on a non-recursive mutex the first frame the scan runs. The
+    // readback ring is only ever touched on this (render) thread, so it needs no lock of its own.
+    if (!EnsureReadback(device))
+        return;
+
     std::lock_guard<std::mutex> lock(g_scanMutex);
 
     if (g_scan.tracked.empty())
@@ -360,9 +381,6 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
         g_scan.status = "no buffer in this game is shaped like an exposure";
         return;
     }
-
-    if (!EnsureReadback(device))
-        return;
 
     // Read the slot written four frames ago before overwriting it. Retired by now, so this reads
     // mapped memory rather than waiting on the GPU.
@@ -485,7 +503,7 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
             to.pResource = dst;
             to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
             to.PlacedFootprint.Offset = i * kStride;
-            to.PlacedFootprint.Footprint.Format = t.bytes == 2 ? DXGI_FORMAT_R16_FLOAT : DXGI_FORMAT_R32_FLOAT;
+            to.PlacedFootprint.Footprint.Format = t.texFormat;
             to.PlacedFootprint.Footprint.Width = 1;
             to.PlacedFootprint.Footprint.Height = 1;
             to.PlacedFootprint.Footprint.Depth = 1;
