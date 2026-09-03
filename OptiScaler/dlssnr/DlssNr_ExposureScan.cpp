@@ -182,6 +182,19 @@ bool EnsureReadback(ID3D12Device* device)
     return true;
 }
 
+// Whether the scan should be running at all.
+//
+// Choosing it as the white point's source is the whole of the answer for anybody using this.
+// The separate setting survives as a developer override, for the one case a user has no reason
+// to want: watching the scan in a game that supplies a REAL exposure, so the two can be
+// compared in the log. That is validation work, not a control, and it does not belong in a
+// panel.
+bool Wanted()
+{
+    return Config::Instance()->DlssNrWhitePointSource.value_or_default() == 2 ||
+           Config::Instance()->DlssNrScanExposure.value_or_default();
+}
+
 } // namespace
 
 // Everything the two entry points share: does this description look like a number rather than a
@@ -333,7 +346,7 @@ void NoteUav(ID3D12Resource* resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* d
 
 void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
 {
-    if (!Config::Instance()->DlssNrScanExposure.value_or_default())
+    if (!Wanted())
         return;
 
     if (device == nullptr || cmdList == nullptr)
@@ -479,7 +492,7 @@ constexpr unsigned int kPatience = 1800;
 
 Verdict Where()
 {
-    if (!Config::Instance()->DlssNrScanExposure.value_or_default())
+    if (!Wanted())
         return Verdict::Off;
 
     std::lock_guard<std::mutex> lock(g_scanMutex);
@@ -646,7 +659,7 @@ const char* Status()
     return g_scan.status;
 }
 
-bool Scanning() { return Config::Instance()->DlssNrScanExposure.value_or_default(); }
+bool Scanning() { return Wanted(); }
 
 void Shutdown()
 {

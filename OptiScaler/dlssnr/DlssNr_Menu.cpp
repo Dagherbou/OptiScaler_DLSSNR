@@ -346,12 +346,9 @@ void RenderMenu(Config* config, float menuResScale)
             {
                 config->DlssNrWhitePointSource = (uint32_t) source;
 
-                // Choosing the scan as the source IS asking for the scan. Making somebody then find
-                // and tick a second control that says the same thing is a question already answered
-                // -- and it was worse than redundant, because until it was ticked the source they
-                // had just chosen did nothing and the panel told them to go looking for a checkbox.
-                if (source == 2)
-                    config->DlssNrScanExposure = true;
+                // Nothing else to set. The scan asks the source whether it is wanted, so choosing
+                // it here is the whole of switching it on -- there is no second flag to keep in
+                // step, and so no way for the two to disagree.
             }
 
             HelpMarker("Where the number that divides the frame comes from."
@@ -517,46 +514,24 @@ void RenderMenu(Config* config, float menuResScale)
         // anchor captures. It used to sit under Inspect, a whole section away from the slider it
         // reads, which left "Anchor here" looking like a control for something else entirely.
         {
-            bool scan = config->DlssNrScanExposure.value_or_default();
-
-            // "Guess", not "look for". It matches a buffer by its SHAPE, and shape is a weak filter:
-            // in GTA V -- a game that supplies a real exposure, so the right answer was visible
-            // alongside it -- the best candidate was a 1x1 R32_FLOAT that climbed in a straight line
-            // for seventeen minutes while the true exposure sat still. Their ratio moved 14x. That is
-            // an accumulator, not an eye adaptation. The honest word is the one that tells you to check.
-            // Only offered when the scan is not already the white point's source. When it is, the
-            // dropdown has said so and this would be a second way to answer the same question --
-            // and a way to switch off the thing the chosen source depends on.
-            const bool scanIsSource = config->DlssNrWhitePointSource.value_or_default() == 2;
-
-            ImGui::BeginDisabled(scanIsSource);
-
-            if (ImGui::Checkbox("Guess the exposure multiplier", &scan) && !scanIsSource)
-                config->DlssNrScanExposure = scan;
-
-            ImGui::EndDisabled();
-
-            if (scanIsSource)
-                ImGui::TextDisabled("(on, because the white point above is taken from it)");
-
-            HelpMarker("Games that never hand DLSS an exposure texture still COMPUTE an exposure"
-                           "\n-- eye adaptation writes one into a tiny buffer every frame. It just"
-                           "\nnever reaches the upscaler. This goes looking for it."
-                           "\n\nWhy it matters: where a game's exposure moves and we cannot see it,"
-                           "\nthe white point is one constant divisor against a moving target, and"
-                           "\nthe picture drifts or flickers as the lighting changes. That is the"
-                           "\nSpider-Man report, and it is not a badly chosen value -- it is one"
-                           "\nnumber being asked to be two things."
-                           "\n\nA GUESS, and the word is meant. Candidates are found by their shape,"
-                           "\nand plenty of things are one float wide: timers and accumulators match"
-                           "\njust as well as an exposure does. Until you anchor it this only WATCHES"
-                           "\nand changes nothing. What to look for under Advanced is a candidate whose"
-                           "\nvalue MOVES as you walk between light and shade -- a number that only"
-                           "\nclimbs is a counter, and a constant in a small buffer is not an exposure"
-                           "\nat all."
-                           "\n\nOff by default because reading a buffer the game owns means assuming"
-                           "\nwhat state it is in, and a buffer found by its shape comes with no"
-                           "\npromise about that.");
+            // No checkbox here any more.
+            //
+            // The dropdown above says whether the scan is the white point's source, and that is
+            // the only reason anybody using this would want it running. A second control could
+            // only agree with the dropdown or contradict it, and both were on offer: it began as
+            // a redundant question and became a way to switch off the thing the chosen source
+            // depended on.
+            //
+            // The ini key survives as a developer override for the one case a user has no reason
+            // to want -- running the scan in a game that supplies a REAL exposure, so the log can
+            // compare the two. That is validation, and validation does not need a widget.
+            //
+            // Worth keeping written down, since the panel no longer says it: the scan matches
+            // buffers by SHAPE, and shape is a weak filter. In GTA V -- a game that supplies a
+            // real exposure, so the right answer sat visible beside it -- the best candidate was
+            // a 1x1 R32_FLOAT that climbed in a straight line for seventeen minutes while the
+            // true exposure held still. Their ratio moved 14x. That is an accumulator, not an
+            // eye adaptation.
 
                 bool meter = config->DlssNrScanMeter.value_or_default();
                 if (ImGui::Checkbox("Show the light meter on screen", &meter))
@@ -570,7 +545,8 @@ void RenderMenu(Config* config, float menuResScale)
                                "\nthat is what the setting above is for."
                                "\n\nPurely a readout. It changes nothing.");
 
-            if (scan)
+            // Shown when the scan is actually running, whichever way it got switched on.
+            if (DlssNr::ExposureScan::Scanning())
             {
                 // Anchoring: one press, then it never needs touching again.
                 //
