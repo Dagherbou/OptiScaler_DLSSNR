@@ -373,6 +373,22 @@ class Config
     // FreezeMotion is the control and is not optional to the experiment. Freezing the vectors must
     // visibly break the picture; if it does not, the mechanism itself is broken and any conclusion
     // drawn from FreezeDepth is worthless. Never read one without the other.
+    // Hand the model a depth buffer that is constant everywhere instead of the game's.
+    //
+    // The question this exists for is not "does the model read depth" -- that is answered, it does,
+    // weakly. It is "does the model need REAL depth", which is the one that decides whether any of
+    // this can run in a game that has no upscaler to borrow a depth buffer from. Motion vectors can
+    // be manufactured from a finished frame; depth cannot, except as a rough estimate from flow
+    // parallax, and that estimate is unavailable whenever the camera is not translating.
+    //
+    // So: if a constant plane is good enough, the depth problem disappears entirely and no estimate
+    // is needed. If it is not, the estimate has to be good, and the whole plan gets much harder.
+    //
+    // Implemented as a clone that is created and never written. A D3D12 committed resource is
+    // zero-initialised, and with a reverse-Z game that reads as the far plane -- every pixel at
+    // infinity. That is a legitimate constant rather than garbage, and it costs nothing to produce.
+    CustomOptional<bool> DlssNrConstantDepth { false };
+
     CustomOptional<bool> DlssNrFreezeDepth { false };
     CustomOptional<bool> DlssNrFreezeMotion { false };
 

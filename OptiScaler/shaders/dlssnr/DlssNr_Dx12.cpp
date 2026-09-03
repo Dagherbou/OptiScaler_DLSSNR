@@ -263,6 +263,10 @@ struct NrState
     ID3D12Resource* depthClone = nullptr;
     ID3D12Resource* motionClone = nullptr;
 
+    // The constant-depth probe's surface. Separate from depthClone on purpose: it is defined by
+    // never having been written, and sharing a surface with a mode that writes would destroy that.
+    ID3D12Resource* depthConstant = nullptr;
+
     unsigned int width = 0;
     unsigned int height = 0;
     bool reset = true;
@@ -1049,15 +1053,23 @@ ID3D12Resource* CreateGuideClone(ID3D12Device* device, ID3D12Resource* source)
 // A frozen guide is valid data that is wrong for this frame, which is a far better probe than a
 // constant would be. A constant is degenerate and a model may special-case it; stale depth is
 // ordinary depth that simply disagrees with the picture, and anything reading it has to notice.
+// What the model should be handed in place of the live guide.
+enum class GuideMode
+{
+    Live,     // the game's own buffer, refreshed every frame
+    Frozen,   // the buffer as it was when the toggle went on -- stale but plausible
+    Constant  // a buffer that was never written -- one value everywhere
+};
+
 ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
-                              ID3D12Resource* source, ID3D12Resource** clone, bool freeze)
+                              ID3D12Resource* source, ID3D12Resource** clone, GuideMode mode)
 {
     if (source == nullptr)
         return source;
 
-    // Normally only a typeless guide needs a copy. A frozen one always does, because the whole point
-    // is to read something other than what the game just wrote.
-    if (!freeze && !IsTypeless(source->GetDesc().Format))
+    // Normally only a typeless guide needs a copy. Anything but Live always does, because the whole
+    // point is to read something other than what the game just wrote.
+    if (mode == GuideMode::Live && !IsTypeless(source->GetDesc().Format))
         return source;
 
     bool justCreated = false;
@@ -1075,9 +1087,34 @@ ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* c
                  (int) TypedGuideFormat(source->GetDesc().Format));
     }
 
+    // Constant never copies at all, not even once. A D3D12 committed resource comes back
+    // zero-initialised, so an unwritten clone is a flat buffer -- which for a reverse-Z game is the
+    // far plane everywhere. The one thing it must not do is inherit whatever a previous mode left in
+    // the clone, so it gets a surface of its own rather than sharing the frozen one.
+    if (mode == GuideMode::Constant)
+    {
+        // Created as COPY_DEST and never copied into, so it has to be walked to the state the model
+        // reads in exactly once. Skipping this leaves the model reading a resource in a state it was
+        // never promised -- zeros either way on this hardware, but zeros for the wrong reason.
+        if (justCreated)
+            Barrier(cmdList, *clone, D3D12_RESOURCE_STATE_COPY_DEST,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+        static const void* saidConst = nullptr;
+
+        if (saidConst != (const void*) *clone)
+        {
+            saidConst = (const void*) *clone;
+            LOG_WARN("DLSS-NR diagnostic: the model is being handed a CONSTANT depth, never written -- "
+                     "if the picture holds up, real depth is not required");
+        }
+
+        return *clone;
+    }
+
     // A clone that has never been filled holds nothing, so the first frame of a freeze still copies.
     // After that the copy is skipped and the model keeps reading the frame it was given.
-    if (freeze && !justCreated)
+    if (mode == GuideMode::Frozen && !justCreated)
     {
         // Says out loud that the substitution actually happened. Without this the only evidence a
         // freeze was live was that the toggle had been read, which is a different claim -- and when
@@ -1931,8 +1968,17 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         }
     }
 
-    ID3D12Resource* depthIn = ReadableGuide(device, cmdList, depth, &g_nr.depthClone, freezeDepth);
-    ID3D12Resource* motionIn = ReadableGuide(device, cmdList, motion, &g_nr.motionClone, freezeMotion);
+    // Constant wins over frozen: it is the stronger statement and there is no sense doing both.
+    const GuideMode depthMode = cfg.DlssNrConstantDepth.value_or_default() ? GuideMode::Constant
+                                : freezeDepth                             ? GuideMode::Frozen
+                                                                          : GuideMode::Live;
+
+    ID3D12Resource* depthIn =
+        ReadableGuide(device, cmdList, depth, depthMode == GuideMode::Constant ? &g_nr.depthConstant
+                                                                               : &g_nr.depthClone,
+                      depthMode);
+    ID3D12Resource* motionIn = ReadableGuide(device, cmdList, motion, &g_nr.motionClone,
+                                             freezeMotion ? GuideMode::Frozen : GuideMode::Live);
 
     if (depthIn == nullptr || motionIn == nullptr)
     {
@@ -2203,7 +2249,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // COPY_DEST, because a frozen frame does not copy. Putting it back unconditionally would be a
     // barrier from a state it is not in, so the frozen case is skipped here and picked up by the
     // first live frame after the toggle goes off -- which is a copy, and copies transition it.
-    if (g_nr.depthClone != nullptr && !freezeDepth)
+    if (g_nr.depthClone != nullptr && depthMode == GuideMode::Live)
         Barrier(cmdList, g_nr.depthClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COPY_DEST);
 
@@ -2666,6 +2712,12 @@ void Shutdown()
     {
         g_nr.depthClone->Release();
         g_nr.depthClone = nullptr;
+    }
+
+    if (g_nr.depthConstant != nullptr)
+    {
+        g_nr.depthConstant->Release();
+        g_nr.depthConstant = nullptr;
     }
 
     if (g_nr.motionClone != nullptr)

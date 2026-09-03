@@ -495,6 +495,24 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::SeparatorText("Inspect");
 
         {
+            bool constDepth = config->DlssNrConstantDepth.value_or_default();
+            if (ImGui::Checkbox("Constant depth (the real question)", &constDepth))
+                config->DlssNrConstantDepth = constDepth;
+
+            HelpMarker("Hands the model a depth buffer that is one value everywhere instead of the"
+                           "\ngame's."
+                           "\n\nWhether the model READS depth is already answered -- it does, weakly."
+                           "\nThis asks the question that actually decides things: does it need depth"
+                           "\nthat is TRUE?"
+                           "\n\nMotion vectors can be manufactured from a finished frame. Depth cannot,"
+                           "\nbeyond a rough estimate from flow parallax, and that estimate does not"
+                           "\nexist while the camera is not translating. So if a flat plane holds up"
+                           "\nhere, Neural Rendering can run in games with no upscaler at all and the"
+                           "\ndepth problem disappears. If it does not, that estimate has to be good"
+                           "\nand the whole idea gets much harder."
+                           "\n\nMove around and look for artefacts at silhouettes and edges, which is"
+                           "\nwhere depth would earn its keep. Overrides the freeze below.");
+
             bool freezeDepth = config->DlssNrFreezeDepth.value_or_default();
             if (ImGui::Checkbox("Freeze depth (diagnostic)", &freezeDepth))
                 config->DlssNrFreezeDepth = freezeDepth;
