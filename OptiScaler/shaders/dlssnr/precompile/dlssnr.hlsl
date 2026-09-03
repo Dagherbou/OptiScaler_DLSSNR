@@ -359,9 +359,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // Normalised, so the source may be any size relative to this dispatch.
     float2 uv = (float2(id.xy) + 0.5) / float2(gWidth, gHeight);
 
-    // The meter. One thread per tile of a 64x64 grid over the frame, writing that tile's mean
-    // luminance. The frame is raw linear here -- this runs before the encode, on purpose, because the
-    // number being looked for is what the encode's divisor should be.
+    // The meter. Tile (0,0) is a courier Load of t4 (the game's 1x1 exposure). D3D12 runs this after
+    // encode; the picture white point is DecideWhitePoint / PaperWhite(), not this grid. Other tiles
+    // still write means when the dispatch is larger than 1x1 (native Vulkan courier).
     //
     // A mean per tile, then a percentile across tiles on the CPU. Not the frame's mean, which is what
     // the meter this replaces measured: that reads scene brightness, and a dark scene then asks for a

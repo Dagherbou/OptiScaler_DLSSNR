@@ -248,25 +248,6 @@ struct NrState
     ID3D12Resource* meter = nullptr;
     ID3D12Resource* meterReadback[4] = {};
 
-    // The calibration grid: what scale the game's buffer is on, measured from the untouched copy.
-    // Its own surface and ring rather than sharing the meter's, because the two run at different
-    // sizes -- the meter fetches one texel and this reads the whole frame.
-    ID3D12Resource* calib = nullptr;
-    ID3D12Resource* calibReadback[4] = {};
-    unsigned long long calibFrames = 0;
-
-    // The last few answers, so the menu can say how settled the number is. A suggestion taken during
-    // a fade or a loading screen is worth less than one taken while standing still, and the spread
-    // across recent frames is what tells them apart.
-    static constexpr unsigned int kCalibHistory = 32;
-    float calibHistory[kCalibHistory] = {};
-    unsigned int calibCount = 0;
-    float calibSuggestion = 0.0f;
-    float calibSteadiness = 0.0f;
-    bool calibUsable = false;
-    const char* calibWhy = "measuring...";
-    bool calibPassthrough = false;
-
     // Whether the frame that filled each readback slot actually had an exposure texture bound.
     //
     // The meter writes tile 0 from t4. Mode 3 runs only when this frame's pointer is usable, so a
@@ -278,13 +259,6 @@ struct NrState
     bool meterExposureValid[4] = {};
     unsigned int meterSlot = 0;
     unsigned long long meterFrames = 0;
-
-    // Whether the setting was on last frame, so the off->on edge can be caught.
-    //
-    // Deliberately the SETTING and not `wantExposure`: the texture itself comes and goes between
-    // frames and holding the last good value across those gaps is the whole point of the field below.
-    // Only the user turning the option back on means "anything held is from an unknown time ago".
-    bool exposureSettingWasOn = false;
 
     // The game's exposure, as last read back, and the pre-exposure that goes with it. Held rather
     // than defaulted: the texture comes and goes between frames and a fallback to 1.0 on the gaps
@@ -703,37 +677,6 @@ void Barrier(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* res, D3D12_RESO
 constexpr unsigned int kMeterRowBytes = kDlssNrMeterGrid * sizeof(float);
 constexpr unsigned int kMeterBytes = kMeterRowBytes * kDlssNrMeterGrid;
 
-// Records the copy of this frame's grid into whichever readback buffer is furthest from being read.
-// Same shape as the meter's copy, against the calibration surface and its own ring.
-void CopyCalibrationToReadback(ID3D12GraphicsCommandList* cmdList)
-{
-    const unsigned int slot = (unsigned int) (g_nr.calibFrames % 4);
-
-    if (g_nr.calibReadback[slot] == nullptr || g_nr.calib == nullptr)
-        return;
-
-    D3D12_TEXTURE_COPY_LOCATION srcLoc {};
-    srcLoc.pResource = g_nr.calib;
-    srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    srcLoc.SubresourceIndex = 0;
-
-    D3D12_TEXTURE_COPY_LOCATION dst {};
-    dst.pResource = g_nr.calibReadback[slot];
-    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    dst.PlacedFootprint.Offset = 0;
-    dst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32_FLOAT;
-    dst.PlacedFootprint.Footprint.Width = kDlssNrMeterGrid;
-    dst.PlacedFootprint.Footprint.Height = kDlssNrMeterGrid;
-    dst.PlacedFootprint.Footprint.Depth = 1;
-    dst.PlacedFootprint.Footprint.RowPitch = kMeterRowBytes;
-
-    Barrier(cmdList, g_nr.calib, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    cmdList->CopyTextureRegion(&dst, 0, 0, 0, &srcLoc, nullptr);
-    Barrier(cmdList, g_nr.calib, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-    g_nr.calibFrames++;
-}
-
 void CopyMeterToReadback(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, bool exposureBound)
 {
     const unsigned int slot = (unsigned int) (g_nr.meterFrames % 4);
@@ -772,109 +715,6 @@ void CopyMeterToReadback(ID3D12GraphicsCommandList* cmdList, ID3D12Device* devic
 // off a frame this pass writes is a feedback loop rather than a measurement. What is left is a
 // courier -- the game's exposure is a 1x1 texture in a resource state this pass did not set and must
 // not transition, so the shader reads it as an SRV and it rides home on a readback that exists.
-// Reads the calibration grid written four frames ago and turns it into one number.
-//
-// A high percentile of tile peaks, not the maximum: the maximum is a sun or a specular hit and would
-// normalise the whole picture into the dark. The 90th percentile is high enough to sit at the top of
-// the real range and common enough that no single highlight decides it.
-void ConsumeCalibrationReadback()
-{
-    if (g_nr.calibFrames < 4)
-        return;
-
-    const unsigned int slot = (unsigned int) (g_nr.calibFrames % 4);
-    ID3D12Resource* buffer = g_nr.calibReadback[slot];
-
-    if (buffer == nullptr)
-        return;
-
-    void* mapped = nullptr;
-    D3D12_RANGE range { 0, kMeterBytes };
-
-    if (FAILED(buffer->Map(0, &range, &mapped)) || mapped == nullptr)
-        return;
-
-    const float* src = (const float*) mapped;
-
-    std::vector<float> tiles;
-    tiles.reserve(kDlssNrMeterGrid * kDlssNrMeterGrid);
-
-    for (unsigned int i = 0; i < kDlssNrMeterGrid * kDlssNrMeterGrid; ++i)
-    {
-        if (std::isfinite(src[i]) && src[i] > 1e-6f)
-            tiles.push_back(src[i]);
-    }
-
-    D3D12_RANGE nothingWritten { 0, 0 };
-    buffer->Unmap(0, &nothingWritten);
-
-    if (tiles.size() < 16)
-        return;
-
-    const size_t nth = (size_t) ((float) (tiles.size() - 1) * 0.90f);
-    std::nth_element(tiles.begin(), tiles.begin() + nth, tiles.end());
-
-    // How much of the frame carries light, measured against its own brightest tile rather than an
-    // absolute threshold -- the units here are the game's and there is no absolute scale.
-    //
-    // This is what separates "the buffer is scaled by 240" from "I am standing in a dark cave". A
-    // percentile of tile peaks is a statement about scene content; it only describes the buffer when
-    // enough of the picture is lit for the top of the range to actually appear in it.
-    float brightest = 0.0f;
-
-    for (float v : tiles)
-        brightest = std::max(brightest, v);
-
-    unsigned int lit = 0;
-
-    for (float v : tiles)
-    {
-        if (v > brightest * 0.10f)
-            ++lit;
-    }
-
-    const float litFraction = tiles.empty() ? 0.0f : (float) lit / (float) tiles.size();
-
-    // A torn readback survives isfinite and would clamp to exactly the ceiling, which since the
-    // ceiling became 2000 is a value the slider can hold -- so a garbage frame could be offered as a
-    // real answer. Reject rather than clamp.
-    if (!(tiles[nth] > 0.0f) || tiles[nth] >= 1999.0f)
-        return;
-
-    const float suggestion = std::clamp(tiles[nth], 0.25f, 1990.0f);
-
-    g_nr.calibUsable = !g_nr.calibPassthrough && litFraction > 0.20f;
-    g_nr.calibWhy = g_nr.calibPassthrough
-                        ? "this game hands over a frame it already tone mapped, so there is nothing to normalise"
-                    : litFraction <= 0.20f ? "too little of this scene is lit to say where the top of the range is"
-                                           : "";
-
-    g_nr.calibHistory[g_nr.calibCount % NrState::kCalibHistory] = suggestion;
-    g_nr.calibCount++;
-    g_nr.calibSuggestion = suggestion;
-
-    // Confidence is the spread of recent answers, not their absolute size. A number that has held
-    // still for a second is one worth taking; one that is swinging means the scene is changing under
-    // the measurement, and no single value would serve anyway.
-    const unsigned int have = std::min<unsigned int>(g_nr.calibCount, NrState::kCalibHistory);
-
-    if (have >= 8)
-    {
-        float lo = g_nr.calibHistory[0];
-        float hi = g_nr.calibHistory[0];
-
-        for (unsigned int i = 0; i < have; ++i)
-        {
-            lo = std::min(lo, g_nr.calibHistory[i]);
-            hi = std::max(hi, g_nr.calibHistory[i]);
-        }
-
-        // A spread of 1.0x is perfect agreement and 2x or worse is none.
-        const float spread = hi / lo;
-        g_nr.calibSteadiness = std::clamp(1.0f - (spread - 1.0f), 0.0f, 1.0f);
-    }
-}
-
 void ConsumeMeterReadback()
 {
     if (g_nr.meterFrames < 4)
@@ -894,10 +734,9 @@ void ConsumeMeterReadback()
 
     const float* src = (const float*) mapped;
 
-    // Only believed when the frame that wrote this grid actually had an exposure texture bound. With
-    // nothing bound DispatchPass substitutes the source picture, and tile 0 is then a scene pixel
-    // rather than an exposure -- believing it made the white point follow the top-left corner of the
-    // screen, which in Cyberpunk moved by up to 272x between frames and flashed the whole picture.
+    // Only believed when the frame that wrote this grid actually had an exposure texture bound. A
+    // missing t4 binds the 1x1 dummy (E = 1), never InSource -- believing a scene pixel as exposure
+    // is what made Cyberpunk's top-left corner drive the white point from 0.18 to 74.
     //
     // When it is not believed gameExposure keeps its last good value, or stays 0. Held E is
     // the hole's clock only; a game that never supplied a usable exposure stays on the slider.
@@ -914,21 +753,12 @@ void ConsumeMeterReadback()
 
 // Forget everything the meter knows, so nothing read before this moment can be believed after it.
 //
-// The exposure is written only inside the block that dispatches the meter, and that block does not
-// run while the option is off. Nothing used to clear any of this when it stopped, so the reading
-// simply froze: switching the option back on returned the value from whenever it was switched off,
-// and ResolveWhitePoint took it as current because a held value is exactly what it expects to see.
-// GTA V's exposure spans 0.127 to 0.511 in one session, so re-enabling in different light handed the
-// encode a white point up to 4x wrong -- which trips the soft knee, scales the model's answer away
-// and leaves its hue behind. That is the colour cast, and it looked random because it depends on the
-// light at the moment of the PREVIOUS switch-off, which nothing on screen shows.
+// Mode 3 now runs whenever the texture is usable, including on sources 0 and 2, so the courier stays
+// warm. Do not call this when the user merely switches WhitePointSource to 1 -- that discarded the
+// held E the hole path needs. Resize / rebuild still go through InvalidateMeterReadback.
 //
-// The readback ring made it worse. `meterFrames` also only advances inside that block, so the four
-// slots kept their contents and their valid flags across the gap, and the first frames after
-// re-enabling consumed buffers written before it as though they had just arrived.
-//
-// Zero is not a fallback value here, it is the absence of one: ResolveWhitePoint's `> 1e-6f` guard
-// fails and the manual slider is used, which is what a game supplying no exposure already gets.
+// Zero is not a fallback value here, it is the absence of one: DecideWhitePoint's hole path then
+// uses Scale, which is what a game supplying no exposure already gets.
 void InvalidateExposureMeter()
 {
     g_nr.gameExposure = 0.0f;
@@ -941,74 +771,7 @@ void InvalidateExposureMeter()
     g_nr.meterFrames = 0;
 }
 
-// Turns what the meter saw into the divisor the encode uses, or falls back to the slider.
-//
-// `cut` says the exposure may jump rather than drift, and it is the difference between this working
-// and not. GTA V's character switch pulls the camera up through the sky: a linear HDR buffer's sky is
-// tens of times brighter than the ground, the proxy clips to flat white, and the frame blows out until
-// the camera comes back down. Easing across that at two percent a frame takes three and a half
-// seconds, which is longer than the transition -- so a meter that only eases would lag through the
-// whole thing and fix nothing.
-//
-// So a cut snaps and a drift eases. Walking out of a cave is a drift; a camera cut is not, and
-// pretending otherwise to avoid pumping just moves the failure somewhere more visible.
-float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
-{
-    const float slider = cfg.DlssNrWhitePointScale.value_or_default();
-
-    // A frame the game already tone mapped is display-referred: white is at 1 by definition and there
-    // is nothing to measure. The slider stays available as a manual exposure on that path.
-    if (!isHdrBuffer)
-        return slider;
-
-    // The game's own exposure, where it supplies one.
-    //
-    // Exposure is the step that makes a cave and a field comparable: the renderer works in arbitrary
-    // scene-referred units and multiplies by this before tone mapping, which is precisely why one
-    // fixed paper white cannot serve both. FSR spells the relationship out -- frame / preExposure *
-    // exposure -- so undoing it gives the divisor this pass wants, and paper white becomes a constant
-    // on top rather than a value chasing the scene.
-    //
-    // Unlike anything measured off the frame this cannot be moved by what the pass writes, which is
-    // what killed the statistical meter. It is the game's number, decided upstream.
-    //
-    // Held across the frames where the texture is absent -- GTA V dropped it three times in one
-    // session -- because falling back to a default on those frames is a flicker, not a fallback.
-    // The scan's anchor, where the game supplies no exposure of its own.
-    //
-    // Only ratios are used, so the units of the buffer never have to be known -- which is the whole
-    // reason this is anchored rather than absolute. The anchor is the user's own white point at the
-    // moment they pressed the button; everything after that is the scan moving it.
-    //
-    // Deliberately below the exposure texture in priority and mutually exclusive with it in the
-    // menu. A game that hands over a real exposure has no business being driven by a buffer found by
-    // its shape, and two sources fighting over one number is the class of bug worth making
-    // unreachable rather than merely unlikely.
-    if (cfg.DlssNrWhitePointSource.value_or_default() == 2)
-    {
-        // Multi-point: one or more calibration points the user placed, interpolated in log space by
-        // the current scan value. One point is the original ratio law; more fit the buffer's actual
-        // relationship so the white point holds across the whole range, not only near one anchor.
-        const float w = DlssNr::ExposureScan::AnchoredWhitePoint(DlssNr::ExposureScan::BestValue(),
-                                                                 cfg.DlssNrScanInverted.value_or_default(),
-                                                                 cfg.DlssNrScanTrim.value_or_default());
-
-        if (w > 0.0f)
-            return w;
-    }
-
-    // Source 1 picture and hole use DecideWhitePoint only. Do not compute P/E*trim here.
-
-    // Otherwise the slider, and only the slider.
-    //
-    // Measuring white from the frame was tried and removed. It could not be made to work because the
-    // pass writes the frame it measures: in Enshrouded one session walked the divisor from 0.010 to
-    // 97.910, and toggling NR at a fixed spot read 41.31 off and 0.46 on. Two attempts to damp it --
-    // a relative lit threshold, then a rate limit with a cut snap -- both treated a coupled system as
-    // a noisy one and neither held. A constant cannot do that, which is the whole argument for it,
-    // and is what RenoDX has always done.
-    return slider;
-}
+// D3D12 picture white point for sources 0 and 2 (and source 1) lives in DecideWhitePoint only.
 
 ID3D12Resource* CreateScratch(ID3D12Device* device, DXGI_FORMAT format, unsigned int width, unsigned int height)
 {
@@ -2084,12 +1847,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     const bool usable = ExposureUsable(gameRes);
 
     const uint32_t source = cfg.DlssNrWhitePointSource.value_or_default();
-    if (source == 1 && !g_nr.exposureSettingWasOn)
-    {
-        InvalidateExposureMeter();
-        LOG_INFO("DLSS-NR exposure: option switched on, held reading discarded");
-    }
-    g_nr.exposureSettingWasOn = source == 1;
 
     haveEvaluated.store(true);
     sessionPassthrough.store(!isHdrBuffer);
@@ -2949,28 +2706,6 @@ void Shutdown()
         g_nr.meter = nullptr;
     }
 
-    if (g_nr.calib != nullptr)
-    {
-        g_nr.calib->Release();
-        g_nr.calib = nullptr;
-    }
-
-    for (auto& r : g_nr.calibReadback)
-    {
-        if (r != nullptr)
-        {
-            r->Release();
-            r = nullptr;
-        }
-    }
-
-    g_nr.calibFrames = 0;
-    g_nr.calibCount = 0;
-    g_nr.calibSuggestion = 0.0f;
-    g_nr.calibSteadiness = 0.0f;
-    g_nr.calibUsable = false;
-    g_nr.calibWhy = "measuring...";
-
     for (auto& rb : g_nr.meterReadback)
     {
         if (rb != nullptr)
@@ -2981,10 +2716,9 @@ void Shutdown()
     }
 
     // The slots these flags describe have just been released, so nothing may vouch for what the next
-    // buffers happen to contain. gameExposure is deliberately NOT cleared here: a recreate is a
-    // transition within the same scene, and dropping to the slider for a few frames would be the
-    // flicker the held value exists to prevent. The user switching the option off is the case where
-    // the held value has to go, and that is handled at the edge in Dispatch.
+    // buffers happen to contain. gameExposure is cleared below because Shutdown tears the session
+    // down; a mid-session recreate goes through InvalidateMeterReadback instead. Switching
+    // WhitePointSource to 1 must not wipe a courier Mode 3 has been keeping warm.
     for (bool& valid : g_nr.meterExposureValid)
         valid = false;
 

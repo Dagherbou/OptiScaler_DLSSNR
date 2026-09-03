@@ -30,6 +30,12 @@ int main()
     const WhitePointDecision usable = DecideWhitePoint(1, true, true, false, 8.0f, 1.25f, 0.012f, 1.0f, 1.0f, 0.0f);
     assert(usable.useGameExposure == 1);
     assert(std::fabs(usable.whitePoint - 1.25f) <= 1e-4f);
+    const WhitePointDecision unknown = DecideWhitePoint(3, true, true, true, 8.0f, 1.25f, 0.012f, 1.0f, 1.0f, 12.0f);
+    assert(unknown.useGameExposure == 0);
+    assert(std::fabs(unknown.whitePoint - 8.0f) <= 1e-4f);
+    const WhitePointDecision holePs = DecideWhitePoint(1, true, false, true, 8.0f, 1.25f, 0.012f, 2.0f, 0.5f, 0.0f);
+    assert(holePs.useGameExposure == 0);
+    assert(std::fabs(holePs.whitePoint - 1.25f * GameWhite(0.012f, 2.0f, 0.5f)) <= 1e-4f);
 
     std::string headerPath(__FILE__);
     const auto slash = headerPath.find_last_of("/\\");

@@ -1,6 +1,6 @@
 # Matched residual corrections: empty-model gate, P from colorCopy, strength-0 copy
 
-> **Rebase note (2026-09-03):** [2026-09-03-rebase-onto-dlss-neural-rendering.md](2026-09-03-rebase-onto-dlss-neural-rendering.md)
+> **Rebase note (2026-09-03):** `2026-09-03-rebase-onto-dlss-neural-rendering.md`
 > wins where this file conflicts. Empty-model + t3 \(P\) still apply. The row that says
 > “Vulkan has no working scale” is false on `dlss-neural-rendering`.
 

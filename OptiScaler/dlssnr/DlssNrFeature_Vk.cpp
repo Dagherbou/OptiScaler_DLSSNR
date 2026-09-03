@@ -888,8 +888,8 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     // The meter: the game's 1x1 exposure -> texel (0,0) of the grid -> a buffer the CPU can read
     // -----------------------------------------------------------------------------------------
 
-    // The motion slot carries it, because the meter has no use for motion vectors and the shader is
-    // one shader with a fixed set of bindings. The source slot is left empty and gets the dummy.
+    // Mode 3 binds the game's exposure on binding 8. Motion (binding 4) and the other unused reads
+    // get the dummy. The shader is one program with a fixed set of bindings.
     //
     // Gated on the setting that consumes the answer, which is not merely tidy. This is the only place
     // the pass binds a resource it does not own on a guess about its layout, and the guess is good

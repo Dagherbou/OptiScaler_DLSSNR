@@ -1,8 +1,8 @@
 # Game exposure as paper white (hhkbble rewrite)
 
-> **Rebase note (2026-09-03):** [2026-09-03-rebase-onto-dlss-neural-rendering.md](2026-09-03-rebase-onto-dlss-neural-rendering.md)
+> **Rebase note (2026-09-03):** `2026-09-03-rebase-onto-dlss-neural-rendering.md`
 > wins where this file conflicts. Approach B still applies on D3D12 source 1. The origin
-> WhitePointSource dropdown and scan survive. `ResolveWhitePoint` stays for sources 0 and 2.
+> WhitePointSource dropdown and scan survive. Sources 0 and 2 live in `DecideWhitePoint`.
 
 **Status:** design for implementation. Rewritten 2026-09-03 for `dlssnr-hhkbble`; review locks
 applied. Supersedes the `1c1d39e2` draft of this filename. A plan must be written from **this**

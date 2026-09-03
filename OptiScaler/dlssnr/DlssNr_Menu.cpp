@@ -395,7 +395,7 @@ void RenderMenu(Config* config, float menuResScale)
                     {
                         ImGui::TextColored(live, "Exposure %.3f  ·  pre %.2f  ·  scale %.2f", readout.e, readout.p,
                                            readout.s);
-                        ImGui::TextColored(live, "game white %.1f  ·  trim %.2f×  ·  in use %.1f", readout.gameW,
+                        ImGui::TextColored(live, "game white %.1f  ·  trim %.2f×  ·  courier %.1f", readout.gameW,
                                            readout.slider, readout.slider * readout.gameW);
                     }
                     else

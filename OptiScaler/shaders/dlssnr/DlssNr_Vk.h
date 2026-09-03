@@ -12,8 +12,8 @@
 // Every binding is written every dispatch. The shader declares all eight resources at file scope and
 // branches on gMode, so all of them are statically reachable from the entry point and Vulkan requires
 // a valid descriptor for each one whether a given mode reads it or not. Slots a mode has no use for
-// get a 1x1 dummy rather than a null handle. Binding 8 (gExposure) is always that dummy: native
-// Vulkan does not sample the game's exposure image.
+// get a 1x1 dummy rather than a null handle. Binding 8 (gExposure) is that dummy except on Mode 3,
+// which binds the game's exposure view for the courier. Encode and resolve never set UseGameExposure.
 //
 // Constants are slotted rather than overwritten. A single mapped uniform buffer would be wrong here:
 // encode and resolve run in the same frame with different constants, and the second write would land

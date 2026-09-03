@@ -118,7 +118,8 @@ DlssNr_Vk::~DlssNr_Vk()
 // One pixel, R16G16B16A16_SFLOAT so it is legal for both a sampled read and a storage write, moved
 // once into GENERAL and left there. Its content is never read: it exists because Vulkan rejects a
 // descriptor set with an unwritten binding, and the shader declares all eight resources at file scope
-// whichever mode is running. The fifth read (binding 8) is always this placeholder.
+// whichever mode is running. The fifth read (binding 8) is this placeholder unless the caller passes
+// InExposure (Mode 3 courier).
 bool DlssNr_Vk::CreateDummy(VkCommandBuffer cmdList)
 {
     if (_dummyReady)

@@ -42,7 +42,7 @@ inline WhitePointDecision DecideWhitePoint(uint32_t source,      // WhitePointSo
     WhitePointDecision d { scale, 0 };
     if (!isHdrBuffer)
         return d;
-    if (source == 0)
+    if (source != 1 && source != 2)
         return d;
     if (source == 2)
     {
