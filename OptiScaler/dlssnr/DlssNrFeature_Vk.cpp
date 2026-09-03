@@ -767,12 +767,11 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     // by hand on the manual path and then switches the exposure source on keeps that 64 in their ini;
     // bounding it in the menu would leave the picture wrong for a reason the menu no longer showed.
     // Their value stays in the config untouched, so switching back to manual restores it.
-    const float slider = cfg.DlssNrWhitePointScale.value_or_default();
-    float whitePoint = slider;
+    float whitePoint = cfg.DlssNrWhitePointScale.value_or_default();
 
     if (cfg.DlssNrWhitePointFromExposure.value_or_default() && g_vk.gameExposure > 1e-6f)
     {
-        const float trim = std::clamp(slider, 0.25f, 4.0f);
+        const float trim = std::clamp(cfg.DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
         whitePoint = std::clamp(g_vk.gamePreExposure / g_vk.gameExposure * trim, 0.01f, 4096.0f);
     }
 

@@ -376,6 +376,32 @@ class Config
     CustomOptional<bool> DlssNrFreezeDepth { false };
     CustomOptional<bool> DlssNrFreezeMotion { false };
 
+    // Multiplies the motion vector scale handed to the model. 1 is honest.
+    //
+    // The stronger control for the freeze test above. Freezing a guide substitutes data that is
+    // stale but entirely plausible, and a model that leans on motion only for frame-to-frame
+    // stability answers that with swimming detail rather than a broken picture -- which is easy to
+    // miss in a few seconds of looking around, and is exactly what happened on the first attempt.
+    //
+    // This is not subtle. At 8x the model is told every pixel moved eight times as far as it did, in
+    // any scene, moving or still. If that leaves the picture unchanged the model is not reading the
+    // vectors at all, and no freeze result means anything. It is a float on a parameter we already
+    // send, so unlike swapping the textures around there is no format to get wrong and nothing that
+    // can fail.
+    CustomOptional<float> DlssNrMvScaleAbuse { 1.0f };
+
+    // The trim on an exposure-derived white point, kept apart from the manual divisor on purpose.
+    //
+    // These are two different quantities that happened to share one slider: the manual path wants an
+    // absolute divisor on an open-ended linear buffer, which in Nioh 3 is about 240, and the exposure
+    // path wants a multiplier on a number the game already supplied, where anything far from 1 is
+    // a sign the read is wrong rather than a preference. Sharing one stored value meant touching the
+    // slider in one mode silently destroyed the number found in the other.
+    //
+    // 1.0 is the identity: take the game's exposure exactly as given. That is the "safe value", and
+    // it is safe by construction rather than by being written down somewhere.
+    CustomOptional<float> DlssNrWhitePointTrim { 1.0f };
+
     // Which depth convention the model is told the guide uses.
     //
     //   0  what the game's own DLSS feature was created with, which is what it means for the upscaler

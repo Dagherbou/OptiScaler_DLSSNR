@@ -336,12 +336,11 @@ void RenderMenu(Config* config, float menuResScale)
 
             if (DlssNr::IsRunningVk())
             {
-                // The exposure is fetched by the D3D12 meter's readback, which this path has no
-                // counterpart to. Saying so beats "waiting for a frame" forever over a pass that is
-                // running and is never going to read one.
-                ImGui::TextColored(ImVec4(0.85f, 0.65f, 0.25f, 1.0f),
+                // Vulkan reads it now, through a meter of its own. What it cannot do yet is report
+                // the value back here, so this says whether there is one rather than what it is.
+                ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
                                    DlssNr::ExposureOfferedVk()
-                                       ? "This game offers one, but it is not read on Vulkan yet. Paper white is in use."
+                                       ? "This game supplies an exposure and it is being read."
                                        : "This game supplies no exposure. Paper white below is in use.");
             }
             else if (ex.seenFrames == 0)
@@ -370,7 +369,7 @@ void RenderMenu(Config* config, float menuResScale)
                 // Matches what ResolveWhitePoint actually consumes, trim bound included. A readout
                 // that disagreed with the picture would be worse than no readout.
                 const float trim =
-                    std::clamp(config->DlssNrWhitePointScale.value_or_default(), 0.25f, 4.0f);
+                    std::clamp(config->DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
                 const float wp = ex.preExposure / ex.exposure * trim;
 
                 ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
@@ -401,27 +400,55 @@ void RenderMenu(Config* config, float menuResScale)
         // the exposure texture where a game supplies one, and otherwise the ratio between the
         // scene-referred buffer and the finished frame, which is that exposure by definition.
 
-        float wpScale = config->DlssNrWhitePointScale.value_or_default();
-        // The range follows the meaning, because the control is two different things.
+        // Two controls, not one control with two meanings.
         //
-        // Driving the white point itself it has to reach whatever scale a game's buffer is on -- Nioh
-        // 3 needs about 240. Sitting on top of an exposure the game supplied, it is a trim, and the
-        // useful span is small: at 240 it would be multiplying a correct answer by two hundred, which
-        // is how a working automatic path gets made to look broken.
+        // These are different quantities. The manual path wants an absolute divisor on an open-ended
+        // linear buffer -- Nioh 3 needs about 240 -- and the exposure path wants a multiplier on a
+        // number the game already supplied, where 1 is correct and anything far from it says the read
+        // is wrong rather than that somebody prefers it.
         //
-        // Narrowing the range rather than disabling the control keeps the trim available -- someone
-        // may genuinely want a little more or less than the game's own number -- while making a
-        // ruinous value unreachable. A greyed-out slider would remove a real control, and untoggling
-        // on touch would fight the user rather than help them.
-        const float wpMax = fromExposure ? 4.0f : 2000.0f;
-        const float wpMin = fromExposure ? 0.25f : 0.25f;
+        // They used to share one stored value, narrowed to 0.25..4 when the toggle was on. That kept
+        // a ruinous value unreachable but left two worse problems: moving the slider in one mode
+        // silently destroyed the number found in the other, and there was no way back to "just take
+        // the game's answer" short of knowing that the number for it was 1. Separate values fix both.
+        // Switching modes is now non-destructive in both directions.
+        if (fromExposure)
+        {
+            float trim = config->DlssNrWhitePointTrim.value_or_default();
 
-        if (wpScale > wpMax)
-            wpScale = wpMax;
+            if (ImGui::SliderFloat("Trim (x the game's exposure)", &trim, 0.25f, 4.0f, "%.2fx",
+                                   ImGuiSliderFlags_Logarithmic))
+                config->DlssNrWhitePointTrim = std::clamp(trim, 0.25f, 4.0f);
 
-        if (ImGui::SliderFloat(fromExposure ? "Paper white (x exposure)" : "Paper white", &wpScale, wpMin,
-                               wpMax, "%.2fx", ImGuiSliderFlags_Logarithmic))
-            config->DlssNrWhitePointScale = wpScale;
+            ImGui::SameLine();
+
+            // Deliberately always present rather than greyed at 1. The point of it is that the safe
+            // value is one click away without having to know what the safe value is.
+            if (ImGui::SmallButton("Reset##wptrim"))
+                config->DlssNrWhitePointTrim = 1.0f;
+
+            HelpMarker("A multiplier on the exposure the game supplied. 1.00x takes its number"
+                           "\nexactly, and that is the right answer here."
+                           "\n\nThis is not a fudge factor. If a game needs the trim far from 1 to look"
+                           "\nright, that is evidence the exposure being read is wrong for that game,"
+                           "\nnot that the game wants trimming. Somewhere around 0.8 to 1.25 is honest"
+                           "\ntuning; reaching for 4 means something upstream is broken and the trim is"
+                           "\nhiding it."
+                           "\n\nYour manual paper white is kept separately and comes back untouched if"
+                           "\nyou switch the option above off.");
+        }
+        else
+        {
+            // Logarithmic, because the useful range is not linear. A quarter to 2000: the low end
+            // because a frame the game already tone mapped wants roughly 1, the high end because
+            // there is no principled ceiling -- this is a divisor on an open-ended linear buffer, and
+            // how far up a given game needs to go is a property of that game's exposure rather than
+            // of anything that can be bounded here. One tester was still improving at 100.
+            float wpScale = config->DlssNrWhitePointScale.value_or_default();
+
+            if (ImGui::SliderFloat("Paper white", &wpScale, 0.25f, 2000.0f, "%.2fx",
+                                   ImGuiSliderFlags_Logarithmic))
+                config->DlssNrWhitePointScale = wpScale;
 
         HelpMarker("What the frame is divided by before the model sees it. There is no other white"
                        "\npoint; this is the whole of it."
@@ -443,6 +470,7 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nmodel a picture three times too dark, and left the highlight path nothing to"
                        "\ngive back."
                        "\n\nAt strength zero the frame is still bit-identical whatever this says.");
+        }
 
         float maxRatio = config->DlssNrMaxRatio.value_or_default();
         if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
@@ -480,16 +508,35 @@ void RenderMenu(Config* config, float menuResScale)
                            "\ndepth, and Neural Rendering could run in games that have no upscaler to"
                            "\nborrow a depth buffer from.");
 
+            float mvAbuse = config->DlssNrMvScaleAbuse.value_or_default();
+            if (ImGui::SliderFloat("Exaggerate motion vectors (control)", &mvAbuse, 0.0f, 32.0f, "%.1fx"))
+                config->DlssNrMvScaleAbuse = std::clamp(mvAbuse, 0.0f, 32.0f);
+
+            ImGui::SameLine();
+
+            if (ImGui::SmallButton("Reset##mvabuse"))
+                config->DlssNrMvScaleAbuse = 1.0f;
+
+            HelpMarker("The strong control for the depth test above. Use this one, not the freeze"
+                           "\nbelow, to decide whether the mechanism works."
+                           "\n\nIt multiplies the motion vector scale the model is told, so at 8x the"
+                           "\nmodel believes every pixel moved eight times as far as it did. That is"
+                           "\nwrong in any scene, moving or still, and it has to show."
+                           "\n\nIf the picture is unchanged at 8x or 32x, the model is not reading the"
+                           "\nvectors at all, and no result from the depth test above means anything."
+                           "\nSet it back to 1 before judging anything else.");
+
             bool freezeMotion = config->DlssNrFreezeMotion.value_or_default();
-            if (ImGui::Checkbox("Freeze motion vectors (control)", &freezeMotion))
+            if (ImGui::Checkbox("Freeze motion vectors (weak control)", &freezeMotion))
                 config->DlssNrFreezeMotion = freezeMotion;
 
-            HelpMarker("The control for the test above, and not optional to it."
-                           "\n\nFreezing the vectors MUST visibly break the picture while the camera"
-                           "\nmoves. If it does not, the freezing mechanism itself is broken and"
-                           "\n\"freezing depth changed nothing\" means nothing."
-                           "\n\nCheck this one first. Confirm it breaks, switch it off, then test"
-                           "\ndepth.");
+            HelpMarker("Hands the model the vectors from the frame this was switched on."
+                           "\n\nWeaker than the slider above, and that is worth knowing: stale vectors"
+                           "\nare still plausible vectors, and a model that uses motion mainly to keep"
+                           "\nits detail steady between frames answers them with detail that swims"
+                           "\nrather than with a broken picture. Easy to miss in a few seconds."
+                           "\n\nSo do not conclude anything from this one being subtle. Use the"
+                           "\nexaggeration slider above as the control instead.");
         }
 
 

@@ -924,8 +924,11 @@ float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
     // session -- because falling back to a default on those frames is a flicker, not a fallback.
     if (cfg.DlssNrWhitePointFromExposure.value_or_default() && g_nr.gameExposure > 1e-6f)
     {
-        // The slider is a trim here, not the answer, so it is bounded here rather than only in the
-        // menu that draws it.
+        // Its own setting, not the manual divisor. See Config: they are different quantities with
+        // different units and different sensible ranges, and sharing one value meant adjusting the
+        // trim destroyed the divisor somebody had found by hand.
+        //
+        // Still bounded at the point of use rather than only in the menu that draws it.
         //
         // Bounding it at the slider would have been cosmetic: someone who found 64 by hand on the
         // manual path and then switched the exposure source on keeps that 64 in their ini, and the
@@ -934,7 +937,7 @@ float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
         //
         // Their value is left in the config untouched, so switching back to manual restores the
         // number they arrived at. It is only what this path consumes that is limited.
-        const float trim = std::clamp(slider, 0.25f, 4.0f);
+        const float trim = std::clamp(cfg.DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
 
         return std::clamp(g_nr.gamePreExposure / g_nr.gameExposure * trim, 0.01f, 4096.0f);
     }
@@ -1925,7 +1928,23 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     }
 
     // The vectors were scaled to full-frame pixels; the image the model reprojects is the working size.
-    const float mvToWork = width != 0 ? (float) workWidth / (float) width : 1.0f;
+    // The diagnostic rides on the scale rather than on the texture, so there is no format to get
+    // wrong. 1 is honest; see Config.
+    const float mvAbuse = std::clamp(cfg.DlssNrMvScaleAbuse.value_or_default(), 0.0f, 32.0f);
+
+    {
+        static float saidAbuse = 1.0f;
+
+        if (saidAbuse != mvAbuse)
+        {
+            saidAbuse = mvAbuse;
+            LOG_WARN("DLSS-NR diagnostic: motion vector scale is being multiplied by {} -- at anything "
+                     "but 1 the picture MUST change, or the model is not reading the vectors",
+                     mvAbuse);
+        }
+    }
+
+    const float mvToWork = (width != 0 ? (float) workWidth / (float) width : 1.0f) * mvAbuse;
 
     SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
 
