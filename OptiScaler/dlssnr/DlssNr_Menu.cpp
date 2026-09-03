@@ -247,11 +247,12 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nlet a warm subject come back green.");
 
         // Experimental. 0 off (soft knee), 1 Neutwo + our composition, 2 Neutwo + pure-inverse replace,
-        // 3 hybrid (identity midtones + unclipped highlights) + our composition. Always shown.
+        // 3 hybrid+composed, 4 hybrid+replace (identity midtones + unclipped highlights). Always shown.
         static const char* reversibleNames[] = { "Off (soft knee)", "Neutwo proxy + composed",
-                                                 "Neutwo proxy + replace", "Hybrid proxy + composed" };
+                                                 "Neutwo proxy + replace", "Hybrid proxy + composed",
+                                                 "Hybrid proxy + replace" };
         int reversible = (int) config->DlssNrReversibleMode.value_or_default();
-        if (reversible < 0 || reversible > 3)
+        if (reversible < 0 || reversible > 4)
             reversible = 0;
         if (ImGui::Combo("Reversible proxy (experimental)", &reversible, reversibleNames,
                          IM_ARRAYSIZE(reversibleNames)))
@@ -271,6 +272,10 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nReplace: the raw model straight back through the exact inverse, none of the"
                        "\ncomposition -- no guard, no palette, no strengths. Gorgeous where there are no"
                        "\nbright lights, but they FLASH in motion. A reference, not a daily setting."
+                       "\n\nHybrid replace: the raw model like Replace, but on the hybrid curve -- the"
+                       "\ndecode is identity in the midtones, so the flashing is confined to genuine"
+                       "\nbright highlights instead of everywhere. Most of Replace's detail, far more"
+                       "\nstable. If you love the Replace look but the flicker bothers you, use this."
                        "\n\nOff is byte-identical to before.");
 
         ImGui::SeparatorText("Model");

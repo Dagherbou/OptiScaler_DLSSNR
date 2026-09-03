@@ -25,7 +25,7 @@ cbuffer Params : register(b0)
     uint  gCompareSwap;  // put the edited frame on the other side
     uint  gTransfer;     // 0 classic, 1 matched residual -- how a below-size model comes back
     float gDebugScale;   // what the debug views are scaled by, held still while the meter moves
-    uint  gReversibleMode; // 0 knee, 1 Neutwo+composed, 2 Neutwo+replace, 3 hybrid+composed
+    uint  gReversibleMode; // 0 knee, 1 Neutwo+composed, 2 Neutwo+replace, 3 hybrid+composed, 4 hybrid+replace
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -384,6 +384,33 @@ float3 HybridEncode(float3 v)
     return v * (HybridCurve(m) / m);
 }
 
+// The exact inverse of the hybrid curve, for the hybrid REPLACE decode (mode 4). Because it is IDENTITY
+// below the knee, the steep expansion is confined to genuine highlights: midtone model wobble is not
+// amplified, so hybrid-replace flashes far less than Neutwo-replace while keeping the raw model detail.
+float HybridCurveInv(float y)
+{
+    const float k = 0.75;
+
+    if (y <= k)
+        return y;
+
+    float u = (y - k) / (1.0 - k);                  // Neutwo(e), in [0,1)
+    u = min(u, 0.999999);                           // the inverse diverges at 1
+    const float e = u * rsqrt(max(1.0 - u * u, 1e-8)); // Neutwo^-1 of the excess
+    return k + (1.0 - k) * e;
+}
+
+float3 HybridDecode(float3 y)
+{
+    y = max(y, 0.0);
+    float m = max(y.r, max(y.g, y.b));
+
+    if (m <= 1e-6)
+        return y;
+
+    return y * (HybridCurveInv(m) / m);
+}
+
 // Scale a residual so the result cannot leave the unit cube, without changing its direction.
 //
 // The model's edit is carried up from a smaller raster and laid on the frame's own proxy, so nothing
@@ -623,8 +650,8 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         float3 display;
         if (gReversibleMode == 0)
             display = SoftKnee(normalized);        // soft knee
-        else if (gReversibleMode == 3)
-            display = HybridEncode(normalized);    // hybrid: identity midtones + unclipped highlights
+        else if (gReversibleMode >= 3)
+            display = HybridEncode(normalized);    // 3 hybrid composed, 4 hybrid replace -- same curve
         else
             display = NeutwoEncode(normalized);    // 1 composed, 2 replace -- both the full Neutwo proxy
 
@@ -789,7 +816,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         float3 fullProxy = gPassthrough != 0
                                ? saturate(original)
                                : (gReversibleMode == 0   ? saturate(SoftKnee(original))
-                                  : gReversibleMode == 3 ? HybridEncode(original)
+                                  : gReversibleMode >= 3 ? HybridEncode(original)
                                                          : NeutwoEncode(original));
         proxy = fullProxy;
         proxyLuma = dot(proxy, kLuma);
@@ -908,6 +935,8 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // passthrough frame the model already worked in the frame's own space, so it is taken directly.
     if (gReversibleMode == 2)
         result = gPassthrough != 0 ? modelDirect : NeutwoDecode(modelDirect);
+    else if (gReversibleMode == 4)
+        result = gPassthrough != 0 ? modelDirect : HybridDecode(modelDirect);
 
     // Back out of the normalised space the composition worked in.
     result *= normScale;
