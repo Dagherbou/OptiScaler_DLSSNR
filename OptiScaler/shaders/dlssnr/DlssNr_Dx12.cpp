@@ -1078,7 +1078,23 @@ ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* c
     // A clone that has never been filled holds nothing, so the first frame of a freeze still copies.
     // After that the copy is skipped and the model keeps reading the frame it was given.
     if (freeze && !justCreated)
+    {
+        // Says out loud that the substitution actually happened. Without this the only evidence a
+        // freeze was live was that the toggle had been read, which is a different claim -- and when
+        // the first test came back null there was no way to tell a model that ignores the guide from
+        // a switch that never moved anything. LOG_DEBUG would not do: debug logging is off in the
+        // logs that come back, so the line that mattered was never in any of them.
+        static const void* saidFor = nullptr;
+
+        if (saidFor != (const void*) *clone)
+        {
+            saidFor = (const void*) *clone;
+            LOG_WARN("DLSS-NR diagnostic: the model is now being handed a frozen copy, not the live "
+                     "resource -- the substitution is live");
+        }
+
         return *clone;
+    }
 
     Barrier(cmdList, source, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_SOURCE);
