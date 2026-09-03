@@ -343,7 +343,16 @@ void RenderMenu(Config* config, float menuResScale)
                 source = 0;
 
             if (ImGui::Combo("White point from", &source, sourceNames, IM_ARRAYSIZE(sourceNames)))
+            {
                 config->DlssNrWhitePointSource = (uint32_t) source;
+
+                // Choosing the scan as the source IS asking for the scan. Making somebody then find
+                // and tick a second control that says the same thing is a question already answered
+                // -- and it was worse than redundant, because until it was ticked the source they
+                // had just chosen did nothing and the panel told them to go looking for a checkbox.
+                if (source == 2)
+                    config->DlssNrScanExposure = true;
+            }
 
             HelpMarker("Where the number that divides the frame comes from."
                            "\n\nPaper white only -- the slider below and nothing else. Right for a"
@@ -385,10 +394,7 @@ void RenderMenu(Config* config, float menuResScale)
             }
             else if (source == 2)
             {
-                if (!config->DlssNrScanExposure.value_or_default())
-                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
-                                       "Switch on \"Look for the game's own exposure\" under Inspect.");
-                else if (anchorNow <= 0.0f)
+                if (anchorNow <= 0.0f)
                     ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
                                        "Nothing found yet -- walk between light and shade.");
                 else if (!haveAnchor)
@@ -518,8 +524,20 @@ void RenderMenu(Config* config, float menuResScale)
             // alongside it -- the best candidate was a 1x1 R32_FLOAT that climbed in a straight line
             // for seventeen minutes while the true exposure sat still. Their ratio moved 14x. That is
             // an accumulator, not an eye adaptation. The honest word is the one that tells you to check.
-            if (ImGui::Checkbox("Guess the exposure multiplier", &scan))
+            // Only offered when the scan is not already the white point's source. When it is, the
+            // dropdown has said so and this would be a second way to answer the same question --
+            // and a way to switch off the thing the chosen source depends on.
+            const bool scanIsSource = config->DlssNrWhitePointSource.value_or_default() == 2;
+
+            ImGui::BeginDisabled(scanIsSource);
+
+            if (ImGui::Checkbox("Guess the exposure multiplier", &scan) && !scanIsSource)
                 config->DlssNrScanExposure = scan;
+
+            ImGui::EndDisabled();
+
+            if (scanIsSource)
+                ImGui::TextDisabled("(on, because the white point above is taken from it)");
 
             HelpMarker("Games that never hand DLSS an exposure texture still COMPUTE an exposure"
                            "\n-- eye adaptation writes one into a tiny buffer every frame. It just"
