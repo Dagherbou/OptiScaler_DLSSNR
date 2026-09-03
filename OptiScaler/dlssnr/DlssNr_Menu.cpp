@@ -246,6 +246,23 @@ void RenderMenu(Config* config, float menuResScale)
                        "\npictures rather than adding a colour difference to one, which is what used to"
                        "\nlet a warm subject come back green.");
 
+        // Experimental (Pass 1). Off = today's soft-knee proxy, on = the unclipped RenoDX proxy.
+        bool reversible = config->DlssNrReversibleProxy.value_or_default();
+        if (ImGui::Checkbox("Reversible proxy (experimental)", &reversible))
+            config->DlssNrReversibleProxy = reversible;
+
+        HelpMarker("What the model is shown, and only that -- the composition above is unchanged."
+                       "\n\nThe default soft knee rolls highlights off so hard that a scene twice as"
+                       "\nbright as white and one four times as bright arrive about a thousandth apart,"
+                       "\nand the model cannot resolve anything between them -- highlights come back"
+                       "\nwith light but no detail. This shows the model an unclipped curve instead"
+                       "\n(RenoDX's), where those two land far apart, so the detail is there to enhance."
+                       "\nIts colour still returns through everything above, so Detail and Colour"
+                       "\nstrength, the highlight guard and the game's palette all still apply."
+                       "\n\nA toggle on purpose: flip it in game to A/B the same frame. It shifts the"
+                       "\neffective paper white (white lands dimmer for the model), so re-check paper"
+                       "\nwhite after turning it on. Off is byte-identical to before.");
+
         ImGui::SeparatorText("Model");
 
         ImGui::TextUnformatted("Read when the model is built, so a change rebuilds it after a moment.");

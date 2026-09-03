@@ -276,6 +276,11 @@ class Config
     CustomOptional<float> DlssNrTransferStrength { 1.0f };
     CustomOptional<float> DlssNrColourStrength { 1.0f };
 
+    // The RenoDX reversible proxy (Pass 1). Off by default = today's soft-knee encode, byte-identical;
+    // on = the unclipped Neutwo proxy. A toggle so it is an in-game A/B and a way back. See
+    // dlssnr/design/multi-point-anchoring.md's sibling note.
+    CustomOptional<bool> DlssNrReversibleProxy { false };
+
 
     // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
     // light source, whatever the model returns.

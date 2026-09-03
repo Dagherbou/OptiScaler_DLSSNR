@@ -25,6 +25,7 @@ cbuffer Params : register(b0)
     uint  gCompareSwap;  // put the edited frame on the other side
     uint  gTransfer;     // 0 classic, 1 matched residual -- how a below-size model comes back
     float gDebugScale;   // what the debug views are scaled by, held still while the meter moves
+    uint  gReversibleProxy; // 0 the soft-knee proxy, 1 the unclipped reversible (Neutwo) proxy
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -303,6 +304,37 @@ float3 SoftKnee(float3 display)
     return display;
 }
 
+// The reversible proxy, from RenoDX's Sep-2 DLSS 5 addon (clshortfuse) -- an unclipped, hue-preserving
+// encode meant to be reproduced exactly, so the model is shown the highlight gradation the soft knee
+// compresses into a razor-thin band near white. Neutwo maps [0, inf) -> [0, 1) with no clip point,
+// applied as ONE scalar on the peak channel so the three channels keep their ratios and hue cannot
+// bend. The knee reaches its asymptote within a stop of white -- scene 2 and scene 4 arrive ~0.001
+// apart, nothing the model can resolve between; Neutwo puts them ~0.076 apart.
+//
+// This changes only WHAT the proxy is. The resolve already works in a hybrid space -- proxy and model
+// in display [0,1], original in linear -- and its ratio bridges the two, so nothing downstream has to
+// change: the proxy is decoded by the same SrgbToLinear, compared the same way, and the ratio carries
+// the model's answer back to the original's linear luminance exactly as before. Only the matched-
+// residual proxy rebuild, which reproduces the encode, switches curve with it.
+//
+// Gamut nuance (RenoDX also compresses toward the D65 neutral axis first) is deferred: out-of-BT.709
+// negative channels are clamped to zero here, enough for the highlight question this measures. See
+// Licenses/RenoDX_LICENSE.txt.
+float Neutwo(float x) { return x * rsqrt(x * x + 1.0); } // [0, inf) -> [0, 1), no clip point
+
+float3 NeutwoEncode(float3 v)
+{
+    v = max(v, 0.0);
+    float m = max(v.r, max(v.g, v.b));
+
+    if (m <= 1e-6)
+        return v;
+
+    // One scalar taken from the peak channel keeps the hue; the peak lands at Neutwo(m) < 1, so no
+    // channel clips and LinearToSrgb's saturate never fires -- the proxy is fully invertible.
+    return v * (Neutwo(m) / m);
+}
+
 // Scale a residual so the result cannot leave the unit cube, without changing its direction.
 //
 // The model's edit is carried up from a smaller raster and laid on the frame's own proxy, so nothing
@@ -534,9 +566,19 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // clipped, so the model is never shown a field of flat white whose blown pixels flip between
         // frames -- unstable input is unstable output, and this is where a bright scene would produce
         // it. The resolve reproduces this exactly, so the two agree on what the frame's own proxy is.
-        float3 display = SoftKnee(frame / max(gWhitePoint, 1e-4));
+        // The classic soft knee, or -- when the reversible proxy is on -- the unclipped Neutwo encode
+        // that shows the model highlight gradation the knee throws away. Reached only when the frame
+        // is not passthrough (handled and returned above), so NeutwoEncode never sees a tone-mapped
+        // frame. Both are undone by the resolve: the knee approximately, Neutwo exactly.
+        float3 normalized = frame / max(gWhitePoint, 1e-4);
+        float3 display = gReversibleProxy != 0 ? NeutwoEncode(normalized) : SoftKnee(normalized);
 
-        gTarget[id.xy] = float4(LinearToSrgb(display), source.a);
+        // The reversible proxy forces opaque alpha -- feature 18 expects an opaque colour input, and
+        // the frame's own alpha is not part of what the model reads. The knee path keeps the frame's
+        // alpha, so the default stays byte-identical.
+        float alpha = gReversibleProxy != 0 ? 1.0 : source.a;
+
+        gTarget[id.xy] = float4(LinearToSrgb(display), alpha);
         return;
     }
 
@@ -679,7 +721,15 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // the answer, which is darker than the frame everywhere the knee fired. That is the darker,
         // redder 50% picture: not the working scale, and not the residual idea, just a proxy that was
         // never clamped the way the one it stands in for is.
-        float3 fullProxy = saturate(SoftKnee(original));
+        // Rebuilt with the same curve the encode used, so the two agree on the frame's own proxy.
+        // Passthrough must reproduce the encode's passthrough branch, which writes the frame raw --
+        // SoftKnee returns it unchanged there, so both non-passthrough branches are gated behind the
+        // same passthrough check the encode has. Without this, a reversible + matched-residual +
+        // already-tone-mapped frame would Neutwo-compress a frame the encode left raw. Neutwo already
+        // lands in [0,1), so it needs no saturate.
+        float3 fullProxy = gPassthrough != 0
+                               ? saturate(original)
+                               : (gReversibleProxy != 0 ? NeutwoEncode(original) : saturate(SoftKnee(original)));
         proxy = fullProxy;
         proxyLuma = dot(proxy, kLuma);
 

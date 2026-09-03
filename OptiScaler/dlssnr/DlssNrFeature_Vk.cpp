@@ -828,6 +828,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     encode.Height = height;
     encode.WhitePoint = whitePoint;
     encode.Passthrough = linearHdr ? 0u : 1u;
+    encode.ReversibleProxy = cfg.DlssNrReversibleProxy.value_or_default() ? 1u : 0u;
     encode.TransferStrength = cfg.DlssNrTransferStrength.value_or_default();
     encode.ColourStrength = cfg.DlssNrColourStrength.value_or_default();
     encode.MaxRatio = cfg.DlssNrMaxRatio.value_or_default();
