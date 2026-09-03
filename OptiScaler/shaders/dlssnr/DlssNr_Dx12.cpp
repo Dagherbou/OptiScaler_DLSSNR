@@ -1486,6 +1486,19 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     ID3D12Resource* target = output;
 
+    // The state the upscaler left the output in. Every upscaler in this tree ends Evaluate by moving
+    // the output to OutputResourceBarrier when the user set it (FFXFeature_Dx12.cpp:606 and the FSR2 /
+    // XeSS equivalents), and leaves it in UNORDERED_ACCESS -- what its own compute wrote -- when they
+    // did not. This pass then reads and writes the output as a UAV, so it normalises to that here and
+    // restores the arrival state before every exit. When the config is unset the two states are equal
+    // and Barrier() skips the no-op, so the default path is byte-identical.
+    const D3D12_RESOURCE_STATES outputArrival =
+        Config::Instance()->OutputResourceBarrier.has_value()
+            ? (D3D12_RESOURCE_STATES) Config::Instance()->OutputResourceBarrier.value()
+            : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+
+    Barrier(cmdList, target, outputArrival, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
     ID3D12Device* device = nullptr;
 
     if (FAILED(target->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
@@ -1963,6 +1976,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         g_nr.failed = true;
         g_nr.reason = "the game's depth or motion vectors could not be made readable";
         LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
+        Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, outputArrival);
         device->Release();
         return;
     }
@@ -1996,6 +2010,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                       proxyResult, NgxResultName(proxyResult));
         }
 
+        Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, outputArrival);
         device->Release();
         return;
     }
@@ -2230,6 +2245,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // Leave the staging copy as the next frame expects to find it.
     Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    // Hand the output back in the state the upscaler and the game expect.
+    Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, outputArrival);
 
     device->Release();
 }
