@@ -529,18 +529,24 @@ void RenderMenu(Config* config, float menuResScale)
                            "\nrelationship and the white point holds between them. Click a row below"
                            "\nto come back and adjust that point; click it again to let go.");
 
-            // A global multiplier on the interpolated result, kept for parity with the other
-            // sources. The points themselves are the real control here, so this stays near 1.
-            float trim = config->DlssNrScanTrim.value_or_default();
+            // The trim multiplies the INTERPOLATED result, so it only means something once at least
+            // one point is anchored. Shown before then it is a dead control sitting next to Paper
+            // white -- exactly the "a trim next to a control that is not paper white" confusion the
+            // comment above says was removed. So it appears only with a point in the table. (No
+            // control without the thing it acts on.)
+            if (!anchors.empty())
+            {
+                float trim = config->DlssNrScanTrim.value_or_default();
 
-            if (ImGui::SliderFloat("Trim (x the scan)", &trim, 0.25f, 4.0f, "%.2fx",
-                                   ImGuiSliderFlags_Logarithmic))
-                config->DlssNrScanTrim = std::clamp(trim, 0.25f, 4.0f);
+                if (ImGui::SliderFloat("Trim (x the scan)", &trim, 0.25f, 4.0f, "%.2fx",
+                                       ImGuiSliderFlags_Logarithmic))
+                    config->DlssNrScanTrim = std::clamp(trim, 0.25f, 4.0f);
 
-            ImGui::SameLine();
+                ImGui::SameLine();
 
-            if (ImGui::SmallButton("Reset##scantrim"))
-                config->DlssNrScanTrim = 1.0f;
+                if (ImGui::SmallButton("Reset##scantrim"))
+                    config->DlssNrScanTrim = 1.0f;
+            }
         }
         else if (wpSource == 1)
         {
