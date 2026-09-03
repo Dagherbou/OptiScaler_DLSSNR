@@ -32,8 +32,8 @@ DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InP
     const VkDeviceSize alignment = std::max<VkDeviceSize>(props.limits.minUniformBufferOffsetAlignment, 1);
     _slotStride = ((sizeof(DlssNrConstants) + alignment - 1) / alignment) * alignment;
 
-    if (!CreateBufferResource(_device, _physicalDevice, &_constantBuffer, &_constantBufferMemory,
-                              _slotStride * kSlots, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+    if (!CreateBufferResource(_device, _physicalDevice, &_constantBuffer, &_constantBufferMemory, _slotStride * kSlots,
+                              VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
     {
         LOG_ERROR("DLSS-NR Vulkan pass: could not allocate the constant ring");
@@ -52,21 +52,22 @@ DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InP
     // samplers for the reads: the shader declares its sampler separately, and a combined descriptor
     // satisfies a separately declared sampled image with the sampler half simply unused.
     std::vector<VkDescriptorSetLayoutBinding> bindings = {
-        CreateBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER),          // Params
-        CreateBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),  // gSource
-        CreateBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),  // gModel
-        CreateBinding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),  // gOriginal
-        CreateBinding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),  // gMotion
-        CreateBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),           // gTarget
-        CreateBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),           // gKeep
-        CreateBinding(7, VK_DESCRIPTOR_TYPE_SAMPLER),                 // gLinear
+        CreateBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER),         // Params
+        CreateBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER), // gSource
+        CreateBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER), // gModel
+        CreateBinding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER), // gOriginal
+        CreateBinding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER), // gMotion
+        CreateBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),          // gTarget
+        CreateBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),          // gKeep
+        CreateBinding(7, VK_DESCRIPTOR_TYPE_SAMPLER),                // gLinear
+        CreateBinding(8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER), // gExposure
     };
 
     CreateLayouts(bindings);
 
     std::vector<VkDescriptorPoolSize> poolSizes = {
         { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kSlots },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * kSlots },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5 * kSlots },
         { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * kSlots },
         { VK_DESCRIPTOR_TYPE_SAMPLER, kSlots },
     };
@@ -116,8 +117,9 @@ DlssNr_Vk::~DlssNr_Vk()
 
 // One pixel, R16G16B16A16_SFLOAT so it is legal for both a sampled read and a storage write, moved
 // once into GENERAL and left there. Its content is never read: it exists because Vulkan rejects a
-// descriptor set with an unwritten binding, and the shader declares all seven resources at file scope
-// whichever mode is running.
+// descriptor set with an unwritten binding, and the shader declares all eight resources at file scope
+// whichever mode is running. The fifth read (binding 8) is this placeholder unless the caller passes
+// InExposure (Mode 3 courier).
 bool DlssNr_Vk::CreateDummy(VkCommandBuffer cmdList)
 {
     if (_dummyReady)
@@ -185,7 +187,8 @@ bool DlssNr_Vk::CreateDummy(VkCommandBuffer cmdList)
 
 void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffset, VkImageView source,
                                  VkImageView model, VkImageView original, VkImageView motion, VkImageView target,
-                                 VkImageView keep, VkImageLayout sourceLayout, VkImageLayout motionLayout)
+                                 VkImageView keep, VkImageView exposure, VkImageLayout sourceLayout,
+                                 VkImageLayout motionLayout, VkImageLayout exposureLayout)
 {
     VkDescriptorBufferInfo bufferInfo { _constantBuffer, constantOffset, sizeof(DlssNrConstants) };
 
@@ -198,10 +201,7 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
     };
 
     const auto writeInfo = [&](VkImageView v)
-    {
-        return VkDescriptorImageInfo { VK_NULL_HANDLE, v != VK_NULL_HANDLE ? v : _dummyView,
-                                       VK_IMAGE_LAYOUT_GENERAL };
-    };
+    { return VkDescriptorImageInfo { VK_NULL_HANDLE, v != VK_NULL_HANDLE ? v : _dummyView, VK_IMAGE_LAYOUT_GENERAL }; };
 
     VkDescriptorImageInfo sourceInfo = readInfo(source, sourceLayout);
     VkDescriptorImageInfo modelInfo = readInfo(model, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -210,6 +210,7 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
     VkDescriptorImageInfo targetInfo = writeInfo(target);
     VkDescriptorImageInfo keepInfo = writeInfo(keep);
     VkDescriptorImageInfo samplerInfo { _textureSampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED };
+    VkDescriptorImageInfo exposureInfo = readInfo(exposure, exposureLayout);
 
     const VkWriteDescriptorSet writes[] = {
         { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr,
@@ -228,6 +229,8 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
           nullptr, nullptr },
         { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 7, 0, 1, VK_DESCRIPTOR_TYPE_SAMPLER, &samplerInfo,
           nullptr, nullptr },
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 8, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+          &exposureInfo, nullptr, nullptr },
     };
 
     vkUpdateDescriptorSets(_device, (uint32_t) (sizeof(writes) / sizeof(writes[0])), writes, 0, nullptr);
@@ -235,8 +238,8 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
 
 bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InConstants, uint32_t InThreadsX,
                          uint32_t InThreadsY, VkImageView InSource, VkImageView InModel, VkImageView InOriginal,
-                         VkImageView InMotion, VkImageView InTarget, VkImageView InKeep,
-                         VkImageLayout InSourceLayout, VkImageLayout InMotionLayout)
+                         VkImageView InMotion, VkImageView InTarget, VkImageView InKeep, VkImageLayout InSourceLayout,
+                         VkImageLayout InMotionLayout, VkImageView InExposure, VkImageLayout InExposureLayout)
 {
     if (!CanRender() || InCmdList == VK_NULL_HANDLE)
         return false;
@@ -257,7 +260,7 @@ bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InCon
     std::memcpy((char*) _mappedConstantBuffer + offset, &InConstants, sizeof(DlssNrConstants));
 
     WriteDescriptors(_descriptorSets[slot], offset, InSource, InModel, InOriginal, InMotion, InTarget, InKeep,
-                     InSourceLayout, InMotionLayout);
+                     InExposure, InSourceLayout, InMotionLayout, InExposureLayout);
 
     vkCmdBindPipeline(InCmdList, VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline);
     vkCmdBindDescriptorSets(InCmdList, VK_PIPELINE_BIND_POINT_COMPUTE, _pipelineLayout, 0, 1, &_descriptorSets[slot], 0,

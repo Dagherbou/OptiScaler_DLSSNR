@@ -1,6 +1,7 @@
 #pragma once
 
 #include <d3d12.h>
+#include <optional>
 
 #include <shaders/dlssnr/DlssNr_Common.h>
 #include <nvsdk_ngx.h>
@@ -33,20 +34,14 @@ namespace DlssNr
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
                           ID3D12CommandQueue* timingQueue = nullptr);
 
-
-
 // Frame generation titles tag their UI layer through Streamline; a copy of it makes the HUD mask
 // exact at the finished frame. Called at tag time.
-
-
-
 
 // The settings panel, drawn inside OptiScaler's menu.
 void RenderMenu(::Config* config, float menuResScale);
 
 // Clears the session failure latch, so a failure caused by transient thrash does not cost a restart.
 void RetryAfterFailure();
-
 
 // Asks the model whether it will work on Direct3D 11 at all, once, and logs the answer.
 //
@@ -57,51 +52,32 @@ void RetryAfterFailure();
 // entry points and initialises on the game's own device, which is where a refusal would appear.
 void ProbeD3D11(void* d3d11Device);
 
-// What scale this game's buffer is on, measured from the untouched copy of each frame.
-//
-// A suggestion only. Nothing applies it: the menu shows it and the user takes it or does not, which
-// keeps the number visible and adjustable rather than a value that moved on its own. Confidence is
-// how settled recent readings are -- 1 means they agree, 0 means the scene is changing under the
-// measurement and no single value would serve.
-struct CalibrationReading
-{
-    float suggestion = 0.0f;
-
-    // How much recent readings agree. This is steadiness, not correctness: a frozen frame agrees with
-    // itself perfectly, so a loading screen scores full marks for a number that means nothing. Read it
-    // together with usable.
-    float steadiness = 0.0f;
-
-    unsigned long long samples = 0;
-
-    // Whether the scene is worth measuring at all. False when the frame is already tone mapped -- the
-    // divisor does nothing there and the reading would be a meaningless 0.9 -- or when too little of
-    // the picture is lit to say where the top of the range is. A dark cave gives a small number very
-    // steadily, which is the trap this exists to close.
-    bool usable = false;
-    const char* why = "";
-};
-
-CalibrationReading Calibration();
-
 // Whether the model is loaded and running, for the overlay.
 bool IsRunning();
 
 // Why it is not, if it is not. Empty while it is running or has not been tried yet.
 const char* FailureReason();
 
-// What the game offers by way of exposure. Observed every frame whether or not the setting is on, so
-// the menu can say whether turning it on would do anything here.
-struct ExposureStatus
+// Menu queries. Read atomics only; never take g_nrMutex.
+bool GameExposureCanEnable();
+bool GameExposureEffective();
+enum class GameExposureWait
 {
-    unsigned long long seenFrames = 0;   // evaluates observed; 0 means nothing has run yet
-    bool offeredNow = false;             // a texture on the most recent frame
-    bool everOffered = false;            // a texture on any frame so far
-    float exposure = 0.0f;               // last value read back, 0 if none
-    float preExposure = 1.0f;
+    NativeVulkan,
+    Waiting,
+    Passthrough,
+    Absent,
+    Available
 };
-
-ExposureStatus GameExposureStatus();
+GameExposureWait GameExposureUiState();
+struct GameExposureReadout
+{
+    bool haveNumbers;
+    float e, p, s;
+    float gameW;
+    float slider;
+};
+GameExposureReadout GameExposureMenuReadout();
 
 // The white point the exposure meter has settled on, or 0 if it has not taken a reading yet. For the
 // overlay, so the number in use is visible rather than inferred.
@@ -110,7 +86,6 @@ ExposureStatus GameExposureStatus();
 std::optional<double> LastGpuTime();
 
 // What the white point meter last settled on, or 0 when it is not running. For the menu.
-
 
 // Writes a run of consecutive frames, each as the upscaler produced it and again after the model's edit.
 // The pair is a control: same frames, same run, one variable.

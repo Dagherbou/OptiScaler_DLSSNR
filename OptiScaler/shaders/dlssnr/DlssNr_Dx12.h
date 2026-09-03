@@ -38,10 +38,9 @@
 // and the constants live in an UPLOAD heap written at record time -- so a wrap while the GPU is still
 // reading a slot rewrites descriptors and constants underneath it.
 //
-// A fifth dispatch has since been added -- the calibration grid -- which at thirty-two slots would
-// have left six frames, spending exactly the headroom the previous note set aside. Forty-eight
-// restores eight frames at five dispatches. If a sixth is ever added, raise this with it rather than
-// spending the margin again.
+// Live composition dispatches are encode, optional meter, optional downsample, and resolve -- four
+// at most, not a fifth calibration grid. Forty-eight slots keep eight frames of coverage. If another
+// dispatch is added, raise this with it rather than spending the margin again.
 #define DLSSNR_NUM_OF_HEAPS 48
 
 class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
@@ -64,6 +63,9 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     // nothing -- so a stand-in is written into whichever are spare.
     static constexpr uint32_t kSrvCount = 5;
     static constexpr uint32_t kUavCount = 2;
+
+    // Unusable → dummy, no throw. Calls TranslateTypelessFormats (protected on Shader_Dx12).
+    static bool ExposureUsable(ID3D12Resource* InResource);
 
     uint32_t _numThreadsX = 8;
     uint32_t _numThreadsY = 8;
@@ -89,11 +91,9 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     // their place so every descriptor in the table is valid.
     // One compute pass. The public entry below drives three of these plus the model.
     bool DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssNrConstants& InConstants,
-                  ID3D12Resource* InSource, ID3D12Resource* InModel, ID3D12Resource* InOriginal,
-                  ID3D12Resource* InMotion,
-                  // Vestigial. Fed to the slot the removed edit accumulator read its history from;
-                  // nothing reads it now and every caller passes nullptr. Kept only so the binding
-                  // table keeps its shape -- not evidence that temporal accumulation exists.
-                  ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget,
-                  ID3D12Resource* OutKeep);
+                      ID3D12Resource* InSource, ID3D12Resource* InModel, ID3D12Resource* InOriginal,
+                      ID3D12Resource* InMotion,
+                      // t4. The game's 1x1 exposure when it is usable and Effective, otherwise the
+                      // 1x1 dummy (E = 1). Null falls back to the dummy; it must not fall back to InSource.
+                      ID3D12Resource* InExposure, ID3D12Resource* OutTarget, ID3D12Resource* OutKeep);
 };

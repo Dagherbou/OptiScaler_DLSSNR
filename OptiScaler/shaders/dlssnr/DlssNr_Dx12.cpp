@@ -4,10 +4,11 @@
 
 #include <dlssnr/DlssNr.h>
 
-
 #include <dlssnr/DlssNr_Capture.h>
+#include <dlssnr/DlssNr_Exposure.h>
 #include <dlssnr/DlssNr_Proxy.h>
 #include <dlssnr/DlssNr_ExposureScan.h>
+#include <dlssnr/DlssNrFeature_Vk.h>
 
 #include "DlssNr_Dx12.h"
 
@@ -21,6 +22,7 @@
 
 #include <mutex>
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include "precompile/DlssNr_Shader.h"
 
@@ -35,26 +37,46 @@ const char* NgxResultName(unsigned int r)
 {
     switch (r)
     {
-    case 0x1: return "Success";
-    case 0xBAD00001: return "FAIL_FeatureNotSupported";
-    case 0xBAD00002: return "FAIL_PlatformError";
-    case 0xBAD00003: return "FAIL_FeatureAlreadyExists";
-    case 0xBAD00004: return "FAIL_FeatureNotFound";
-    case 0xBAD00005: return "FAIL_InvalidParameter";
-    case 0xBAD00006: return "FAIL_ScratchBufferTooSmall";
-    case 0xBAD00007: return "FAIL_NotInitialized";
-    case 0xBAD00008: return "FAIL_UnsupportedInputFormat";
-    case 0xBAD00009: return "FAIL_RWFlagMissing";
-    case 0xBAD0000A: return "FAIL_MissingInput";
-    case 0xBAD0000B: return "FAIL_UnableToInitializeFeature";
-    case 0xBAD0000C: return "FAIL_OutOfDate";
-    case 0xBAD0000D: return "FAIL_OutOfGPUMemory";
-    case 0xBAD0000E: return "FAIL_UnsupportedFormat";
-    case 0xBAD0000F: return "FAIL_UnableToWriteToAppDataPath";
-    case 0xBAD00010: return "FAIL_UnsupportedParameter";
-    case 0xBAD00011: return "FAIL_Denied";
-    case 0xBAD00012: return "FAIL_NotImplemented";
-    default: return "unknown";
+    case 0x1:
+        return "Success";
+    case 0xBAD00001:
+        return "FAIL_FeatureNotSupported";
+    case 0xBAD00002:
+        return "FAIL_PlatformError";
+    case 0xBAD00003:
+        return "FAIL_FeatureAlreadyExists";
+    case 0xBAD00004:
+        return "FAIL_FeatureNotFound";
+    case 0xBAD00005:
+        return "FAIL_InvalidParameter";
+    case 0xBAD00006:
+        return "FAIL_ScratchBufferTooSmall";
+    case 0xBAD00007:
+        return "FAIL_NotInitialized";
+    case 0xBAD00008:
+        return "FAIL_UnsupportedInputFormat";
+    case 0xBAD00009:
+        return "FAIL_RWFlagMissing";
+    case 0xBAD0000A:
+        return "FAIL_MissingInput";
+    case 0xBAD0000B:
+        return "FAIL_UnableToInitializeFeature";
+    case 0xBAD0000C:
+        return "FAIL_OutOfDate";
+    case 0xBAD0000D:
+        return "FAIL_OutOfGPUMemory";
+    case 0xBAD0000E:
+        return "FAIL_UnsupportedFormat";
+    case 0xBAD0000F:
+        return "FAIL_UnableToWriteToAppDataPath";
+    case 0xBAD00010:
+        return "FAIL_UnsupportedParameter";
+    case 0xBAD00011:
+        return "FAIL_Denied";
+    case 0xBAD00012:
+        return "FAIL_NotImplemented";
+    default:
+        return "unknown";
     }
 }
 
@@ -119,17 +141,15 @@ void ProbeProxyDispatch(ID3D12GraphicsCommandList* cmdList)
         release(handle);
 
     NVSDK_NGX_Handle* controlHandle = nullptr;
-    const auto control =
-        (unsigned int) create(cmdList, (NVSDK_NGX_Feature) 200, params, &controlHandle);
+    const auto control = (unsigned int) create(cmdList, (NVSDK_NGX_Feature) 200, params, &controlHandle);
 
     if (controlHandle != nullptr && release != nullptr)
         release(controlHandle);
 
-    LOG_INFO("DLSS-NR proxy probe: feature 18 -> 0x{:X} ({}), control feature 200 -> 0x{:X} ({})",
-             result, NgxResultName(result), control, NgxResultName(control));
+    LOG_INFO("DLSS-NR proxy probe: feature 18 -> 0x{:X} ({}), control feature 200 -> 0x{:X} ({})", result,
+             NgxResultName(result), control, NgxResultName(control));
 
-    const bool rejectedOutright =
-        result == 0xBAD00004 || result == 0xBAD00001 || result == 0xBAD00012;
+    const bool rejectedOutright = result == 0xBAD00004 || result == 0xBAD00001 || result == 0xBAD00012;
 
     if (result == control)
         LOG_INFO("DLSS-NR proxy probe: both answers identical, so this says nothing about feature 18 "
@@ -148,18 +168,16 @@ void ProbeProxyDispatch(ID3D12GraphicsCommandList* cmdList)
 // Everything the model is reached through. The snippet refuses callers whose module path does not
 // contain "nvngx.dll", so the calls are made from a small library named for exactly that reason and
 // shipped beside OptiScaler; see nvngx.dll_dlssnr.dll.
-using PFN_NrCreate = void*(__cdecl*) (const wchar_t*, const wchar_t*, ID3D12Device*,
-                                      ID3D12GraphicsCommandList*, void*, unsigned int, unsigned int, int,
-                                      float, int, float, float, float, int, int);
-using PFN_NrEvaluate = int(__cdecl*) (ID3D12GraphicsCommandList*, void*, void*, ID3D12Resource*,
-                                      ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, unsigned int,
-                                      unsigned int, unsigned int, unsigned int, int, int, float, int,
-                                      float, float, float, int, float, float);
-using PFN_NrRelease = void(__cdecl*) (void*);
-using PFN_NrSetExtras = void(__cdecl*) (void*, float, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*,
-                                        unsigned int, unsigned int, unsigned int, unsigned int);
-using PFN_NrSetFloatSlot = void(__cdecl*) (int);
-using PFN_NrProbeFloat = void(__cdecl*) (void*, const char*, float, int);
+using PFN_NrCreate = void*(__cdecl*) (const wchar_t*, const wchar_t*, ID3D12Device*, ID3D12GraphicsCommandList*, void*,
+                                      unsigned int, unsigned int, int, float, int, float, float, float, int, int);
+using PFN_NrEvaluate = int(__cdecl*)(ID3D12GraphicsCommandList*, void*, void*, ID3D12Resource*, ID3D12Resource*,
+                                     ID3D12Resource*, ID3D12Resource*, unsigned int, unsigned int, unsigned int,
+                                     unsigned int, int, int, float, int, float, float, float, int, float, float);
+using PFN_NrRelease = void(__cdecl*)(void*);
+using PFN_NrSetExtras = void(__cdecl*)(void*, float, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, unsigned int,
+                                       unsigned int, unsigned int, unsigned int);
+using PFN_NrSetFloatSlot = void(__cdecl*)(int);
+using PFN_NrProbeFloat = void(__cdecl*)(void*, const char*, float, int);
 
 // One per back buffer, so an allocator is never reset while its frame is still in flight.
 
@@ -213,6 +231,10 @@ struct NrState
     unsigned int workWidth = 0;
     unsigned int workHeight = 0;
 
+    // 1x1 R32_FLOAT = 1.0, bound on t4 when the game has no usable exposure this frame.
+    // Not CreateScratch: no UAV. Survives park; released only in Shutdown.
+    ID3D12Resource* exposureDummy = nullptr;
+
     // The white point meter.
     //
     // A 64x64 grid of tile luminances, copied to a readback buffer and looked at a few frames later.
@@ -226,32 +248,11 @@ struct NrState
     ID3D12Resource* meter = nullptr;
     ID3D12Resource* meterReadback[4] = {};
 
-    // The calibration grid: what scale the game's buffer is on, measured from the untouched copy.
-    // Its own surface and ring rather than sharing the meter's, because the two run at different
-    // sizes -- the meter fetches one texel and this reads the whole frame.
-    ID3D12Resource* calib = nullptr;
-    ID3D12Resource* calibReadback[4] = {};
-    unsigned long long calibFrames = 0;
-
-    // The last few answers, so the menu can say how settled the number is. A suggestion taken during
-    // a fade or a loading screen is worth less than one taken while standing still, and the spread
-    // across recent frames is what tells them apart.
-    static constexpr unsigned int kCalibHistory = 32;
-    float calibHistory[kCalibHistory] = {};
-    unsigned int calibCount = 0;
-    float calibSuggestion = 0.0f;
-    float calibSteadiness = 0.0f;
-    bool calibUsable = false;
-    const char* calibWhy = "measuring...";
-    bool calibPassthrough = false;
-
     // Whether the frame that filled each readback slot actually had an exposure texture bound.
     //
-    // The meter writes tile 0 from whatever sits in the exposure slot, and DispatchPass substitutes
-    // the source picture when nothing is bound -- so without this the "exposure" read back is the red
-    // channel of the frame's top-left pixel. In Cyberpunk, which supplies no exposure texture, that
-    // pixel is scene content: it moved by up to 272x between consecutive frames and drove the white
-    // point from 0.18 to 74. That is the whole frame flashing in luminance.
+    // The meter writes tile 0 from t4. Mode 3 runs only when this frame's pointer is usable, so a
+    // missing texture no longer binds the source picture as a stand-in -- that is what made
+    // Cyberpunk's top-left pixel drive the white point from 0.18 to 74.
     //
     // The grid is read three frames after it is written, so the flag has to travel with the slot
     // rather than being asked of the current frame.
@@ -259,28 +260,11 @@ struct NrState
     unsigned int meterSlot = 0;
     unsigned long long meterFrames = 0;
 
-    // Whether the setting was on last frame, so the off->on edge can be caught.
-    //
-    // Deliberately the SETTING and not `wantExposure`: the texture itself comes and goes between
-    // frames and holding the last good value across those gaps is the whole point of the field below.
-    // Only the user turning the option back on means "anything held is from an unknown time ago".
-    bool exposureSettingWasOn = false;
-
     // The game's exposure, as last read back, and the pre-exposure that goes with it. Held rather
     // than defaulted: the texture comes and goes between frames and a fallback to 1.0 on the gaps
     // would be a flicker source.
     float gameExposure = 0.0f;
     float gamePreExposure = 1.0f;
-
-    // What the game OFFERS, as opposed to what has been read. Recorded from the parameter block every
-    // frame whether or not the setting is on, and deliberately so: the menu has to be able to answer
-    // "would this do anything here?" before the user turns it on, and reading a pointer for null costs
-    // nothing. Whether it was ever offered is kept separately from whether it was offered this frame,
-    // because games drop it on transitions -- GTA V dropped it three times in one session -- and one
-    // absent frame is not the same answer as never.
-    bool exposureOfferedNow = false;
-    bool exposureEverOffered = false;
-    unsigned long long exposureFrames = 0;
 
     // Cloned unconditionally when running at present, and only for typeless formats otherwise.
     ID3D12Resource* depthClone = nullptr;
@@ -322,6 +306,15 @@ struct NrState
 };
 
 NrState g_nr;
+std::atomic<bool> haveEvaluated { false };
+std::atomic<bool> sessionHasTexture { false };
+std::atomic<bool> sessionPassthrough { false };
+// Menu readout. Dispatch stores P/S; ConsumeMeterReadback stores a finite E.
+// Queries load these only; they never take g_nrMutex.
+std::atomic<bool> haveFiniteE { false };
+std::atomic<float> readoutE { 0.0f };
+std::atomic<float> readoutP { 1.0f };
+std::atomic<float> readoutS { 1.0f };
 std::unique_ptr<DlssNr_Dx12> g_compose;
 
 // What the pass costs on the GPU, for the breakdown in the overlay.
@@ -397,25 +390,6 @@ void CheckCaptureTrigger()
     }
 }
 
-// The encoded mean is aimed here. Mid-grey rather than anything brighter: the model has to see both the
-// shadow detail it might lift and the highlights it must not blow out.
-constexpr float kTargetEncodedMean = 0.45f;
-
-// How fast the derived value follows the scene. Readings arrive a few times a second, and an exposure
-// that lunges at every cut is worse than one that arrives a moment late.
-constexpr float kWhitePointBlend = 0.25f;
-
-// Recomputes the white point from a measured mean. Inverting the encode for the white point that puts
-// that mean at the target gives wp = mean * (1 - t^g) / t^g.
-float WhitePointForMean(float meanLuma)
-{
-    const float encoded = powf(kTargetEncodedMean, 2.2f);
-    const float ratio = encoded / (1.0f - encoded);
-    const float wp = meanLuma / ratio;
-    // A black frame between scenes would otherwise drive this to zero and divide the next frame by it.
-    return wp < 0.01f ? 0.01f : (wp > 10000.0f ? 10000.0f : wp);
-}
-
 std::filesystem::path g_dllDir;
 
 // Loads the forwarder that owns the calls into the snippet.
@@ -436,8 +410,7 @@ bool EnsureForwarder()
 
     if (!found.has_value())
     {
-        LOG_ERROR("nvngx.dll_dlssnr.dll not found beside OptiScaler ({}) or the game executable",
-                  g_dllDir.string());
+        LOG_ERROR("nvngx.dll_dlssnr.dll not found beside OptiScaler ({}) or the game executable", g_dllDir.string());
         g_nr.reason = "nvngx.dll_dlssnr.dll is missing";
         return false;
     }
@@ -448,8 +421,7 @@ bool EnsureForwarder()
 
     if (g_nr.forwarder == nullptr)
     {
-        LOG_ERROR("nvngx.dll_dlssnr.dll found at {} but would not load, error {}", path.string(),
-                  GetLastError());
+        LOG_ERROR("nvngx.dll_dlssnr.dll found at {} but would not load, error {}", path.string(), GetLastError());
         g_nr.reason = "nvngx.dll_dlssnr.dll would not load";
         return false;
     }
@@ -541,8 +513,7 @@ void ReportScalingRatios()
     if (!snippet.has_value())
         return;
 
-    static const char* kNames[] = { "MaxPerf",         "Balanced",    "MaxQuality",
-                                    "UltraPerformance", "UltraQuality", "DLAA" };
+    static const char* kNames[] = { "MaxPerf", "Balanced", "MaxQuality", "UltraPerformance", "UltraQuality", "DLAA" };
 
     char line[512] = {};
     size_t used = 0;
@@ -585,8 +556,7 @@ void ReportScalingRatios()
 // local tone and skin structure never did anything.
 void DiscoverFloatSlot(NVSDK_NGX_Parameter* params)
 {
-    if (g_nr.floatSlotKnown || params == nullptr || g_nr.probeFloat == nullptr ||
-        g_nr.setFloatSlot == nullptr)
+    if (g_nr.floatSlotKnown || params == nullptr || g_nr.probeFloat == nullptr || g_nr.setFloatSlot == nullptr)
         return;
 
     g_nr.floatSlotKnown = true;
@@ -652,6 +622,12 @@ void ParkNrResource(ID3D12Resource*& res)
     g_nrRetired.push_back(r);
 }
 
+void InvalidateMeterReadback()
+{
+    for (auto& v : g_nr.meterExposureValid)
+        v = false;
+}
+
 void TickNrRetired()
 {
     for (size_t i = 0; i < g_nrRetired.size();)
@@ -672,27 +648,13 @@ void TickNrRetired()
     }
 }
 
-// The inject point decides which buffer is being measured -- the upscaler's linear output or the
-// finished frame in swapchain format -- so a reading taken before a change describes a different
-// picture to one taken after. Everything else that depends on the format is invalidated here.
-void ForgetCalibration()
-{
-    g_nr.calibCount = 0;
-    g_nr.calibSuggestion = 0.0f;
-    g_nr.calibSteadiness = 0.0f;
-    g_nr.calibUsable = false;
-    g_nr.calibWhy = "measuring...";
-}
-
 void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
 {
     if (g_nr.output == nullptr || g_nr.output->GetDesc().Format == needed)
         return;
 
-    LOG_INFO("DLSS-NR rebuilding surfaces: format {} -> {} (inject point changed)",
-             (int) g_nr.output->GetDesc().Format, (int) needed);
-
-    ForgetCalibration();
+    LOG_INFO("DLSS-NR rebuilding surfaces: format {} -> {} (inject point changed)", (int) g_nr.output->GetDesc().Format,
+             (int) needed);
 
     ParkNrFeature(g_nr.feature);
 
@@ -700,10 +662,10 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
     for (void*& f : g_nr.passFeature)
         ParkNrFeature(f);
 
-    for (ID3D12Resource** r :
-         { &g_nr.output, &g_nr.colorCopy, &g_nr.hdrCopy, &g_nr.colorSmall })
+    for (ID3D12Resource** r : { &g_nr.output, &g_nr.colorCopy, &g_nr.hdrCopy, &g_nr.colorSmall })
         ParkNrResource(*r);
 
+    InvalidateMeterReadback();
     g_nr.reset = true;
 }
 
@@ -715,39 +677,7 @@ void Barrier(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* res, D3D12_RESO
 constexpr unsigned int kMeterRowBytes = kDlssNrMeterGrid * sizeof(float);
 constexpr unsigned int kMeterBytes = kMeterRowBytes * kDlssNrMeterGrid;
 
-// Records the copy of this frame's grid into whichever readback buffer is furthest from being read.
-// Same shape as the meter's copy, against the calibration surface and its own ring.
-void CopyCalibrationToReadback(ID3D12GraphicsCommandList* cmdList)
-{
-    const unsigned int slot = (unsigned int) (g_nr.calibFrames % 4);
-
-    if (g_nr.calibReadback[slot] == nullptr || g_nr.calib == nullptr)
-        return;
-
-    D3D12_TEXTURE_COPY_LOCATION srcLoc {};
-    srcLoc.pResource = g_nr.calib;
-    srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    srcLoc.SubresourceIndex = 0;
-
-    D3D12_TEXTURE_COPY_LOCATION dst {};
-    dst.pResource = g_nr.calibReadback[slot];
-    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    dst.PlacedFootprint.Offset = 0;
-    dst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32_FLOAT;
-    dst.PlacedFootprint.Footprint.Width = kDlssNrMeterGrid;
-    dst.PlacedFootprint.Footprint.Height = kDlssNrMeterGrid;
-    dst.PlacedFootprint.Footprint.Depth = 1;
-    dst.PlacedFootprint.Footprint.RowPitch = kMeterRowBytes;
-
-    Barrier(cmdList, g_nr.calib, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    cmdList->CopyTextureRegion(&dst, 0, 0, 0, &srcLoc, nullptr);
-    Barrier(cmdList, g_nr.calib, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-    g_nr.calibFrames++;
-}
-
-void CopyMeterToReadback(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device,
-                         bool exposureBound)
+void CopyMeterToReadback(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, bool exposureBound)
 {
     const unsigned int slot = (unsigned int) (g_nr.meterFrames % 4);
 
@@ -785,108 +715,6 @@ void CopyMeterToReadback(ID3D12GraphicsCommandList* cmdList, ID3D12Device* devic
 // off a frame this pass writes is a feedback loop rather than a measurement. What is left is a
 // courier -- the game's exposure is a 1x1 texture in a resource state this pass did not set and must
 // not transition, so the shader reads it as an SRV and it rides home on a readback that exists.
-// Reads the calibration grid written four frames ago and turns it into one number.
-//
-// A high percentile of tile peaks, not the maximum: the maximum is a sun or a specular hit and would
-// normalise the whole picture into the dark. The 90th percentile is high enough to sit at the top of
-// the real range and common enough that no single highlight decides it.
-void ConsumeCalibrationReadback()
-{
-    if (g_nr.calibFrames < 4)
-        return;
-
-    const unsigned int slot = (unsigned int) (g_nr.calibFrames % 4);
-    ID3D12Resource* buffer = g_nr.calibReadback[slot];
-
-    if (buffer == nullptr)
-        return;
-
-    void* mapped = nullptr;
-    D3D12_RANGE range { 0, kMeterBytes };
-
-    if (FAILED(buffer->Map(0, &range, &mapped)) || mapped == nullptr)
-        return;
-
-    const float* src = (const float*) mapped;
-
-    std::vector<float> tiles;
-    tiles.reserve(kDlssNrMeterGrid * kDlssNrMeterGrid);
-
-    for (unsigned int i = 0; i < kDlssNrMeterGrid * kDlssNrMeterGrid; ++i)
-    {
-        if (std::isfinite(src[i]) && src[i] > 1e-6f)
-            tiles.push_back(src[i]);
-    }
-
-    D3D12_RANGE nothingWritten { 0, 0 };
-    buffer->Unmap(0, &nothingWritten);
-
-    if (tiles.size() < 16)
-        return;
-
-    const size_t nth = (size_t) ((float) (tiles.size() - 1) * 0.90f);
-    std::nth_element(tiles.begin(), tiles.begin() + nth, tiles.end());
-
-    // How much of the frame carries light, measured against its own brightest tile rather than an
-    // absolute threshold -- the units here are the game's and there is no absolute scale.
-    //
-    // This is what separates "the buffer is scaled by 240" from "I am standing in a dark cave". A
-    // percentile of tile peaks is a statement about scene content; it only describes the buffer when
-    // enough of the picture is lit for the top of the range to actually appear in it.
-    float brightest = 0.0f;
-
-    for (float v : tiles)
-        brightest = std::max(brightest, v);
-
-    unsigned int lit = 0;
-
-    for (float v : tiles)
-    {
-        if (v > brightest * 0.10f)
-            ++lit;
-    }
-
-    const float litFraction = tiles.empty() ? 0.0f : (float) lit / (float) tiles.size();
-
-    // A torn readback survives isfinite and would clamp to exactly the ceiling, which since the
-    // ceiling became 2000 is a value the slider can hold -- so a garbage frame could be offered as a
-    // real answer. Reject rather than clamp.
-    if (!(tiles[nth] > 0.0f) || tiles[nth] >= 1999.0f)
-        return;
-
-    const float suggestion = std::clamp(tiles[nth], 0.25f, 1990.0f);
-
-    g_nr.calibUsable = !g_nr.calibPassthrough && litFraction > 0.20f;
-    g_nr.calibWhy = g_nr.calibPassthrough  ? "this game hands over a frame it already tone mapped, so there is nothing to normalise"
-                    : litFraction <= 0.20f ? "too little of this scene is lit to say where the top of the range is"
-                                           : "";
-
-    g_nr.calibHistory[g_nr.calibCount % NrState::kCalibHistory] = suggestion;
-    g_nr.calibCount++;
-    g_nr.calibSuggestion = suggestion;
-
-    // Confidence is the spread of recent answers, not their absolute size. A number that has held
-    // still for a second is one worth taking; one that is swinging means the scene is changing under
-    // the measurement, and no single value would serve anyway.
-    const unsigned int have = std::min<unsigned int>(g_nr.calibCount, NrState::kCalibHistory);
-
-    if (have >= 8)
-    {
-        float lo = g_nr.calibHistory[0];
-        float hi = g_nr.calibHistory[0];
-
-        for (unsigned int i = 0; i < have; ++i)
-        {
-            lo = std::min(lo, g_nr.calibHistory[i]);
-            hi = std::max(hi, g_nr.calibHistory[i]);
-        }
-
-        // A spread of 1.0x is perfect agreement and 2x or worse is none.
-        const float spread = hi / lo;
-        g_nr.calibSteadiness = std::clamp(1.0f - (spread - 1.0f), 0.0f, 1.0f);
-    }
-}
-
 void ConsumeMeterReadback()
 {
     if (g_nr.meterFrames < 4)
@@ -906,15 +734,18 @@ void ConsumeMeterReadback()
 
     const float* src = (const float*) mapped;
 
-    // Only believed when the frame that wrote this grid actually had an exposure texture bound. With
-    // nothing bound DispatchPass substitutes the source picture, and tile 0 is then a scene pixel
-    // rather than an exposure -- believing it made the white point follow the top-left corner of the
-    // screen, which in Cyberpunk moved by up to 272x between frames and flashed the whole picture.
+    // Only believed when the frame that wrote this grid actually had an exposure texture bound. A
+    // missing t4 binds the 1x1 dummy (E = 1), never InSource -- believing a scene pixel as exposure
+    // is what made Cyberpunk's top-left corner drive the white point from 0.18 to 74.
     //
-    // When it is not believed gameExposure keeps its last good value, or stays 0 and lets
-    // ResolveWhitePoint fall back to the slider, which is what a game supplying none should get.
+    // When it is not believed gameExposure keeps its last good value, or stays 0. Held E is
+    // the hole's clock only; a game that never supplied a usable exposure stays on the slider.
     if (g_nr.meterExposureValid[slot] && std::isfinite(src[0]) && src[0] > 0.0f)
+    {
         g_nr.gameExposure = src[0];
+        readoutE.store(src[0]);
+        haveFiniteE.store(true);
+    }
 
     D3D12_RANGE nothingWritten { 0, 0 };
     buffer->Unmap(0, &nothingWritten);
@@ -922,21 +753,12 @@ void ConsumeMeterReadback()
 
 // Forget everything the meter knows, so nothing read before this moment can be believed after it.
 //
-// The exposure is written only inside the block that dispatches the meter, and that block does not
-// run while the option is off. Nothing used to clear any of this when it stopped, so the reading
-// simply froze: switching the option back on returned the value from whenever it was switched off,
-// and ResolveWhitePoint took it as current because a held value is exactly what it expects to see.
-// GTA V's exposure spans 0.127 to 0.511 in one session, so re-enabling in different light handed the
-// encode a white point up to 4x wrong -- which trips the soft knee, scales the model's answer away
-// and leaves its hue behind. That is the colour cast, and it looked random because it depends on the
-// light at the moment of the PREVIOUS switch-off, which nothing on screen shows.
+// Mode 3 now runs whenever the texture is usable, including on sources 0 and 2, so the courier stays
+// warm. Do not call this when the user merely switches WhitePointSource to 1 -- that discarded the
+// held E the hole path needs. Resize / rebuild still go through InvalidateMeterReadback.
 //
-// The readback ring made it worse. `meterFrames` also only advances inside that block, so the four
-// slots kept their contents and their valid flags across the gap, and the first frames after
-// re-enabling consumed buffers written before it as though they had just arrived.
-//
-// Zero is not a fallback value here, it is the absence of one: ResolveWhitePoint's `> 1e-6f` guard
-// fails and the manual slider is used, which is what a game supplying no exposure already gets.
+// Zero is not a fallback value here, it is the absence of one: DecideWhitePoint's hole path then
+// uses Scale, which is what a game supplying no exposure already gets.
 void InvalidateExposureMeter()
 {
     g_nr.gameExposure = 0.0f;
@@ -949,95 +771,9 @@ void InvalidateExposureMeter()
     g_nr.meterFrames = 0;
 }
 
-// Turns what the meter saw into the divisor the encode uses, or falls back to the slider.
-//
-// `cut` says the exposure may jump rather than drift, and it is the difference between this working
-// and not. GTA V's character switch pulls the camera up through the sky: a linear HDR buffer's sky is
-// tens of times brighter than the ground, the proxy clips to flat white, and the frame blows out until
-// the camera comes back down. Easing across that at two percent a frame takes three and a half
-// seconds, which is longer than the transition -- so a meter that only eases would lag through the
-// whole thing and fix nothing.
-//
-// So a cut snaps and a drift eases. Walking out of a cave is a drift; a camera cut is not, and
-// pretending otherwise to avoid pumping just moves the failure somewhere more visible.
-float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
-{
-    const float slider = cfg.DlssNrWhitePointScale.value_or_default();
+// D3D12 picture white point for sources 0 and 2 (and source 1) lives in DecideWhitePoint only.
 
-    // A frame the game already tone mapped is display-referred: white is at 1 by definition and there
-    // is nothing to measure. The slider stays available as a manual exposure on that path.
-    if (!isHdrBuffer)
-        return slider;
-
-    // The game's own exposure, where it supplies one.
-    //
-    // Exposure is the step that makes a cave and a field comparable: the renderer works in arbitrary
-    // scene-referred units and multiplies by this before tone mapping, which is precisely why one
-    // fixed paper white cannot serve both. FSR spells the relationship out -- frame / preExposure *
-    // exposure -- so undoing it gives the divisor this pass wants, and paper white becomes a constant
-    // on top rather than a value chasing the scene.
-    //
-    // Unlike anything measured off the frame this cannot be moved by what the pass writes, which is
-    // what killed the statistical meter. It is the game's number, decided upstream.
-    //
-    // Held across the frames where the texture is absent -- GTA V dropped it three times in one
-    // session -- because falling back to a default on those frames is a flicker, not a fallback.
-    // The scan's anchor, where the game supplies no exposure of its own.
-    //
-    // Only ratios are used, so the units of the buffer never have to be known -- which is the whole
-    // reason this is anchored rather than absolute. The anchor is the user's own white point at the
-    // moment they pressed the button; everything after that is the scan moving it.
-    //
-    // Deliberately below the exposure texture in priority and mutually exclusive with it in the
-    // menu. A game that hands over a real exposure has no business being driven by a buffer found by
-    // its shape, and two sources fighting over one number is the class of bug worth making
-    // unreachable rather than merely unlikely.
-    if (cfg.DlssNrWhitePointSource.value_or_default() == 2)
-    {
-        // Multi-point: one or more calibration points the user placed, interpolated in log space by
-        // the current scan value. One point is the original ratio law; more fit the buffer's actual
-        // relationship so the white point holds across the whole range, not only near one anchor.
-        const float w = DlssNr::ExposureScan::AnchoredWhitePoint(
-            DlssNr::ExposureScan::BestValue(), cfg.DlssNrScanInverted.value_or_default(),
-            cfg.DlssNrScanTrim.value_or_default());
-
-        if (w > 0.0f)
-            return w;
-    }
-
-    if (cfg.DlssNrWhitePointSource.value_or_default() == 1 && g_nr.gameExposure > 1e-6f)
-    {
-        // Its own setting, not the manual divisor. See Config: they are different quantities with
-        // different units and different sensible ranges, and sharing one value meant adjusting the
-        // trim destroyed the divisor somebody had found by hand.
-        //
-        // Still bounded at the point of use rather than only in the menu that draws it.
-        //
-        // Bounding it at the slider would have been cosmetic: someone who found 64 by hand on the
-        // manual path and then switched the exposure source on keeps that 64 in their ini, and the
-        // composition would go on reading it until they happened to touch the control. The picture
-        // would be wrong for a reason the menu was no longer showing.
-        //
-        // Their value is left in the config untouched, so switching back to manual restores the
-        // number they arrived at. It is only what this path consumes that is limited.
-        const float trim = std::clamp(cfg.DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
-
-        return std::clamp(g_nr.gamePreExposure / g_nr.gameExposure * trim, 0.01f, 4096.0f);
-    }
-
-    // Otherwise the slider, and only the slider.
-    //
-    // Measuring white from the frame was tried and removed. It could not be made to work because the
-    // pass writes the frame it measures: in Enshrouded one session walked the divisor from 0.010 to
-    // 97.910, and toggling NR at a fixed spot read 41.31 off and 0.46 on. Two attempts to damp it --
-    // a relative lit threshold, then a rate limit with a cut snap -- both treated a coupled system as
-    // a noisy one and neither held. A constant cannot do that, which is the whole argument for it,
-    // and is what RenoDX has always done.
-    return slider;
-}
-
-ID3D12Resource* CreateScratch(ID3D12Device* device, DXGI_FORMAT format, unsigned int width,
-                              unsigned int height)
+ID3D12Resource* CreateScratch(ID3D12Device* device, DXGI_FORMAT format, unsigned int width, unsigned int height)
 {
     D3D12_HEAP_PROPERTIES heap {};
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -1055,8 +791,8 @@ ID3D12Resource* CreateScratch(ID3D12Device* device, DXGI_FORMAT format, unsigned
     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
     ID3D12Resource* res = nullptr;
-    device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&res));
+    device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                                    IID_PPV_ARGS(&res));
     return res;
 }
 
@@ -1074,6 +810,157 @@ void Barrier(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* res, D3D12_RESO
     b.Transition.StateAfter = to;
     cmdList->ResourceBarrier(1, &b);
 }
+
+bool IsTypelessResourceFormat(DXGI_FORMAT f)
+{
+    switch (f)
+    {
+    case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+    case DXGI_FORMAT_R32G32B32_TYPELESS:
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+    case DXGI_FORMAT_R32G32_TYPELESS:
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+    case DXGI_FORMAT_R16G16_TYPELESS:
+    case DXGI_FORMAT_R32_TYPELESS:
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_R8G8_TYPELESS:
+    case DXGI_FORMAT_R16_TYPELESS:
+    case DXGI_FORMAT_R8_TYPELESS:
+    case DXGI_FORMAT_BC1_TYPELESS:
+    case DXGI_FORMAT_BC2_TYPELESS:
+    case DXGI_FORMAT_BC3_TYPELESS:
+    case DXGI_FORMAT_BC4_TYPELESS:
+    case DXGI_FORMAT_BC5_TYPELESS:
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+    case DXGI_FORMAT_B8G8R8X8_TYPELESS:
+    case DXGI_FORMAT_BC6H_TYPELESS:
+    case DXGI_FORMAT_BC7_TYPELESS:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// 1x1 R32_FLOAT = 1.0. Not CreateScratch (no UAV). Survives park.
+void EnsureExposureDummy(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
+{
+    if (g_nr.exposureDummy != nullptr || device == nullptr || cmdList == nullptr)
+        return;
+
+    D3D12_HEAP_PROPERTIES heap {};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC desc {};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = 1;
+    desc.Height = 1;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_R32_FLOAT;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+                                               nullptr, IID_PPV_ARGS(&g_nr.exposureDummy))) ||
+        g_nr.exposureDummy == nullptr)
+    {
+        g_nr.exposureDummy = nullptr;
+        static bool logged = false;
+        if (!logged)
+        {
+            logged = true;
+            LOG_WARN("DLSS-NR: the exposure dummy could not be created; t4 dispatches that need it "
+                     "will be skipped");
+        }
+        return;
+    }
+
+    D3D12_HEAP_PROPERTIES uploadHeap {};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC buf {};
+    buf.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buf.Width = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
+    buf.Height = 1;
+    buf.DepthOrArraySize = 1;
+    buf.MipLevels = 1;
+    buf.Format = DXGI_FORMAT_UNKNOWN;
+    buf.SampleDesc.Count = 1;
+    buf.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ID3D12Resource* upload = nullptr;
+
+    if (FAILED(device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &buf,
+                                               D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload))) ||
+        upload == nullptr)
+    {
+        g_nr.exposureDummy->Release();
+        g_nr.exposureDummy = nullptr;
+        return;
+    }
+
+    float* mapped = nullptr;
+
+    if (SUCCEEDED(upload->Map(0, nullptr, reinterpret_cast<void**>(&mapped))) && mapped != nullptr)
+    {
+        *mapped = 1.0f;
+        upload->Unmap(0, nullptr);
+    }
+
+    D3D12_TEXTURE_COPY_LOCATION src {};
+    src.pResource = upload;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src.PlacedFootprint.Offset = 0;
+    src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32_FLOAT;
+    src.PlacedFootprint.Footprint.Width = 1;
+    src.PlacedFootprint.Footprint.Height = 1;
+    src.PlacedFootprint.Footprint.Depth = 1;
+    src.PlacedFootprint.Footprint.RowPitch = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
+
+    D3D12_TEXTURE_COPY_LOCATION dst {};
+    dst.pResource = g_nr.exposureDummy;
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst.SubresourceIndex = 0;
+
+    cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    Barrier(cmdList, g_nr.exposureDummy, D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    ParkNrResource(upload);
+}
+
+struct ExposureHotfixSpan
+{
+    ID3D12GraphicsCommandList* cmd = nullptr;
+    ID3D12Resource* res = nullptr;
+    D3D12_RESOURCE_STATES from {};
+    bool open = false;
+
+    void Open(ID3D12GraphicsCommandList* c, ID3D12Resource* r)
+    {
+        if (open || r == nullptr || !Config::Instance()->ExposureResourceBarrier.has_value())
+            return;
+
+        cmd = c;
+        res = r;
+        from = (D3D12_RESOURCE_STATES) Config::Instance()->ExposureResourceBarrier.value();
+        Barrier(cmd, res, from, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        open = true;
+    }
+
+    void Close()
+    {
+        if (!open)
+            return;
+
+        Barrier(cmd, res, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, from);
+        open = false;
+    }
+
+    ~ExposureHotfixSpan() { Close(); }
+};
 
 // A typeless resource cannot be viewed, and NGX builds its own views with nothing to tell it which
 // format to use. Depth is very often declared typeless, so the typed member of the same family is
@@ -1116,8 +1003,8 @@ ID3D12Resource* CreateGuideClone(ID3D12Device* device, ID3D12Resource* source)
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
 
     ID3D12Resource* res = nullptr;
-    device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
-                                    nullptr, IID_PPV_ARGS(&res));
+    device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                    IID_PPV_ARGS(&res));
     return res;
 }
 
@@ -1136,8 +1023,8 @@ ID3D12Resource* CreateGuideClone(ID3D12Device* device, ID3D12Resource* source)
 // copy of it when it is not. NGX requires its inputs in NON_PIXEL_SHADER_RESOURCE at evaluate time,
 // which is a documented contract rather than a guess about any one game's frame graph, so that is
 // the state transitioned away from and back to here.
-ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
-                              ID3D12Resource* source, ID3D12Resource** clone)
+ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, ID3D12Resource* source,
+                              ID3D12Resource** clone)
 {
     if (source == nullptr || !IsTypeless(source->GetDesc().Format))
         return source;
@@ -1151,8 +1038,7 @@ ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* c
         const D3D12_RESOURCE_DESC have = (*clone)->GetDesc();
         const D3D12_RESOURCE_DESC want = source->GetDesc();
 
-        if (have.Width != want.Width || have.Height != want.Height ||
-            have.Format != TypedGuideFormat(want.Format))
+        if (have.Width != want.Width || have.Height != want.Height || have.Format != TypedGuideFormat(want.Format))
         {
             // Retired, not released: the previous copy may still be in flight on the game's queue.
             ParkNrResource(*clone);
@@ -1166,17 +1052,13 @@ ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* c
         if (*clone == nullptr)
             return nullptr;
 
-        LOG_DEBUG("DLSS-NR cloned a typeless guide as format {}",
-                  (int) TypedGuideFormat(source->GetDesc().Format));
+        LOG_DEBUG("DLSS-NR cloned a typeless guide as format {}", (int) TypedGuideFormat(source->GetDesc().Format));
     }
 
-    Barrier(cmdList, source, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Barrier(cmdList, source, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
     cmdList->CopyResource(*clone, source);
-    Barrier(cmdList, source, D3D12_RESOURCE_STATE_COPY_SOURCE,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    Barrier(cmdList, *clone, D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Barrier(cmdList, source, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Barrier(cmdList, *clone, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     return *clone;
 }
 
@@ -1243,6 +1125,44 @@ ID3D12Resource* GetResource(NVSDK_NGX_Parameter* params, const char* a, const ch
     return nullptr;
 }
 
+// One name, typed then untyped. Bridges Set(void*), so a typed-only Get misses them.
+// Missing or 0 for the two floats becomes 1.
+struct NrExposure
+{
+    ID3D12Resource* texture = nullptr;
+    float pre = 1.0f;
+    float scale = 1.0f;
+};
+
+NrExposure ReadNrExposure(NVSDK_NGX_Parameter* params)
+{
+    NrExposure out {};
+
+    ID3D12Resource* texture = nullptr;
+
+    if (params->Get(NVSDK_NGX_Parameter_ExposureTexture, &texture) == NVSDK_NGX_Result_Success && texture != nullptr)
+    {
+        out.texture = texture;
+    }
+    else
+    {
+        void* untyped = nullptr;
+
+        if (params->Get(NVSDK_NGX_Parameter_ExposureTexture, &untyped) == NVSDK_NGX_Result_Success &&
+            untyped != nullptr)
+            out.texture = static_cast<ID3D12Resource*>(untyped);
+    }
+
+    if (params->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, &out.pre) != NVSDK_NGX_Result_Success || out.pre == 0.0f)
+        out.pre = 1.0f;
+
+    if (params->Get(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, &out.scale) != NVSDK_NGX_Result_Success ||
+        out.scale == 0.0f)
+        out.scale = 1.0f;
+
+    return out;
+}
+
 // A change has to hold still before it is acted on: a slider being dragged reports a new value every
 // frame, and each one would otherwise mean a new model.
 constexpr unsigned long long kSettleFrames = 30;
@@ -1257,8 +1177,7 @@ void SetExtras(const Config& cfg, ID3D12Resource* ui, ID3D12Resource* backbuffer
 
     // Global tone is written at the model's own default: the control that exposed it changed nothing
     // that could be seen, and the block persists, so a value still has to be put there.
-    g_nr.setExtras(g_nr.capabilityParams, 1.0f, ui, ui, backbuffer,
-                   uiWidth, uiHeight, bbWidth, bbHeight);
+    g_nr.setExtras(g_nr.capabilityParams, 1.0f, ui, ui, backbuffer, uiWidth, uiHeight, bbWidth, bbHeight);
 }
 
 bool TuningMatchesFeature(const Config& cfg)
@@ -1318,6 +1237,30 @@ struct ScopedNrStateEnvelope
     }
 };
 
+// Restores the upscaler's output state on every exit, including GetDevice failure after the
+// arrival → UAV transition has already been recorded.
+struct ScopedOutputArrival
+{
+    ID3D12GraphicsCommandList* cmd = nullptr;
+    ID3D12Resource* target = nullptr;
+    D3D12_RESOURCE_STATES arrival = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    bool armed = false;
+
+    ScopedOutputArrival(ID3D12GraphicsCommandList* c, ID3D12Resource* t, D3D12_RESOURCE_STATES a)
+        : cmd(c), target(t), arrival(a), armed(true)
+    {
+        Barrier(cmd, target, arrival, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }
+
+    ~ScopedOutputArrival()
+    {
+        if (armed)
+            Barrier(cmd, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, arrival);
+    }
+
+    void Disarm() { armed = false; }
+};
+
 // Every way out of the pass before it does anything is silent on purpose -- an evaluate that carries
 // no depth is normal and would otherwise print every frame forever. That silence is fine until the
 // pass does nothing at all and the log has no opinion about why.
@@ -1333,13 +1276,43 @@ void ReportSkipOnce(const char* reason)
 
 } // namespace
 
+// Unusable → dummy, no throw. CreateShaderResourceView throws on null / DENY / BUFFER / UNKNOWN
+// and will happily build a 1D or MSAA view that does not match Texture2D. This keeps those out.
+// A member so it can call the protected TranslateTypelessFormats. Do not use TypedGuideFormat.
+bool DlssNr_Dx12::ExposureUsable(ID3D12Resource* res)
+{
+    if (res == nullptr)
+        return false;
+
+    const D3D12_RESOURCE_DESC desc = res->GetDesc();
+
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+        return false;
+
+    if (desc.DepthOrArraySize != 1)
+        return false;
+
+    if (desc.SampleDesc.Count != 1)
+        return false;
+
+    if ((desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) != 0)
+        return false;
+
+    const DXGI_FORMAT fmt = desc.Format;
+    const DXGI_FORMAT viewFmt = TranslateTypelessFormats(fmt);
+
+    if (viewFmt == fmt && IsTypelessResourceFormat(fmt))
+        return false;
+
+    return true;
+}
+
 // ---------------------------------------------------------------------------------------------
 // The pass itself. Everything above is what it is made of; everything below is the shape the rest
 // of OptiScaler sees.
 // ---------------------------------------------------------------------------------------------
 
-DlssNr_Dx12::DlssNr_Dx12(std::string InName, ID3D12Device* InDevice)
-    : Shader_Dx12(InName, InDevice)
+DlssNr_Dx12::DlssNr_Dx12(std::string InName, ID3D12Device* InDevice) : Shader_Dx12(InName, InDevice)
 {
     if (InDevice == nullptr)
     {
@@ -1396,12 +1369,18 @@ DlssNr_Dx12::DlssNr_Dx12(std::string InName, ID3D12Device* InDevice)
 }
 
 bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssNrConstants& InConstants,
-                                  ID3D12Resource* InSource, ID3D12Resource* InModel,
-                                  ID3D12Resource* InOriginal, ID3D12Resource* InMotion,
-                                  ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget,
-                                  ID3D12Resource* OutKeep)
+                               ID3D12Resource* InSource, ID3D12Resource* InModel, ID3D12Resource* InOriginal,
+                               ID3D12Resource* InMotion, ID3D12Resource* InExposure, ID3D12Resource* OutTarget,
+                               ID3D12Resource* OutKeep)
 {
     if (!_init || InCmdList == nullptr || _device == nullptr || InSource == nullptr || OutTarget == nullptr)
+        return false;
+
+    // t4 must never stand in as InSource -- that is how a missing exposure became the top-left
+    // pixel. If the dummy is still null, skip rather than bind the picture.
+    ID3D12Resource* const exposureSrv = InExposure != nullptr ? InExposure : g_nr.exposureDummy;
+
+    if (exposureSrv == nullptr)
         return false;
 
     const uint32_t slot = _heapIndex;
@@ -1411,13 +1390,13 @@ bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssN
 
     // Every slot in the table gets a view, whether the mode reads it or not. An unbound descriptor is
     // not an empty read; it is a read from nothing, and the source stands in wherever a mode has
-    // nothing of its own to put there.
+    // nothing of its own to put there. t4 is the exception: it falls back to the dummy, never InSource.
     ID3D12Resource* const srvs[kSrvCount] = {
         InSource,
         InModel != nullptr ? InModel : InSource,
         InOriginal != nullptr ? InOriginal : InSource,
         InMotion != nullptr ? InMotion : InSource,
-        InPrevEdit != nullptr ? InPrevEdit : InSource,
+        exposureSrv,
     };
 
     for (uint32_t i = 0; i < kSrvCount; ++i)
@@ -1464,15 +1443,15 @@ DlssNr_Dx12::~DlssNr_Dx12()
     }
 }
 
-void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour,
-                           ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output,
-                           const DlssNrFrameInfo& frame, ID3D12CommandQueue* timingQueue)
+void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour, ID3D12Resource* depth,
+                           ID3D12Resource* motion, ID3D12Resource* output, const DlssNrFrameInfo& frame,
+                           ID3D12CommandQueue* timingQueue)
 {
     std::lock_guard<std::mutex> nrLock(g_nrMutex);
     const Config& cfg = *Config::Instance();
 
-    if (g_nr.failed || cmdList == nullptr || colour == nullptr || depth == nullptr ||
-        motion == nullptr || output == nullptr)
+    if (g_nr.failed || cmdList == nullptr || colour == nullptr || depth == nullptr || motion == nullptr ||
+        output == nullptr)
     {
         ReportSkipOnce(g_nr.failed ? "it already failed this session" : "a resource was missing");
         return;
@@ -1491,7 +1470,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             ? (D3D12_RESOURCE_STATES) Config::Instance()->OutputResourceBarrier.value()
             : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
-    Barrier(cmdList, target, outputArrival, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    ScopedOutputArrival outputEnvelope(cmdList, target, outputArrival);
 
     ID3D12Device* device = nullptr;
 
@@ -1500,6 +1479,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         ReportSkipOnce("the output texture belongs to no D3D12 device");
         return;
     }
+
+    EnsureExposureDummy(device, cmdList);
 
     const D3D12_RESOURCE_DESC desc = target->GetDesc();
     const auto width = (unsigned int) desc.Width;
@@ -1597,9 +1578,10 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     static GuideReport loggedGuides {};
 
-    const GuideReport guidesNow { true,       g_nr.guideDepthInverted, g_nr.guideMvScaleX,
-                                  g_nr.guideMvScaleY, guideWidth,      guideHeight,
-                                  width,      (unsigned int) height };
+    const GuideReport guidesNow {
+        true,  g_nr.guideDepthInverted, g_nr.guideMvScaleX, g_nr.guideMvScaleY, guideWidth, guideHeight,
+        width, (unsigned int) height
+    };
 
     if (!loggedGuides.valid || loggedGuides.depthInverted != guidesNow.depthInverted ||
         loggedGuides.mvScaleX != guidesNow.mvScaleX || loggedGuides.mvScaleY != guidesNow.mvScaleY ||
@@ -1608,8 +1590,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     {
         loggedGuides = guidesNow;
         LOG_INFO("DLSS-NR guides: depth {}, motion vector scale {} x {}, guides {}x{} for a {}x{} frame",
-                 g_nr.guideDepthInverted ? "inverted" : "not inverted", g_nr.guideMvScaleX,
-                 g_nr.guideMvScaleY, guideWidth, guideHeight, width, height);
+                 g_nr.guideDepthInverted ? "inverted" : "not inverted", g_nr.guideMvScaleX, g_nr.guideMvScaleY,
+                 guideWidth, guideHeight, width, height);
     }
 
     if (cfg.DlssNrProxyProbe.value_or_default())
@@ -1633,8 +1615,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     ReleaseSurfacesIfFormatChanged(desc.Format);
 
-    const bool resolutionChanged = g_nr.width != width || g_nr.height != height ||
-                                   g_nr.workWidth != workWidth || g_nr.workHeight != workHeight;
+    const bool resolutionChanged =
+        g_nr.width != width || g_nr.height != height || g_nr.workWidth != workWidth || g_nr.workHeight != workHeight;
 
     // The model reads its tuning once, while the feature is built, so a changed setting only takes
     // effect when the feature is rebuilt. TuningMatchesFeature was written to notice that and then
@@ -1659,6 +1641,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             ParkNrResource(g_nr.colorCopy);
             ParkNrResource(g_nr.hdrCopy);
             ParkNrResource(g_nr.colorSmall);
+            InvalidateMeterReadback();
         }
     }
 
@@ -1694,8 +1677,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         for (auto& rb : g_nr.meterReadback)
         {
             if (FAILED(device->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-                                                       D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                                       IID_PPV_ARGS(&rb))))
+                                                       D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&rb))))
             {
                 rb = nullptr;
                 LOG_WARN("DLSS-NR: the white point meter could not allocate its readback; falling back "
@@ -1707,8 +1689,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             LOG_INFO("DLSS-NR: white point meter up, {}x{} tiles", kDlssNrMeterGrid, kDlssNrMeterGrid);
     }
 
-    if (g_nr.feature == nullptr && g_nr.output != nullptr && g_nr.colorCopy != nullptr &&
-        g_nr.hdrCopy != nullptr)
+    if (g_nr.feature == nullptr && g_nr.output != nullptr && g_nr.colorCopy != nullptr && g_nr.hdrCopy != nullptr)
     {
         auto snippet = Util::FindFilePath(g_dllDir, "nvngx_dlssnr.dll");
 
@@ -1725,17 +1706,15 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         }
 
         SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
-        g_nr.feature =
-            g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                        device, cmdList, g_nr.capabilityParams, workWidth, workHeight,
-                        (int) cfg.DlssNrPreset.value_or_default(),
-                        cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
-                        cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
-                        cfg.DlssNrSkinStructure.value_or_default(),
-                        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0,
-                        // UI correction at the model's own default: with no UI layer fed to it there
-                        // is nothing for it to correct.
-                        1);
+        g_nr.feature = g_nr.create(
+            snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(), device, cmdList,
+            g_nr.capabilityParams, workWidth, workHeight, (int) cfg.DlssNrPreset.value_or_default(),
+            cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
+            cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
+            cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0,
+            // UI correction at the model's own default: with no UI layer fed to it there
+            // is nothing for it to correct.
+            1);
 
         if (g_nr.feature == nullptr)
         {
@@ -1756,8 +1735,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         g_nr.height = height;
         g_nr.reset = true;
         RecordBuiltTuning(cfg);
-        LOG_INFO("DLSS-NR running at {}x{}, guides {}x{} (preset {}, intensity {}, style {})", width,
-                 height, guideWidth, guideHeight, g_nr.builtPreset, g_nr.builtIntensity, g_nr.builtStyle);
+        LOG_INFO("DLSS-NR running at {}x{}, guides {}x{} (preset {}, intensity {}, style {})", width, height,
+                 guideWidth, guideHeight, g_nr.builtPreset, g_nr.builtIntensity, g_nr.builtStyle);
 
         // Creating and evaluating a feature in the same command list is the dice-roll that hung the
         // GPU (every crash died on a creation frame). The creation goes through the game's own submit
@@ -1789,8 +1768,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     {
         reportedHdr = true;
         LOG_INFO("DLSS-NR: the game's DLSS buffer is {} so the colour transform is {}",
-                 isHdrBuffer ? "linear HDR" : "already tone-mapped",
-                 isHdrBuffer ? "on" : "off");
+                 isHdrBuffer ? "linear HDR" : "already tone-mapped", isHdrBuffer ? "on" : "off");
     }
 
     const bool haveCodec = IsInit();
@@ -1838,8 +1816,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // touching state was unsafe this frame, and binding the pass now would leave state the envelope
     // cannot clean up. So on those games, skip the frame rather than corrupt it. Ordinary games do
     // not require restore, so they are unaffected and the pass runs as before.
-    const bool restoreRequired = cfg.RestoreComputeSignature.value_or_default() ||
-                                 cfg.RestoreGraphicSignature.value_or_default();
+    const bool restoreRequired =
+        cfg.RestoreComputeSignature.value_or_default() || cfg.RestoreGraphicSignature.value_or_default();
 
     if (restoreRequired && !D3D12Hooks::CanRestoreRootSignature(cmdList))
     {
@@ -1865,73 +1843,96 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (g_gpuTime != nullptr)
         g_gpuTime->Start(cmdList);
 
-    // Fetch the game's exposure, where the game supplies one and the user asked for it.
-    //
-    // This used to measure the white point off the frame as well, over a 64x64 grid of tile
-    // luminances. That is gone: the pass writes the frame it was measuring, so the divisor chased its
-    // own output -- one Enshrouded session walked it from 0.010 to 97.910, and toggling NR at a fixed
-    // spot read 41.31 off against 0.46 on. What remains dispatches a single thread to copy the game's
-    // 1x1 exposure texture into tile 0. That is a courier, not a measurement, and cannot feed back.
-    // Gated on the source the menu actually writes. This read the retired WhitePointFromExposure
-    // flag while consumption keyed on WhitePointSource == 1, so choosing "the game's own exposure"
-    // never dispatched the meter and the white point silently fell back to the slider.
-    const bool exposureSettingOn = cfg.DlssNrWhitePointSource.value_or_default() == 1;
+    ID3D12Resource* const gameRes = (ID3D12Resource*) frame.ExposureTexture;
+    const bool usable = ExposureUsable(gameRes);
 
-    // Nothing held from before the option was switched off may survive switching it back on. See
-    // InvalidateExposureMeter for what froze and why it read as a colour cast.
-    if (exposureSettingOn && !g_nr.exposureSettingWasOn)
+    const uint32_t source = cfg.DlssNrWhitePointSource.value_or_default();
+
+    haveEvaluated.store(true);
+    sessionPassthrough.store(!isHdrBuffer);
+
+    if (usable)
+        sessionHasTexture.store(true);
+
+    const bool heldE = std::isfinite(g_nr.gameExposure) && g_nr.gameExposure > 1e-6f;
+    const float scale = cfg.DlssNrWhitePointScale.value_or_default();
+    const float trim = std::clamp(cfg.DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
+    float anchored = 0.0f;
+    if (source == 2)
     {
-        InvalidateExposureMeter();
-        LOG_INFO("DLSS-NR exposure: option switched on, held reading discarded");
+        anchored = DlssNr::ExposureScan::AnchoredWhitePoint(DlssNr::ExposureScan::BestValue(),
+                                                            cfg.DlssNrScanInverted.value_or_default(),
+                                                            cfg.DlssNrScanTrim.value_or_default());
+    }
+    const WhitePointDecision d = DecideWhitePoint(source, isHdrBuffer, usable, heldE, scale, trim, g_nr.gameExposure,
+                                                  frame.PreExposure, frame.ExposureScale, anchored);
+    ID3D12Resource* encodeT4 = (d.useGameExposure == 1) ? gameRes : g_nr.exposureDummy;
+    const bool hole = isHdrBuffer && source == 1 && !usable;
+
+    if (frame.ExposureTexture != nullptr && !usable)
+    {
+        static bool loggedUnusable = false;
+
+        if (!loggedUnusable)
+        {
+            loggedUnusable = true;
+            LOG_WARN("DLSS-NR: ExposureTexture failed ExposureUsable (format {}, dim {}, samples {})",
+                     (int) gameRes->GetDesc().Format, (int) gameRes->GetDesc().Dimension,
+                     gameRes->GetDesc().SampleDesc.Count);
+        }
     }
 
-    g_nr.exposureSettingWasOn = exposureSettingOn;
-
-    const bool wantExposure = exposureSettingOn && frame.ExposureTexture != nullptr;
-
-    if (g_nr.meter != nullptr && wantExposure)
+    if (usable)
     {
-        DlssNrConstants meterParams {};
-        meterParams.Mode = DlssNrMode_Meter;
+        static bool loggedUsable = false;
 
-        // One pixel. Only tile (0,0) is read back, and the tile-mean branch below it in the shader is
-        // dead code the dispatch simply never reaches.
-        meterParams.Width = 1;
-        meterParams.Height = 1;
+        if (!loggedUsable)
+        {
+            loggedUsable = true;
+            const D3D12_RESOURCE_DESC expDesc = gameRes->GetDesc();
+            LOG_INFO("DLSS-NR exposure usable: {}x{} format {} P {} S {}", (unsigned) expDesc.Width, expDesc.Height,
+                     (int) expDesc.Format, frame.PreExposure, frame.ExposureScale);
+        }
+    }
 
-        Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        DispatchPass(cmdList, meterParams, target, nullptr, nullptr,
-                     (ID3D12Resource*) frame.ExposureTexture, nullptr, g_nr.meter, nullptr);
-        Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    if (hole)
+    {
+        static bool loggedHole = false;
 
-        CopyMeterToReadback(cmdList, device, true);
-        ConsumeMeterReadback();
+        if (!loggedHole)
+        {
+            loggedHole = true;
+            LOG_INFO("DLSS-NR exposure hole: Effective but this frame's pointer is null or unusable"
+                     " (held E {})",
+                     heldE ? g_nr.gameExposure : 0.0f);
+        }
     }
 
     g_nr.gamePreExposure = frame.PreExposure;
+    readoutP.store(frame.PreExposure);
+    readoutS.store(frame.ExposureScale);
 
-    const float whitePoint = ResolveWhitePoint(cfg, isHdrBuffer);
+    ExposureHotfixSpan exposureHotfix;
+
+    if (d.useGameExposure == 1)
+        exposureHotfix.Open(cmdList, gameRes);
 
     DlssNrConstants encodeParams {};
     encodeParams.Mode = DlssNrMode_Encode;
     // A frame that is already display-referred is handed over untouched: the encode becomes a copy and
     // the resolve adds the model's edit back at full scale.
     encodeParams.Passthrough = isHdrBuffer ? 0u : 1u;
-    encodeParams.WhitePoint = whitePoint;
-    // Match only takes effect once a fit exists; until then the table is empty and the shader would
-    // read a curve of zeros, so it falls back to the plain proxy.
+    encodeParams.WhitePoint = d.whitePoint;
     encodeParams.Width = width;
     encodeParams.Height = height;
+    encodeParams.UseGameExposure = d.useGameExposure;
+    encodeParams.PreExposure = frame.PreExposure;
+    encodeParams.ExposureScale = frame.ExposureScale;
 
-    Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    DispatchPass(cmdList, encodeParams, target, nullptr, nullptr, nullptr, nullptr,
-                        g_nr.colorCopy, g_nr.hdrCopy);
+    Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    DispatchPass(cmdList, encodeParams, target, nullptr, nullptr, nullptr, encodeT4, g_nr.colorCopy, g_nr.hdrCopy);
 
-    Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     // The transitions double as the wait for the encode's writes.
     Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -1941,6 +1942,31 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    // Mode 3 whenever usable, even if !Effective (then encodeT4 is dummy and this t4 is the game
+    // resource). Courier for the menu and the held E, not the picture. After encode, before downsample
+    // / UseProxy. The target UAV↔SRV pair moved here with it.
+    if (usable && g_nr.meter != nullptr)
+    {
+        if (d.useGameExposure != 1)
+            exposureHotfix.Open(cmdList, gameRes);
+
+        DlssNrConstants meterParams {};
+        meterParams.Mode = DlssNrMode_Meter;
+        meterParams.Width = 1;
+        meterParams.Height = 1;
+
+        Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        DispatchPass(cmdList, meterParams, target, nullptr, nullptr, nullptr, gameRes, g_nr.meter, nullptr);
+        Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        CopyMeterToReadback(cmdList, device, true);
+        ConsumeMeterReadback();
+
+        // !Effective && usable: first = last = Mode 3.
+        if (d.useGameExposure != 1)
+            exposureHotfix.Close();
+    }
 
     // Below full resolution the model is shown a filtered shrink of the proxy; the edit it returns is
     // enlarged during the resolve while the frame underneath stays full size and untouched.
@@ -1952,8 +1978,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         down.Mode = DlssNrMode_Downsample;
         down.Width = workWidth;
         down.Height = workHeight;
-        DispatchPass(cmdList, down, modelInput, nullptr, nullptr, nullptr, nullptr,
-                            g_nr.colorSmall, nullptr);
+        DispatchPass(cmdList, down, modelInput, nullptr, nullptr, nullptr, nullptr, g_nr.colorSmall, nullptr);
         Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         modelInput = g_nr.colorSmall;
@@ -1970,7 +1995,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         g_nr.failed = true;
         g_nr.reason = "the game's depth or motion vectors could not be made readable";
         LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
-        Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, outputArrival);
         device->Release();
         return;
     }
@@ -1990,9 +2014,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (cfg.DlssNrUseProxy.value_or_default())
     {
         const unsigned int proxyResult = DlssNr::Proxy::Run(
-            cmdList, device, modelInput, depthIn, motionIn, g_nr.output, workWidth, workHeight,
-            guideWidth, guideHeight, g_nr.guideDepthInverted, g_nr.reset,
-            g_nr.guideMvScaleX * mvToWork, g_nr.guideMvScaleY * mvToWork);
+            cmdList, device, modelInput, depthIn, motionIn, g_nr.output, workWidth, workHeight, guideWidth, guideHeight,
+            g_nr.guideDepthInverted, g_nr.reset, g_nr.guideMvScaleX * mvToWork, g_nr.guideMvScaleY * mvToWork);
 
         g_nr.reset = false;
 
@@ -2000,11 +2023,11 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         {
             g_nr.failed = true;
             g_nr.reason = "the proxy path could not run the model";
-            LOG_ERROR("DLSS-NR (proxy): evaluate returned 0x{:X} ({}), disabling for this session",
-                      proxyResult, NgxResultName(proxyResult));
+            LOG_ERROR("DLSS-NR (proxy): evaluate returned 0x{:X} ({}), disabling for this session", proxyResult,
+                      NgxResultName(proxyResult));
         }
 
-        Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, outputArrival);
+        exposureHotfix.Close();
         device->Release();
         return;
     }
@@ -2015,13 +2038,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // Multi-pass was removed: re-feeding the model its own output re-opened the same-command-list
     // feature-creation hang, and the colour core is not settled enough to build on. One evaluate.
     const int result = g_nr.evaluate(
-        cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
-        workWidth, workHeight, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0,
-        g_nr.reset ? 1 : 0, cfg.DlssNrIntensity.value_or_default(),
-        (int) cfg.DlssNrStyle.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
-        cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
-        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, g_nr.guideMvScaleX * mvToWork,
-        g_nr.guideMvScaleY * mvToWork);
+        cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output, workWidth, workHeight,
+        guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0, g_nr.reset ? 1 : 0,
+        cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
+        cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
+        cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0,
+        g_nr.guideMvScaleX * mvToWork, g_nr.guideMvScaleY * mvToWork);
 
     if (g_ngxTime != nullptr)
         g_ngxTime->End(cmdList);
@@ -2041,8 +2063,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         {
             float value = 0.0f;
             const NVSDK_NGX_Result r = g_nr.capabilityParams->Get(name, &value);
-            LOG_INFO("DLSS-NR readback {} -> {} (we wrote {}, result 0x{:X})", name, value, wrote,
-                     (uint32_t) r);
+            LOG_INFO("DLSS-NR readback {} -> {} (we wrote {}, result 0x{:X})", name, value, wrote, (uint32_t) r);
         };
 
         const Config& rcfg = *Config::Instance();
@@ -2058,38 +2079,35 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         // The preset is the last control whose arrival has never been checked, and three of them look
         // identical in play. Either it is not landing or the presets really are alike.
         unsigned int preset = 0;
-        const NVSDK_NGX_Result presetResult =
-            g_nr.capabilityParams->Get("DLSSNR.Hint.Render.Preset", &preset);
+        const NVSDK_NGX_Result presetResult = g_nr.capabilityParams->Get("DLSSNR.Hint.Render.Preset", &preset);
         LOG_DEBUG("DLSS-NR readback DLSSNR.Hint.Render.Preset -> {} (result 0x{:X}, we wrote {})", preset,
-                 (uint32_t) presetResult, cfg.DlssNrPreset.value_or_default());
+                  (uint32_t) presetResult, cfg.DlssNrPreset.value_or_default());
 
         LOG_DEBUG("DLSS-NR wrote intensity {}, local structure {}, local tone {}, skin {}, style {}",
-                 cfg.DlssNrIntensity.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
-                 cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
-                 cfg.DlssNrStyle.value_or_default());
+                  cfg.DlssNrIntensity.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
+                  cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
+                  cfg.DlssNrStyle.value_or_default());
     }
 
     if (result == NVSDK_NGX_Result_Success)
     {
-        // Resolve takes the difference between what the model returned and what it was shown, and adds
-        // that back to the frame. At strength zero the result is what the upscaler produced, exactly, and
-        // anything the model left alone is untouched rather than round-tripped through the curve.
-        DlssNrConstants resolveParams {};
+        // The resolve composes the model's answer against the keep (hdrCopy) as the shader describes;
+        // the additive description is from an older composition. At strength zero the keep comes
+        // back as stored.
+        DlssNrConstants resolveParams = encodeParams;
         resolveParams.Mode = DlssNrMode_Resolve;
-        resolveParams.WhitePoint = whitePoint;
-        resolveParams.Width = width;
-        resolveParams.Height = height;
         resolveParams.TransferStrength = cfg.DlssNrTransferStrength.value_or_default();
         resolveParams.ColourStrength = cfg.DlssNrColourStrength.value_or_default();
         resolveParams.DebugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.MaxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.Transfer = cfg.DlssNrTransfer.value_or_default();
         resolveParams.DebugScale = cfg.DlssNrWhitePointScale.value_or_default();
-        resolveParams.Passthrough = isHdrBuffer ? 0u : 1u;
         resolveParams.CompareMode = cfg.DlssNrCompare.value_or_default();
         resolveParams.CompareSplit = cfg.DlssNrCompareSplit.value_or_default();
         resolveParams.CompareZoom = std::max(1.0f, cfg.DlssNrCompareZoom.value_or_default());
         resolveParams.CompareSwap = cfg.DlssNrCompareSwap.value_or_default() ? 1u : 0u;
+        resolveParams.WhitePoint = encodeParams.WhitePoint;
+        resolveParams.UseGameExposure = encodeParams.UseGameExposure;
 
         // The numbers the composition actually ran with, logged when any of them changes.
         //
@@ -2133,10 +2151,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         if (!loggedCompose.valid || loggedCompose.whitePoint != composeNow.whitePoint ||
             loggedCompose.transfer != composeNow.transfer || loggedCompose.colour != composeNow.colour ||
-            loggedCompose.maxRatio != composeNow.maxRatio ||
-            loggedCompose.passthrough != composeNow.passthrough ||
-            loggedCompose.debugView != composeNow.debugView ||
-            loggedCompose.compareMode != composeNow.compareMode ||
+            loggedCompose.maxRatio != composeNow.maxRatio || loggedCompose.passthrough != composeNow.passthrough ||
+            loggedCompose.debugView != composeNow.debugView || loggedCompose.compareMode != composeNow.compareMode ||
             loggedCompose.residual != composeNow.residual || loggedCompose.workW != composeNow.workW ||
             loggedCompose.workH != composeNow.workH)
         {
@@ -2145,16 +2161,18 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                      "{:.1f}x, colour transform {}, transfer {}, model {}x{}, debug view {}, compare {}",
                      composeNow.whitePoint, composeNow.transfer, composeNow.colour, composeNow.maxRatio,
                      composeNow.passthrough != 0 ? "off (frame already tone mapped)" : "on (linear HDR)",
-                     composeNow.residual == 1 ? "matched residual" : "classic", composeNow.workW,
-                     composeNow.workH, composeNow.debugView, composeNow.compareMode);
+                     composeNow.residual == 1 ? "matched residual" : "classic", composeNow.workW, composeNow.workH,
+                     composeNow.debugView, composeNow.compareMode);
         }
 
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        DispatchPass(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, motionIn,
-                            nullptr, target, nullptr);
+        DispatchPass(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, g_nr.colorCopy, encodeT4, target,
+                     nullptr);
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        // Effective && usable and resolve: first = encode, last = resolve.
+        exposureHotfix.Close();
 
         // On-demand capture works in this path too: the staging copy still holds the frame as the
         // upscaler produced it, and the edited frame is the output itself. The write happens a few
@@ -2162,8 +2180,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         // own.
         if (g_capture.isActive())
         {
-            g_capture.record(cmdList, device, g_nr.colorCopy,
-                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, target,
+            g_capture.record(cmdList, device, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, target,
                              D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
             if (g_capture.readyToWrite() && g_captureWriteAtFrame == 0)
@@ -2190,8 +2207,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         // invoked on serves. The bridges have to say, because they run on a queue of their own that
         // State never learns about -- a Vulkan game creates no D3D12 swapchain, so nothing ever sets
         // currentCommandQueue and the cost went unreported.
-        auto* queue = timingQueue != nullptr ? timingQueue
-                                             : (ID3D12CommandQueue*) State::Instance().currentCommandQueue;
+        auto* queue =
+            timingQueue != nullptr ? timingQueue : (ID3D12CommandQueue*) State::Instance().currentCommandQueue;
 
         if (queue != nullptr)
         {
@@ -2213,8 +2230,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                 lastSplitLog = g_frames;
                 const double total = g_lastGpuTime.value();
                 const double ngx = g_lastNgxTime.value();
-                LOG_INFO("DLSS-NR cost: {:.2f} ms total = {:.2f} ms model + {:.2f} ms ours ({:.0f}% ours)",
-                         total, ngx, total - ngx, total > 0.0 ? 100.0 * (total - ngx) / total : 0.0);
+                LOG_INFO("DLSS-NR cost: {:.2f} ms total = {:.2f} ms model + {:.2f} ms ours ({:.0f}% ours)", total, ngx,
+                         total - ngx, total > 0.0 ? 100.0 * (total - ngx) / total : 0.0);
             }
         }
     }
@@ -2240,9 +2257,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
-    // Hand the output back in the state the upscaler and the game expect.
-    Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, outputArrival);
-
     device->Release();
 }
 
@@ -2253,7 +2267,6 @@ void RetryAfterFailure()
     g_nr.failed = false;
     g_nr.reason = "";
     g_nr.reset = true;
-
 }
 
 // Reads the game's parameter block and runs the pass on what it finds.
@@ -2301,9 +2314,9 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     // carry none of it -- so it stays quiet and tries again next frame.
     if (target == nullptr || depth == nullptr || motion == nullptr)
     {
-        ReportSkipOnce(target == nullptr    ? "the parameters carried no output texture"
-                       : depth == nullptr   ? "the parameters carried no depth"
-                                            : "the parameters carried no motion vectors");
+        ReportSkipOnce(target == nullptr  ? "the parameters carried no output texture"
+                       : depth == nullptr ? "the parameters carried no depth"
+                                          : "the parameters carried no motion vectors");
         return;
     }
 
@@ -2339,36 +2352,22 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     if (params->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &frame.MvScaleY) != NVSDK_NGX_Result_Success)
         frame.MvScaleY = 1.0f;
 
-    // What the game says about its own exposure. Logged, used for nothing yet.
+    // What the game says about its own exposure. Filled into FrameInfo; Dispatch decides
+    // usable / Effective / t4. The paper-white slider lives in Config.
     //
-    // The white point measured from the frame turned out to be a control loop rather than a
-    // measurement: the pass writes into the buffer it reads, most games adapt their exposure to the
-    // finished frame, and the two chase each other -- 0.01 to 97.9 in one Enshrouded session. Any
-    // statistic taken from a frame we modify has that problem.
-    //
-    // These do not. DLSS.Pre.Exposure is the scale the game applied before handing the buffer over,
-    // and ExposureTexture is a 1x1 the game fills with the exposure it is using; both are the game's
-    // own numbers, decided upstream of anything here. Whether either is close to the divisor the model
-    // actually wants is unknown, which is why this only prints them.
+    // DLSS.Pre.Exposure is the scale the game applied before handing the buffer over,
+    // DLSS.Exposure.Scale is the extra NGX scale, and ExposureTexture is a 1x1 the game fills.
+    // All three are the game's own numbers, decided upstream of anything here.
     //
     // The auto-exposure flag decides whether the texture means anything: with it set the game is
     // telling DLSS to work exposure out for itself and may supply nothing. OptiScaler forces that flag
     // on for eighteen games, so it is logged too -- reading a value whose flag has been overridden is
     // how the debug views lied earlier tonight.
     {
-        float preExposure = 0.0f;
-        const bool havePre =
-            params->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, &preExposure) == NVSDK_NGX_Result_Success;
-
-        void* exposureTex = nullptr;
-        params->Get(NVSDK_NGX_Parameter_ExposureTexture, &exposureTex);
-
-        frame.ExposureTexture = exposureTex;
-        frame.PreExposure = havePre && preExposure > 1e-6f ? preExposure : 1.0f;
-
-        g_nr.exposureOfferedNow = exposureTex != nullptr;
-        g_nr.exposureEverOffered = g_nr.exposureEverOffered || g_nr.exposureOfferedNow;
-        g_nr.exposureFrames++;
+        const NrExposure exposure = ReadNrExposure(params);
+        frame.ExposureTexture = exposure.texture;
+        frame.PreExposure = exposure.pre;
+        frame.ExposureScale = exposure.scale;
 
         const bool autoExposureFlag = (createFlags & NVSDK_NGX_DLSS_Feature_Flags_AutoExposure) != 0;
 
@@ -2376,37 +2375,34 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         {
             bool valid;
             float pre;
-            bool havePre;
+            float scale;
             bool haveTexture;
             bool autoFlag;
         };
 
         static ExposureReport logged {};
-        const ExposureReport now { true, havePre ? preExposure : 0.0f, havePre, exposureTex != nullptr,
-                                   autoExposureFlag };
+        const ExposureReport now { true, exposure.pre, exposure.scale, exposure.texture != nullptr, autoExposureFlag };
 
-        if (!logged.valid || logged.havePre != now.havePre || logged.haveTexture != now.haveTexture ||
-            logged.autoFlag != now.autoFlag ||
-            std::abs(logged.pre - now.pre) > std::max(0.01f * std::abs(now.pre), 1e-4f))
+        if (!logged.valid || logged.haveTexture != now.haveTexture || logged.autoFlag != now.autoFlag ||
+            std::abs(logged.pre - now.pre) > std::max(0.01f * std::abs(now.pre), 1e-4f) ||
+            std::abs(logged.scale - now.scale) > std::max(0.01f * std::abs(now.scale), 1e-4f))
         {
             logged = now;
-            LOG_INFO("DLSS-NR exposure from the game: DLSS.Pre.Exposure {}, ExposureTexture {}, "
-                     "auto-exposure flag {}",
-                     now.havePre ? std::to_string(now.pre) : std::string("not supplied"),
-                     now.haveTexture ? "supplied" : "not supplied", now.autoFlag ? "set" : "clear");
+            LOG_INFO("DLSS-NR exposure from the game: DLSS.Pre.Exposure {}, DLSS.Exposure.Scale {}, "
+                     "ExposureTexture {}, auto-exposure flag {}",
+                     now.pre, now.scale, now.haveTexture ? "supplied" : "not supplied", now.autoFlag ? "set" : "clear");
         }
 
-        // The value itself, once it has come back off the GPU. Separate from the line above because
-        // that one says what the game offers and this one says what it actually reads -- and because
-        // the reading arrives three frames after the offer.
+        // Courier readback, three frames after the offer. The menu shows this; encode does not
+        // use this CPU float.
         static float loggedExposure = -1.0f;
 
         if (g_nr.gameExposure > 1e-6f &&
             std::abs(loggedExposure - g_nr.gameExposure) > std::max(0.02f * g_nr.gameExposure, 1e-5f))
         {
             loggedExposure = g_nr.gameExposure;
-            LOG_INFO("DLSS-NR game exposure {:.5f} (pre-exposure {:.3f}) -> white point would be {:.2f}",
-                     g_nr.gameExposure, g_nr.gamePreExposure, g_nr.gamePreExposure / g_nr.gameExposure);
+            LOG_INFO("DLSS-NR courier readback {:.5f} (pre-exposure {:.3f}) -- not the value encode used",
+                     g_nr.gameExposure, g_nr.gamePreExposure);
         }
 
         // The scan's number, on the same cadence, so one log carries both.
@@ -2451,6 +2447,8 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     }
 
     // The pass is the object, so the caller holds it. Built once, on the device the frame is on.
+    // The exposure dummy is created on the first Dispatch that has a device (same frame, under
+    // g_nrMutex) rather than here, so two EvaluateAfterUpscale call sites cannot race the pointer.
     if (g_compose == nullptr)
         g_compose = std::make_unique<DlssNr_Dx12>("Neural Rendering", device);
 
@@ -2489,8 +2487,8 @@ void ProbeD3D11(void* d3d11Device)
         return;
 
     auto probe = (int (*)(const wchar_t*)) GetProcAddress(g_nr.forwarder, "dlssnr_d3d11_probe");
-    auto init = (int (*)(const wchar_t*, const wchar_t*, void*, int, int*, int*)) GetProcAddress(
-        g_nr.forwarder, "dlssnr_d3d11_init");
+    auto init = (int (*)(const wchar_t*, const wchar_t*, void*, int, int*, int*)) GetProcAddress(g_nr.forwarder,
+                                                                                                 "dlssnr_d3d11_init");
 
     if (probe == nullptr || init == nullptr)
     {
@@ -2511,8 +2509,8 @@ void ProbeD3D11(void* d3d11Device)
 
     // And the question NGX has an API for. Asked first because it creates nothing: if the feature
     // declines D3D11 here, that is the feature's own answer rather than our reading of a failed init.
-    auto requirements = (int (*)(const wchar_t*, void*, unsigned int*, unsigned int*, unsigned int*))
-        GetProcAddress(g_nr.forwarder, "dlssnr_d3d11_requirements");
+    auto requirements = (int (*)(const wchar_t*, void*, unsigned int*, unsigned int*, unsigned int*)) GetProcAddress(
+        g_nr.forwarder, "dlssnr_d3d11_requirements");
 
     if (requirements != nullptr)
     {
@@ -2530,13 +2528,13 @@ void ProbeD3D11(void* d3d11Device)
         unsigned int minOs = 0;
         const int rc = requirements(snippet->wstring().c_str(), adapter, &supported, &minArch, &minOs);
 
-        const char* meaning = supported == 0        ? "SUPPORTED"
-                              : (supported & 16)    ? "NotImplemented -- the feature has no D3D11 path"
-                              : (supported & 4)     ? "AdapterUnsupported"
-                              : (supported & 2)     ? "DriverVersionUnsupported"
-                              : (supported & 8)     ? "OSVersionBelowMinimum"
-                              : (supported & 1)     ? "CheckNotPresent"
-                                                    : "unknown";
+        const char* meaning = supported == 0     ? "SUPPORTED"
+                              : (supported & 16) ? "NotImplemented -- the feature has no D3D11 path"
+                              : (supported & 4)  ? "AdapterUnsupported"
+                              : (supported & 2)  ? "DriverVersionUnsupported"
+                              : (supported & 8)  ? "OSVersionBelowMinimum"
+                              : (supported & 1)  ? "CheckNotPresent"
+                                                 : "unknown";
 
         LOG_WARN("DLSS-NR D3D11: GetFeatureRequirements {} ({}), FeatureSupported 0x{:X} -- {}. "
                  "minimum architecture 0x{:X}, minimum OS 0x{:X}",
@@ -2549,8 +2547,8 @@ void ProbeD3D11(void* d3d11Device)
             factory->Release();
     }
 
-    LOG_INFO("DLSS-NR D3D11: entry points resolved {}/15 (init {}, create {}, evaluate {}, release {})",
-             bits, (bits & 1) ? "yes" : "no", (bits & 2) ? "yes" : "no", (bits & 4) ? "yes" : "no",
+    LOG_INFO("DLSS-NR D3D11: entry points resolved {}/15 (init {}, create {}, evaluate {}, release {})", bits,
+             (bits & 1) ? "yes" : "no", (bits & 2) ? "yes" : "no", (bits & 4) ? "yes" : "no",
              (bits & 8) ? "yes" : "no");
 
     if (bits != 15)
@@ -2591,37 +2589,50 @@ void ProbeD3D11(void* d3d11Device)
                  result, NgxResultName((unsigned int) result));
 }
 
-CalibrationReading Calibration()
-{
-    CalibrationReading r {};
-    r.suggestion = g_nr.calibSuggestion;
-    r.steadiness = g_nr.calibSteadiness;
-    r.samples = g_nr.calibCount;
-    r.usable = g_nr.calibUsable;
-    r.why = g_nr.calibWhy;
-    return r;
-}
-
 bool IsRunning() { return g_nr.feature != nullptr && !g_nr.failed; }
 
 const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
 
-// What the game offers by way of exposure, and what has been read from it. For the menu, so a user
-// can see whether this game supplies one at all without having to read a log.
-ExposureStatus GameExposureStatus()
+bool GameExposureCanEnable()
 {
-    ExposureStatus s {};
-    s.seenFrames = g_nr.exposureFrames;
-    s.offeredNow = g_nr.exposureOfferedNow;
-    s.everOffered = g_nr.exposureEverOffered;
-    s.exposure = g_nr.gameExposure;
-    s.preExposure = g_nr.gamePreExposure;
-    return s;
+    return sessionHasTexture.load() && !sessionPassthrough.load() && haveEvaluated.load() && !IsRunningVk();
+}
+
+bool GameExposureEffective()
+{
+    return GameExposureCanEnable() && Config::Instance()->DlssNrWhitePointSource.value_or_default() == 1;
+}
+
+GameExposureWait GameExposureUiState()
+{
+    if (IsRunningVk())
+        return GameExposureWait::NativeVulkan;
+
+    if (!haveEvaluated.load())
+        return GameExposureWait::Waiting;
+
+    if (sessionPassthrough.load())
+        return GameExposureWait::Passthrough;
+
+    if (!sessionHasTexture.load())
+        return GameExposureWait::Absent;
+
+    return GameExposureWait::Available;
+}
+
+GameExposureReadout GameExposureMenuReadout()
+{
+    GameExposureReadout r {};
+    r.haveNumbers = haveFiniteE.load();
+    r.e = readoutE.load();
+    r.p = readoutP.load();
+    r.s = readoutS.load();
+    r.gameW = r.haveNumbers ? GameWhite(r.e, r.p, r.s) : 0.0f;
+    r.slider = Config::Instance()->DlssNrWhitePointTrim.value_or_default();
+    return r;
 }
 
 std::optional<double> LastGpuTime() { return g_lastGpuTime; }
-
-
 
 void RequestCapture(unsigned int frames)
 {
@@ -2683,33 +2694,17 @@ void Shutdown()
         g_nr.colorSmall = nullptr;
     }
 
+    if (g_nr.exposureDummy != nullptr)
+    {
+        g_nr.exposureDummy->Release();
+        g_nr.exposureDummy = nullptr;
+    }
+
     if (g_nr.meter != nullptr)
     {
         g_nr.meter->Release();
         g_nr.meter = nullptr;
     }
-
-    if (g_nr.calib != nullptr)
-    {
-        g_nr.calib->Release();
-        g_nr.calib = nullptr;
-    }
-
-    for (auto& r : g_nr.calibReadback)
-    {
-        if (r != nullptr)
-        {
-            r->Release();
-            r = nullptr;
-        }
-    }
-
-    g_nr.calibFrames = 0;
-    g_nr.calibCount = 0;
-    g_nr.calibSuggestion = 0.0f;
-    g_nr.calibSteadiness = 0.0f;
-    g_nr.calibUsable = false;
-    g_nr.calibWhy = "measuring...";
 
     for (auto& rb : g_nr.meterReadback)
     {
@@ -2721,23 +2716,29 @@ void Shutdown()
     }
 
     // The slots these flags describe have just been released, so nothing may vouch for what the next
-    // buffers happen to contain. gameExposure is deliberately NOT cleared here: a recreate is a
-    // transition within the same scene, and dropping to the slider for a few frames would be the
-    // flicker the held value exists to prevent. The user switching the option off is the case where
-    // the held value has to go, and that is handled at the edge in Dispatch.
+    // buffers happen to contain. gameExposure is cleared below because Shutdown tears the session
+    // down; a mid-session recreate goes through InvalidateMeterReadback instead. Switching
+    // WhitePointSource to 1 must not wipe a courier Mode 3 has been keeping warm.
     for (bool& valid : g_nr.meterExposureValid)
         valid = false;
 
     g_nr.meterFrames = 0;
-
+    InvalidateMeterReadback();
+    g_nr.gameExposure = 0.0f;
+    g_nr.gamePreExposure = 1.0f;
+    haveEvaluated.store(false);
+    sessionHasTexture.store(false);
+    sessionPassthrough.store(false);
+    haveFiniteE.store(false);
+    readoutE.store(0.0f);
+    readoutP.store(1.0f);
+    readoutS.store(1.0f);
 
     if (g_nr.depthClone != nullptr)
     {
         g_nr.depthClone->Release();
         g_nr.depthClone = nullptr;
     }
-
-
 
     if (g_nr.motionClone != nullptr)
     {
