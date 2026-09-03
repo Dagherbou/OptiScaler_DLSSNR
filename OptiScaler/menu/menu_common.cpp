@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 #include "menu_common.h"
+#include <dlssnr/DlssNr_ExposureScan.h>
 
 #include <algorithm>
 #include <cfloat>
@@ -1469,8 +1470,13 @@ void MenuCommon::BeginMenuFrameIfNeeded(RenderMenuContext& ctx)
     auto& newFrame = ctx.newFrame;
 
     // New frame check
+    // The exposure scan's indicator is drawn while the menu is closed -- that is the whole point of
+    // it, since the question it answers is "have I played long enough" and nobody can read an answer
+    // that is behind the menu they would have to open to see it.
+    const bool scanIndicator = DlssNr::ExposureScan::Where() != DlssNr::ExposureScan::Verdict::Off;
+
     if ((!config->DisableSplash.value_or_default() && now > splashStart && now < splashLimit) ||
-        config->ShowFps.value_or_default() || _isVisible || ImGui::notifications.size() > 0 ||
+        config->ShowFps.value_or_default() || _isVisible || ImGui::notifications.size() > 0 || scanIndicator ||
         (config->DlssNrCompare.value_or_default() != 0 && config->DlssNrCompareTags.value_or_default()))
     {
         if (!_isUWP)
@@ -7603,6 +7609,47 @@ void KeyUp(UINT vKey)
     inputFpsCycle = vKey == Config::Instance()->FpsCycleShortcutKey.value_or_default();
 }
 
+// A line in the corner saying what the exposure scan is doing, drawn while the menu is closed.
+//
+// It exists because the first question anyone asks of a scan is "how long do I play for", and the
+// honest answer is "until it says something". So it says something: it counts up while it is
+// watching, shouts when a candidate moves, and gives up out loud rather than leaving anyone
+// wondering. When there is nothing to say it draws nothing at all.
+void RenderExposureScanIndicator(float alpha)
+{
+    using DlssNr::ExposureScan::Verdict;
+
+    const Verdict where = DlssNr::ExposureScan::Where();
+
+    if (where == Verdict::Off)
+        return;
+
+    const char* line = DlssNr::ExposureScan::Headline();
+
+    if (line == nullptr || line[0] == 0)
+        return;
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 12.0f, vp->WorkPos.y + 12.0f),
+                            ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(alpha);
+
+    // Green when it has an answer, amber when it has given up, plain while it is still working.
+    const ImVec4 colour = where == Verdict::Found  ? ImVec4(0.45f, 0.9f, 0.45f, 1.0f)
+                          : where == Verdict::Barren ? ImVec4(0.9f, 0.7f, 0.3f, 1.0f)
+                                                     : ImVec4(0.85f, 0.85f, 0.85f, 1.0f);
+
+    if (ImGui::Begin("DlssNrExposureScan", nullptr,
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDecoration |
+                         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove))
+    {
+        ImGui::TextColored(colour, "%s", line);
+    }
+
+    ImGui::End();
+}
+
 bool MenuCommon::RenderMenu()
 {
     if (!_isInited)
@@ -7628,6 +7675,7 @@ bool MenuCommon::RenderMenu()
     RenderNotifications(ctx);
     UpdateFrameTimeAverages(ctx);
     RenderPerformanceOverlay(ctx);
+    RenderExposureScanIndicator(ctx.config->FpsOverlayAlpha.value_or_default());
 
     // 4) Draw the full settings menu last so popups and child windows keep their existing behavior.
     RenderMainMenuWindow(ctx);

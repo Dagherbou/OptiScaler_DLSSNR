@@ -180,7 +180,17 @@ bool EnsureReadback(ID3D12Device* device)
 
 void NoteUav(ID3D12Resource* resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* desc)
 {
-    if (!Config::Instance()->DlssNrScanExposure.value_or_default())
+    // Deliberately NOT gated on the scan setting, and that was a real bug rather than a nicety.
+    //
+    // An engine creates its eye adaptation view once, when it builds its render targets, which is
+    // long before anybody opens a menu and ticks a box. Gating the recording meant every candidate
+    // was thrown away before the scan could want it, and the readout then said "nothing matched
+    // yet -- play for a few seconds", which is advice that could never come true no matter how long
+    // anyone played.
+    //
+    // Recording is a resource description and a pointer. What is genuinely risky -- reading a buffer
+    // the game owns, on an assumption about its state -- lives in Tick, and that is still gated.
+    if (!Config::Instance()->DlssNrEnabled.value_or_default())
         return;
 
     if (resource == nullptr)
@@ -271,8 +281,7 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
 
     if (g_scan.tracked.empty())
     {
-        g_scan.status = "nothing matched yet -- play for a few seconds, the buffer is created lazily "
-                        "by some engines";
+        g_scan.status = "no buffer in this game is shaped like an exposure";
         return;
     }
 
@@ -392,6 +401,89 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
 
     g_scan.frames++;
     g_scan.status = "";
+}
+
+// How many frames of watching without movement before saying so. At sixty frames a second this is
+// about half a minute, which is long enough to have walked somewhere with different light in it and
+// short enough that nobody waits on it wondering.
+constexpr unsigned int kPatience = 1800;
+
+Verdict Where()
+{
+    if (!Config::Instance()->DlssNrScanExposure.value_or_default())
+        return Verdict::Off;
+
+    std::lock_guard<std::mutex> lock(g_scanMutex);
+
+    if (g_scan.tracked.empty())
+        return Verdict::Waiting;
+
+    unsigned int mostReads = 0;
+
+    for (const Tracked& t : g_scan.tracked)
+    {
+        if (t.moves)
+            return Verdict::Found;
+
+        mostReads = std::max(mostReads, t.reads);
+    }
+
+    return mostReads >= kPatience ? Verdict::Barren : Verdict::Watching;
+}
+
+const char* Headline()
+{
+    static std::string line;
+
+    switch (Where())
+    {
+    case Verdict::Off:
+        line = "";
+        break;
+
+    case Verdict::Waiting:
+        line = "DLSS-NR exposure scan: nothing shaped like an exposure in this game yet";
+        break;
+
+    case Verdict::Watching:
+    {
+        std::lock_guard<std::mutex> lock(g_scanMutex);
+        unsigned int mostReads = 0;
+
+        for (const Tracked& t : g_scan.tracked)
+            mostReads = std::max(mostReads, t.reads);
+
+        line = "DLSS-NR exposure scan: watching " + std::to_string(g_scan.tracked.size()) +
+               ", none moving yet -- walk between light and shade  (" +
+               std::to_string(mostReads * 100 / kPatience) + "%)";
+        break;
+    }
+
+    case Verdict::Found:
+    {
+        std::lock_guard<std::mutex> lock(g_scanMutex);
+        line = "DLSS-NR exposure scan: FOUND one that moves -- open the menu";
+
+        for (size_t i = 0; i < g_scan.tracked.size(); ++i)
+        {
+            if (g_scan.tracked[i].moves)
+            {
+                line = "DLSS-NR exposure scan: candidate " + std::to_string(i + 1) + " MOVES (" +
+                       std::to_string(g_scan.tracked[i].lowest) + " to " +
+                       std::to_string(g_scan.tracked[i].highest) + ")";
+                break;
+            }
+        }
+
+        break;
+    }
+
+    case Verdict::Barren:
+        line = "DLSS-NR exposure scan: nothing moved. No exposure to find here.";
+        break;
+    }
+
+    return line.c_str();
 }
 
 std::vector<Candidate> Report()

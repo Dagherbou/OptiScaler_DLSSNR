@@ -66,6 +66,21 @@ void NoteUav(ID3D12Resource* resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* d
 // each candidate and reads back the copies taken a few frames ago.
 void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList);
 
+// What the scan has to say right now, in one line, for an indicator that can be read while playing.
+enum class Verdict
+{
+    Off,       // not scanning
+    Waiting,   // scanning, nothing shaped like an exposure has appeared
+    Watching,  // candidates found, none of them has moved yet
+    Found,     // at least one candidate moves -- this is the result
+    Barren     // watched long enough with no movement to keep hoping
+};
+
+Verdict Where();
+
+// Fills a short line describing the state. Null-terminated, safe to draw every frame.
+const char* Headline();
+
 // For the menu.
 std::vector<Candidate> Report();
 const char* Status();
