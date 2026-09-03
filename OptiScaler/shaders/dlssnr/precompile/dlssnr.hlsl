@@ -282,6 +282,24 @@ float3 SoftKnee(float3 display)
         display *= rolled / displayLuma;
     }
 
+    // Per-channel headroom, with the hue kept.
+    //
+    // The roll-off above is on luminance, and luminance is a weighted sum in which blue counts for
+    // seven percent. A saturated blue can therefore sit at B = 2 with a luminance of 0.14, pass the
+    // knee untouched, and be clipped per channel by the saturate in LinearToSrgb -- and clipping one
+    // channel of a triple is a hue rotation, so blue arrives as cyan. That was the green cast over
+    // every blue thing in GTA V at colour strength 1: the sky, the denim, the minimap. The model was
+    // shown a cyan proxy, answered in cyan, and at colour strength 1 its hue is the frame's hue.
+    //
+    // One scalar on the whole triple cannot move hue, so the peak channel is brought to 1 that way.
+    // Only pixels that were already being clipped are touched, so everything else is bit-identical
+    // to before, and the resolve's reconstruction of this proxy stays exact because it goes through
+    // this same function.
+    float peak = max(display.r, max(display.g, display.b));
+
+    if (peak > 1.0)
+        display /= peak;
+
     return display;
 }
 
