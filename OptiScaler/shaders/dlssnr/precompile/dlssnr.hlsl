@@ -937,7 +937,17 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     upgraded *= boundedRatio / max(lumaRatio, 1e-6);
 
     // Both ends of the blend now sit inside the same guard, so neither needs a second clamp.
-    float3 result = lerp(original * boundedRatio, upgraded, gColourStrength);
+    //
+    // Colour strength 0..1 blends toward the model's colour, as before. Above 1 it OVER-SATURATES: the
+    // blend caps at the model's colour (min), then the excess scales CHROMA in OkLab -- L and hue kept,
+    // only a and b grow -- and ClampAp1 below pulls anything past the gamut back by desaturating toward
+    // neutral, NOT by clipping channels. So an over-driven colour rolls off at the gamut boundary
+    // (maximally vivid but still a real colour with detail) instead of flattening into a blown peak.
+    // At strength 1 the boost is the identity, so <=1 is bit-identical to before.
+    float3 result = lerp(original * boundedRatio, upgraded, min(gColourStrength, 1.0));
+
+    if (gColourStrength > 1.0)
+        result = ClampAp1(FromOkLab(float3(1.0, gColourStrength, gColourStrength) * ToOkLab(max(result, 0.0))));
 
     // Replace mode: the model's answer IS the picture, decoded through Neutwo's exact inverse, with
     // NONE of the composition above -- no ratio, no highlight guard, no palette blend. This is the

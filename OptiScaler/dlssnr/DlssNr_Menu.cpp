@@ -258,7 +258,7 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nand it decides what to do with it.");
 
         float colour = config->DlssNrColourStrength.value_or_default();
-        if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 1.0f, "%.2f"))
+        if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 4.0f, "%.2f"))
             config->DlssNrColourStrength = colour;
 
         ImGui::SameLine();
@@ -272,7 +272,10 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nAP1 so nothing unreachable is asked for."
                        "\n\nThis cannot shift hue on its own: it interpolates between two finished"
                        "\npictures rather than adding a colour difference to one, which is what used to"
-                       "\nlet a warm subject come back green.");
+                       "\nlet a warm subject come back green."
+                       "\n\nAbove 1 it OVER-SATURATES: the colour keeps its hue but grows more vivid,"
+                       "\nand rolls off at the edge of what the display can show rather than clipping"
+                       "\ninto a flat blown patch. 1 is the model's own colour; push past it for punch.");
 
         // Experimental. 0 off (soft knee), 1 Neutwo + our composition, 2 Neutwo + pure-inverse replace,
         // 3 hybrid+composed, 4 hybrid+replace (identity midtones + unclipped highlights). Always shown.
