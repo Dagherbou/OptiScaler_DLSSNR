@@ -268,7 +268,8 @@ void RenderMenu(Config* config, float menuResScale)
                        "\none to use; it keeps the product controls."
                        "\n\nReplace: the model's answer straight back through the exact inverse, with"
                        "\nNONE of that -- no guard, no palette, no strengths. The raw model, RenoDX's"
-                       "\nway. Its highlight slope is steep and untested in motion; a comparison lever,"
+                       "\nway. Its highlight slope is steep, so bright lights FLASH in motion; a"
+                       "\ncomparison lever,"
                        "\nnot the recommended setting."
                        "\n\nBoth shift the effective paper white (white lands dimmer for the model), so"
                        "\nre-check paper white when you switch. Off is byte-identical to before.");
