@@ -46,6 +46,7 @@ struct Tracked
 
 struct ScanState
 {
+    unsigned int examined = 0;
     std::vector<Tracked> tracked;
     ID3D12Resource* readback[kSlots] = {};
     unsigned long long frames = 0;
@@ -178,6 +179,117 @@ bool EnsureReadback(ID3D12Device* device)
 
 } // namespace
 
+// Everything the two entry points share: does this description look like a number rather than a
+// picture, and if so what is it.
+//
+// Widened from the first attempt, which asked for at most 4x4 and one or two channels and found
+// nothing anywhere. That was tuned on what an exposure buffer ought to look like rather than on what
+// engines actually allocate: some keep a small histogram beside the value, some keep a few frames of
+// history, and some put the whole thing in a four-channel texture and use one channel. The filter
+// only has to be tight enough that the list stays readable.
+bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsigned int* outBytes,
+                      bool* outIsBuffer)
+{
+    // An exposure is computed, so it is written by a shader. This is the one condition worth being
+    // strict about: it removes almost everything without removing anything that could be the answer.
+    if ((rd.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0)
+        return false;
+
+    if (rd.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+    {
+        // 256 texels rather than 16. A 16x16 texture is still a number by any reasonable measure and
+        // a 256-bin histogram is exactly how a lot of engines compute one.
+        if (rd.Width * rd.Height > 256 || rd.Width == 0 || rd.Height == 0)
+            return false;
+
+        const char* name = nullptr;
+
+        if (!PlausibleFormat(rd.Format, outBytes, &name))
+            return false;
+
+        *outIsBuffer = false;
+        *outShape = std::to_string((unsigned int) rd.Width) + "x" + std::to_string(rd.Height) + " " + name;
+        return true;
+    }
+
+    if (rd.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+    {
+        // Unreal moved eye adaptation off a texture and onto a buffer, so buffers have to be in
+        // scope or a whole engine's worth of games is invisible. 4kB rather than 64 bytes for the
+        // same reason the texture bound moved: a buffer holding an exposure and some history is
+        // still small, but it is not necessarily four bytes.
+        if (rd.Width == 0 || rd.Width > 4096)
+            return false;
+
+        *outIsBuffer = true;
+        *outBytes = 4;
+        *outShape = "buffer, " + std::to_string((unsigned int) rd.Width) + " bytes";
+        return true;
+    }
+
+    return false;
+}
+
+void Adopt(ID3D12Resource* resource, const std::string& shape, unsigned int bytes, bool isBuffer)
+{
+    for (const Tracked& t : g_scan.tracked)
+    {
+        if (t.resource == resource)
+            return;
+    }
+
+    if (g_scan.tracked.size() >= kMaxCandidates)
+    {
+        if (!g_scan.complained)
+        {
+            g_scan.complained = true;
+            LOG_WARN("DLSS-NR exposure scan: more than {} candidates, so the filter is too loose here "
+                     "rather than the game having {} exposures",
+                     kMaxCandidates, kMaxCandidates);
+        }
+
+        return;
+    }
+
+    Tracked t;
+    t.resource = resource;
+    t.shape = shape;
+    t.isBuffer = isBuffer;
+    t.bytes = bytes;
+    resource->AddRef();
+
+    g_scan.tracked.push_back(t);
+
+    LOG_INFO("DLSS-NR exposure scan: candidate {} -- {}", g_scan.tracked.size(), shape);
+}
+
+void NoteResource(const D3D12_RESOURCE_DESC* desc, ID3D12Resource* resource)
+{
+    if (!Config::Instance()->DlssNrEnabled.value_or_default())
+        return;
+
+    if (desc == nullptr || resource == nullptr)
+        return;
+
+    std::string shape;
+    unsigned int bytes = 4;
+    bool isBuffer = false;
+
+    std::lock_guard<std::mutex> lock(g_scanMutex);
+    g_scan.examined++;
+
+    if (!LooksLikeANumber(*desc, &shape, &bytes, &isBuffer))
+        return;
+
+    Adopt(resource, shape, bytes, isBuffer);
+}
+
+unsigned int Examined()
+{
+    std::lock_guard<std::mutex> lock(g_scanMutex);
+    return g_scan.examined;
+}
+
 void NoteUav(ID3D12Resource* resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* desc)
 {
     // Deliberately NOT gated on the scan setting, and that was a real bug rather than a nicety.
@@ -198,75 +310,17 @@ void NoteUav(ID3D12Resource* resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* d
 
     const D3D12_RESOURCE_DESC rd = resource->GetDesc();
 
-    unsigned int bytes = 4;
-    const char* formatName = "";
     std::string shape;
+    unsigned int bytes = 4;
     bool isBuffer = false;
 
-    if (rd.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
-    {
-        // Small enough to be a number rather than a picture. 4x4 rather than strictly 1x1 because
-        // some engines keep a couple of extra values beside the exposure -- the previous frame's, or
-        // a target being eased toward -- and a few keep a tiny histogram next to it.
-        if (rd.Width > 4 || rd.Height > 4)
-            return;
-
-        if (!PlausibleFormat(rd.Format, &bytes, &formatName))
-            return;
-
-        shape = std::to_string((unsigned int) rd.Width) + "x" + std::to_string(rd.Height) + " " + formatName;
-    }
-    else if (rd.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
-    {
-        // Unreal moved eye adaptation from a texture to a buffer, so buffers have to be in scope or
-        // a whole engine's worth of games is invisible to this. Same size argument: a buffer holding
-        // an exposure is a handful of floats, not a screenful.
-        if (rd.Width == 0 || rd.Width > 64)
-            return;
-
-        if (desc == nullptr || desc->ViewDimension != D3D12_UAV_DIMENSION_BUFFER)
-            return;
-
-        isBuffer = true;
-        bytes = 4;
-        shape = "buffer, " + std::to_string((unsigned int) rd.Width) + " bytes";
-    }
-    else
-    {
-        return;
-    }
-
     std::lock_guard<std::mutex> lock(g_scanMutex);
+    g_scan.examined++;
 
-    for (const Tracked& t : g_scan.tracked)
-    {
-        if (t.resource == resource)
-            return;
-    }
-
-    if (g_scan.tracked.size() >= kMaxCandidates)
-    {
-        if (!g_scan.complained)
-        {
-            g_scan.complained = true;
-            LOG_WARN("DLSS-NR exposure scan: more than {} candidates, which means the filter is too "
-                     "loose to be useful here rather than that the game has {} exposures",
-                     kMaxCandidates, kMaxCandidates);
-        }
-
+    if (!LooksLikeANumber(rd, &shape, &bytes, &isBuffer))
         return;
-    }
 
-    Tracked t;
-    t.resource = resource;
-    t.shape = shape;
-    t.isBuffer = isBuffer;
-    t.bytes = bytes;
-    resource->AddRef();
-
-    g_scan.tracked.push_back(t);
-
-    LOG_INFO("DLSS-NR exposure scan: candidate {} -- {}", g_scan.tracked.size(), shape);
+    Adopt(resource, shape, bytes, isBuffer);
 }
 
 void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
@@ -442,8 +496,16 @@ const char* Headline()
         break;
 
     case Verdict::Waiting:
-        line = "DLSS-NR exposure scan: nothing shaped like an exposure in this game yet";
+    {
+        // The examined count is the whole diagnosis. Zero means the hook is not running and no
+        // amount of playing will change that; a large number means the game genuinely has nothing
+        // shaped like an exposure, which is an answer rather than a failure.
+        const unsigned int seen = Examined();
+        line = seen == 0 ? "DLSS-NR exposure scan: NOT RUNNING -- no resources seen at all"
+                         : "DLSS-NR exposure scan: examined " + std::to_string(seen) +
+                               " resources, none shaped like an exposure";
         break;
+    }
 
     case Verdict::Watching:
     {

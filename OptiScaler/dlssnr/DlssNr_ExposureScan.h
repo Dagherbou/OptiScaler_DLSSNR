@@ -62,6 +62,18 @@ struct Candidate
 // filter rejects almost every call on its first comparison.
 void NoteUav(ID3D12Resource* resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* desc);
 
+// Called from the device's resource creation hooks, which is the detection point that actually
+// works. The unordered access view hook above only exists inside the frame generation HUD fix and is
+// not installed unless that is running -- so in a game without frame generation it never fires once,
+// which is why the first version of this found nothing anywhere. Creation is also the better place:
+// the description is right there, it happens before anything else, and it catches a resource whose
+// view is made through a descriptor copy rather than through CreateUnorderedAccessView.
+void NoteResource(const D3D12_RESOURCE_DESC* desc, ID3D12Resource* resource);
+
+// How many resources have been looked at. The number that distinguishes "this game has no exposure
+// buffer" from "the hook is not running", which are the same empty list and very different problems.
+unsigned int Examined();
+
 // Called once per frame from the Neural Rendering pass, on its command list. Copies one value out of
 // each candidate and reads back the copies taken a few frames ago.
 void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList);
