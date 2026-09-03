@@ -245,6 +245,13 @@ struct NrState
     unsigned int meterSlot = 0;
     unsigned long long meterFrames = 0;
 
+    // Whether the setting was on last frame, so the off->on edge can be caught.
+    //
+    // Deliberately the SETTING and not `wantExposure`: the texture itself comes and goes between
+    // frames and holding the last good value across those gaps is the whole point of the field below.
+    // Only the user turning the option back on means "anything held is from an unknown time ago".
+    bool exposureSettingWasOn = false;
+
     // The game's exposure, as last read back, and the pre-exposure that goes with it. Held rather
     // than defaulted: the texture comes and goes between frames and a fallback to 1.0 on the gaps
     // would be a flicker source.
@@ -893,6 +900,35 @@ void ConsumeMeterReadback()
 
     D3D12_RANGE nothingWritten { 0, 0 };
     buffer->Unmap(0, &nothingWritten);
+}
+
+// Forget everything the meter knows, so nothing read before this moment can be believed after it.
+//
+// The exposure is written only inside the block that dispatches the meter, and that block does not
+// run while the option is off. Nothing used to clear any of this when it stopped, so the reading
+// simply froze: switching the option back on returned the value from whenever it was switched off,
+// and ResolveWhitePoint took it as current because a held value is exactly what it expects to see.
+// GTA V's exposure spans 0.127 to 0.511 in one session, so re-enabling in different light handed the
+// encode a white point up to 4x wrong -- which trips the soft knee, scales the model's answer away
+// and leaves its hue behind. That is the colour cast, and it looked random because it depends on the
+// light at the moment of the PREVIOUS switch-off, which nothing on screen shows.
+//
+// The readback ring made it worse. `meterFrames` also only advances inside that block, so the four
+// slots kept their contents and their valid flags across the gap, and the first frames after
+// re-enabling consumed buffers written before it as though they had just arrived.
+//
+// Zero is not a fallback value here, it is the absence of one: ResolveWhitePoint's `> 1e-6f` guard
+// fails and the manual slider is used, which is what a game supplying no exposure already gets.
+void InvalidateExposureMeter()
+{
+    g_nr.gameExposure = 0.0f;
+
+    for (bool& valid : g_nr.meterExposureValid)
+        valid = false;
+
+    // Re-arms the `< 4` guard in ConsumeMeterReadback, so nothing is read back until four frames
+    // have genuinely been queued since this point.
+    g_nr.meterFrames = 0;
 }
 
 // Turns what the meter saw into the divisor the encode uses, or falls back to the slider.
@@ -1879,8 +1915,19 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // own output -- one Enshrouded session walked it from 0.010 to 97.910, and toggling NR at a fixed
     // spot read 41.31 off against 0.46 on. What remains dispatches a single thread to copy the game's
     // 1x1 exposure texture into tile 0. That is a courier, not a measurement, and cannot feed back.
-    const bool wantExposure = cfg.DlssNrWhitePointFromExposure.value_or_default() &&
-                              frame.ExposureTexture != nullptr;
+    const bool exposureSettingOn = cfg.DlssNrWhitePointFromExposure.value_or_default();
+
+    // Nothing held from before the option was switched off may survive switching it back on. See
+    // InvalidateExposureMeter for what froze and why it read as a colour cast.
+    if (exposureSettingOn && !g_nr.exposureSettingWasOn)
+    {
+        InvalidateExposureMeter();
+        LOG_INFO("DLSS-NR exposure: option switched on, held reading discarded");
+    }
+
+    g_nr.exposureSettingWasOn = exposureSettingOn;
+
+    const bool wantExposure = exposureSettingOn && frame.ExposureTexture != nullptr;
 
     if (g_nr.meter != nullptr && wantExposure)
     {
@@ -2771,6 +2818,14 @@ void Shutdown()
             rb = nullptr;
         }
     }
+
+    // The slots these flags describe have just been released, so nothing may vouch for what the next
+    // buffers happen to contain. gameExposure is deliberately NOT cleared here: a recreate is a
+    // transition within the same scene, and dropping to the slider for a few frames would be the
+    // flicker the held value exists to prevent. The user switching the option off is the case where
+    // the held value has to go, and that is handled at the edge in Dispatch.
+    for (bool& valid : g_nr.meterExposureValid)
+        valid = false;
 
     g_nr.meterFrames = 0;
 

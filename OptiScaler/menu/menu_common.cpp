@@ -1470,10 +1470,11 @@ void MenuCommon::BeginMenuFrameIfNeeded(RenderMenuContext& ctx)
     auto& newFrame = ctx.newFrame;
 
     // New frame check
-    // The exposure scan's indicator is drawn while the menu is closed -- that is the whole point of
-    // it, since the question it answers is "have I played long enough" and nobody can read an answer
-    // that is behind the menu they would have to open to see it.
-    const bool scanIndicator = DlssNr::ExposureScan::Where() != DlssNr::ExposureScan::Verdict::Off;
+    // The lamp is drawn while the menu is closed, which is the whole point of it. Tied to its own
+    // setting and nothing else: an overlay that appears because a scan is running, rather than
+    // because someone asked for it, is an overlay nobody asked for.
+    const bool scanIndicator = config->DlssNrScanMeter.value_or_default() &&
+                               DlssNr::ExposureScan::Where() != DlssNr::ExposureScan::Verdict::Off;
 
     if ((!config->DisableSplash.value_or_default() && now > splashStart && now < splashLimit) ||
         config->ShowFps.value_or_default() || _isVisible || ImGui::notifications.size() > 0 || scanIndicator ||
@@ -7609,90 +7610,90 @@ void KeyUp(UINT vKey)
     inputFpsCycle = vKey == Config::Instance()->FpsCycleShortcutKey.value_or_default();
 }
 
-// A line in the corner saying what the exposure scan is doing, drawn while the menu is closed.
+// The lamp, and only the lamp.
 //
-// It exists because the first question anyone asks of a scan is "how long do I play for", and the
-// honest answer is "until it says something". So it says something: it counts up while it is
-// watching, shouts when a candidate moves, and gives up out loud rather than leaving anyone
-// wondering. When there is nothing to say it draws nothing at all.
+// Red for dark, green for full light, with its reading beside it. No status sentence: the whole
+// point of a light meter is that it is read at a glance while playing, and a paragraph in the corner
+// of somebody's game is not that. Everything wordy lives in the menu, which is where someone has
+// already decided to stop and read.
+//
+// Drawn only when its own setting is on. An overlay that appears because a scan happens to be
+// running is an overlay nobody asked for.
 void RenderExposureScanIndicator(float alpha)
 {
     using DlssNr::ExposureScan::Verdict;
 
-    const Verdict where = DlssNr::ExposureScan::Where();
-
-    if (where == Verdict::Off)
+    if (!Config::Instance()->DlssNrScanMeter.value_or_default())
         return;
 
-    const char* line = DlssNr::ExposureScan::Headline();
-
-    if (line == nullptr || line[0] == 0)
+    if (DlssNr::ExposureScan::Where() == Verdict::Off)
         return;
+
+    int which = 0;
+    float low = 0.0f, high = 0.0f;
+    const float now = DlssNr::ExposureScan::BestValue(&which, &low, &high);
+
+    // Nothing found yet, or no range to place it in: a dim lamp, which says "watching, no reading"
+    // without saying it in words.
+    const bool reading = now > 0.0f && high > low;
+
+    float lit = 0.0f;
+
+    if (reading)
+    {
+        // An exposure falls as the scene brightens, so the value reads backwards unless the buffer
+        // holds the reciprocal -- the same question the anchor asks, answered from the same setting,
+        // because a lamp contradicting the picture would be worse than no lamp.
+        lit = (high - now) / (high - low);
+
+        if (Config::Instance()->DlssNrScanInverted.value_or_default())
+            lit = 1.0f - lit;
+
+        lit = lit < 0.0f ? 0.0f : (lit > 1.0f ? 1.0f : lit);
+    }
+
+    // Red to amber to green. A straight red-to-green fade passes through a muddy brown at the
+    // midpoint, and the midpoint is where most of a session is spent.
+    const ImVec4 dark(0.90f, 0.22f, 0.20f, 1.0f);
+    const ImVec4 mid(0.95f, 0.75f, 0.20f, 1.0f);
+    const ImVec4 bright(0.35f, 0.88f, 0.38f, 1.0f);
+    const ImVec4 idle(0.45f, 0.45f, 0.45f, 1.0f);
+
+    ImVec4 lamp = idle;
+
+    if (reading)
+    {
+        const float t = lit < 0.5f ? lit * 2.0f : (lit - 0.5f) * 2.0f;
+        const ImVec4& a = lit < 0.5f ? dark : mid;
+        const ImVec4& b = lit < 0.5f ? mid : bright;
+        lamp = ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, 1.0f);
+    }
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 12.0f, vp->WorkPos.y + 12.0f),
                             ImGuiCond_Always, ImVec2(1.0f, 0.0f));
     ImGui::SetNextWindowBgAlpha(alpha);
 
-    // Green when it has an answer, amber when it has given up, plain while it is still working.
-    const ImVec4 colour = where == Verdict::Found  ? ImVec4(0.45f, 0.9f, 0.45f, 1.0f)
-                          : where == Verdict::Barren ? ImVec4(0.9f, 0.7f, 0.3f, 1.0f)
-                                                     : ImVec4(0.85f, 0.85f, 0.85f, 1.0f);
-
     if (ImGui::Begin("DlssNrExposureScan", nullptr,
                      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDecoration |
                          ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing |
                          ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove))
     {
-        // The lamp. Red for dark, green for full light, and it moves as the scene does -- which is
-        // the only way to see at a glance that the thing is tracking rather than merely running.
-        if (Config::Instance()->DlssNrScanMeter.value_or_default())
-        {
-            int which = 0;
-            float low = 0.0f, high = 0.0f;
-            const float now = DlssNr::ExposureScan::BestValue(&which, &low, &high);
+        const float r = ImGui::GetFontSize() * 0.38f;
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        const ImVec2 centre(at.x + r, at.y + ImGui::GetTextLineHeight() * 0.5f);
 
-            if (now > 0.0f && high > low)
-            {
-                // An exposure falls as the scene brightens, so the lamp reads the value backwards
-                // unless the buffer holds the reciprocal -- the same question the anchor asks, and
-                // it has to be answered the same way here or the lamp would contradict the picture.
-                float lit = (high - now) / (high - low);
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        draw->AddCircleFilled(centre, r, ImGui::GetColorU32(lamp), 20);
+        draw->AddCircle(centre, r, ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.6f)), 20, 1.5f);
 
-                if (Config::Instance()->DlssNrScanInverted.value_or_default())
-                    lit = 1.0f - lit;
+        ImGui::Dummy(ImVec2(r * 2.0f + 6.0f, ImGui::GetTextLineHeight()));
+        ImGui::SameLine();
 
-                lit = lit < 0.0f ? 0.0f : (lit > 1.0f ? 1.0f : lit);
-
-                // Red to amber to green, because a straight red-to-green fade goes through a muddy
-                // brown in the middle and the middle is where most of a session is spent.
-                const ImVec4 dark(0.90f, 0.22f, 0.20f, 1.0f);
-                const ImVec4 mid(0.95f, 0.75f, 0.20f, 1.0f);
-                const ImVec4 bright(0.35f, 0.88f, 0.38f, 1.0f);
-
-                const float t = lit < 0.5f ? lit * 2.0f : (lit - 0.5f) * 2.0f;
-                const ImVec4& a = lit < 0.5f ? dark : mid;
-                const ImVec4& b = lit < 0.5f ? mid : bright;
-
-                const ImVec4 lamp(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t,
-                                  1.0f);
-
-                const float r = ImGui::GetFontSize() * 0.38f;
-                const ImVec2 at = ImGui::GetCursorScreenPos();
-                const ImVec2 centre(at.x + r, at.y + ImGui::GetTextLineHeight() * 0.5f);
-
-                ImDrawList* draw = ImGui::GetWindowDrawList();
-                draw->AddCircleFilled(centre, r, ImGui::GetColorU32(lamp), 20);
-                draw->AddCircle(centre, r, ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.6f)), 20, 1.5f);
-
-                ImGui::Dummy(ImVec2(r * 2.0f + 6.0f, ImGui::GetTextLineHeight()));
-                ImGui::SameLine();
-
-                ImGui::TextColored(lamp, "%3.0f%% lit   %.5f", lit * 100.0f, now);
-            }
-        }
-
-        ImGui::TextColored(colour, "%s", line);
+        if (reading)
+            ImGui::TextColored(lamp, "%3.0f%%  %.5f", lit * 100.0f, now);
+        else
+            ImGui::TextColored(idle, "--");
     }
 
     ImGui::End();

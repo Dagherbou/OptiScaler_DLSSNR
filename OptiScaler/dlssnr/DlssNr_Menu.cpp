@@ -313,24 +313,30 @@ void RenderMenu(Config* config, float menuResScale)
         // given game needs to go is a property of that game's exposure, not of anything we can bound.
         // One tester was still improving at 100. A linear slider over that span would spend nine
         // tenths of its travel on values nobody needs and never reach the ones they do.
-        // The two sources are mutually exclusive in the interface, not merely prioritised in the
-        // code. Two things driving one number is a class of bug worth making unreachable: whichever
-        // is on greys the other out, so it cannot be arrived at by clicking.
-        const bool scanDriving = config->DlssNrScanExposure.value_or_default() &&
-                                 config->DlssNrScanAnchorValue.value_or_default() > 1e-9f;
-
+        // The two sources are mutually exclusive, and the exclusion is enforced by CLEARING the other
+        // one rather than by greying it.
+        //
+        // Greying it was wrong twice over. ResolveWhitePoint gives this option absolute priority --
+        // the scan branch is guarded by `!WhitePointFromExposure` -- so with both set the game's
+        // exposure was already driving and the scan was driving nothing, while the notice underneath
+        // announced the opposite. Worse, the two greyed each other: this box was disabled because an
+        // anchor existed, the anchor button was disabled because this box was ticked, and the only way
+        // out was a Clear anchor the notice never mentioned.
+        //
+        // Anchoring already switched this option off. Ticking this option now clears the anchor, so
+        // both directions do the same thing and the state on screen is the state in use.
         bool fromExposure = config->DlssNrWhitePointFromExposure.value_or_default();
 
-        ImGui::BeginDisabled(scanDriving);
-
         if (ImGui::Checkbox("Take the white point from the game", &fromExposure))
+        {
             config->DlssNrWhitePointFromExposure = fromExposure;
 
-        ImGui::EndDisabled();
-
-        if (scanDriving)
-            ImGui::TextDisabled("(the scan below is anchored and driving this -- clear its anchor to "
-                                "use the game's own exposure)");
+            if (fromExposure)
+            {
+                config->DlssNrScanAnchorValue = 0.0f;
+                config->DlssNrScanAnchorWhitePoint = 0.0f;
+            }
+        }
 
         HelpMarker("Use the exposure the game hands DLSS, instead of measuring or guessing."
                        "\n\nExposure is how a renderer makes a cave and a field comparable: it works in"
@@ -488,132 +494,131 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nAt strength zero the frame is still bit-identical whatever this says.");
         }
 
-        float maxRatio = config->DlssNrMaxRatio.value_or_default();
-        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
-            config->DlssNrMaxRatio = maxRatio;
-
-        HelpMarker("The most the pass may move any pixel, as a multiple of what it already was --"
-                       "\nin both directions. A pixel may not be brightened past this, nor darkened"
-                       "\npast its reciprocal."
-                       "\n\nLights are where the model has least to say and where rescaling its answer"
-                       "\ninto the frame does the most damage: an early version turned every strip light"
-                       "\nin the scene into a string of coloured cells. 2x leaves detail intact while"
-                       "\nmaking that failure impossible. Raise it only if bright areas look clipped."
-                       "\n\nDarkening was once left uncapped, and the guard itself only bound the"
-                       "\ncolour-strength-zero end of the blend -- so at the default strength it bound"
-                       "\nnothing at all. Nioh 3 is why both are fixed: in a scene dark enough that the"
-                       "\nsoft knee never fires, the composition reduces to the model's own picture,"
-                       "\nand it collapsed the frame's red by more than half, once per frame, while an"
-                       "\nupward-only guard on an unreachable branch watched it happen.");
-
-        }
-
-        ImGui::SeparatorText("Inspect");
-
+        // Directly under the white point, because that is the number it moves and the number the
+        // anchor captures. It used to sit under Inspect, a whole section away from the slider it
+        // reads, which left "Anchor here" looking like a control for something else entirely.
         {
+            bool scan = config->DlssNrScanExposure.value_or_default();
+
+            // "Guess", not "look for". It matches a buffer by its SHAPE, and shape is a weak filter:
+            // in GTA V -- a game that supplies a real exposure, so the right answer was visible
+            // alongside it -- the best candidate was a 1x1 R32_FLOAT that climbed in a straight line
+            // for seventeen minutes while the true exposure sat still. Their ratio moved 14x. That is
+            // an accumulator, not an eye adaptation. The honest word is the one that tells you to check.
+            if (ImGui::Checkbox("Guess the exposure multiplier", &scan))
+                config->DlssNrScanExposure = scan;
+
+            HelpMarker("Games that never hand DLSS an exposure texture still COMPUTE an exposure"
+                           "\n-- eye adaptation writes one into a tiny buffer every frame. It just"
+                           "\nnever reaches the upscaler. This goes looking for it."
+                           "\n\nWhy it matters: where a game's exposure moves and we cannot see it,"
+                           "\nthe white point is one constant divisor against a moving target, and"
+                           "\nthe picture drifts or flickers as the lighting changes. That is the"
+                           "\nSpider-Man report, and it is not a badly chosen value -- it is one"
+                           "\nnumber being asked to be two things."
+                           "\n\nA GUESS, and the word is meant. Candidates are found by their shape,"
+                           "\nand plenty of things are one float wide: timers and accumulators match"
+                           "\njust as well as an exposure does. Until you anchor it this only WATCHES"
+                           "\nand changes nothing. What to look for under Advanced is a candidate whose"
+                           "\nvalue MOVES as you walk between light and shade -- a number that only"
+                           "\nclimbs is a counter, and a constant in a small buffer is not an exposure"
+                           "\nat all."
+                           "\n\nOff by default because reading a buffer the game owns means assuming"
+                           "\nwhat state it is in, and a buffer found by its shape comes with no"
+                           "\npromise about that.");
+
+            if (scan)
             {
-                bool scan = config->DlssNrScanExposure.value_or_default();
-                if (ImGui::Checkbox("Look for the game's own exposure", &scan))
-                    config->DlssNrScanExposure = scan;
+                // Anchoring: one press, then it never needs touching again.
+                //
+                // The absolute white point cannot come out of a buffer whose units are unknown.
+                // Every value AFTER the first can: only the ratio against the anchor is used, so
+                // whatever the number means, it cancels. That is why this is a button and not a
+                // measurement -- the one thing a person can supply that no amount of cleverness
+                // can is "this looks right to me".
+                int which = 0;
+                float low = 0.0f, high = 0.0f;
+                const float live = DlssNr::ExposureScan::BestValue(&which, &low, &high);
 
-                HelpMarker("Games that never hand DLSS an exposure texture still COMPUTE an exposure"
-                               "\n-- eye adaptation writes one into a tiny buffer every frame. It just"
-                               "\nnever reaches the upscaler. This looks for it."
-                               "\n\nWhy it matters: where a game's exposure moves and we cannot see it,"
-                               "\nthe white point is one constant divisor against a moving target, and"
-                               "\nthe picture drifts or flickers as the lighting changes. That is the"
-                               "\nSpider-Man report, and it is not a badly chosen value -- it is one"
-                               "\nnumber being asked to be two things."
-                               "\n\nThis only WATCHES. It changes nothing about the picture. What to"
-                               "\nlook for below is a candidate whose value MOVES as you walk between"
-                               "\nlight and shade -- a constant that happens to live in a small buffer"
-                               "\nis not an exposure."
-                               "\n\nOff by default because reading a buffer the game owns means"
-                               "\nassuming what state it is in, and a buffer found by its shape comes"
-                               "\nwith no promise about that. Switch it off when you are done looking.");
+                const float anchorValue = config->DlssNrScanAnchorValue.value_or_default();
+                const float anchorWhite = config->DlssNrScanAnchorWhitePoint.value_or_default();
+                const bool anchored = anchorValue > 1e-9f && anchorWhite > 1e-6f;
 
-                if (scan)
+                // Greyed while the game's own exposure is driving, and this greying is honest:
+                // ResolveWhitePoint guards the scan branch with `!WhitePointFromExposure`, so
+                // anchoring here really would achieve nothing until that option came off.
+                //
+                // Watching is not a conflict, so only the button is disabled and the readouts stay
+                // live -- in a game that supplies a real exposure, the scan running alongside it is
+                // the only validation there is, and it is what caught the GTA V candidate.
+                const bool exposureDriving = config->DlssNrWhitePointFromExposure.value_or_default() &&
+                                             DlssNr::GameExposureStatus().everOffered;
+
+                ImGui::BeginDisabled(live <= 0.0f || exposureDriving);
+
+                if (ImGui::Button(anchored ? "Re-anchor here" : "Anchor here"))
                 {
-                    // Anchoring: one press, then it never needs touching again.
-                    //
-                    // The absolute white point cannot come out of a buffer whose units are unknown.
-                    // Every value AFTER the first can: only the ratio against the anchor is used, so
-                    // whatever the number means, it cancels. That is why this is a button and not a
-                    // measurement -- the one thing a person can supply that no amount of cleverness
-                    // can is "this looks right to me".
-                    int which = 0;
-                    float low = 0.0f, high = 0.0f;
-                    const float live = DlssNr::ExposureScan::BestValue(&which, &low, &high);
+                    config->DlssNrScanAnchorValue = live;
+                    config->DlssNrScanAnchorWhitePoint =
+                        std::max(0.01f, config->DlssNrWhitePointScale.value_or_default());
+                    config->DlssNrWhitePointFromExposure = false;
+                }
 
-                    const float anchorValue = config->DlssNrScanAnchorValue.value_or_default();
-                    const float anchorWhite = config->DlssNrScanAnchorWhitePoint.value_or_default();
-                    const bool anchored = anchorValue > 1e-9f && anchorWhite > 1e-6f;
+                ImGui::EndDisabled();
 
-                    // Greyed while the game's own exposure is driving, because that is the conflict
-                    // worth making unreachable: two sources moving one number. Watching is not a
-                    // conflict, and forbidding it would break the only validation there is -- in a
-                    // game that supplies a real exposure, the scan running alongside it is how you
-                    // find out whether the scan found the right buffer.
-                    const bool exposureDriving = config->DlssNrWhitePointFromExposure.value_or_default() &&
-                                                 DlssNr::GameExposureStatus().everOffered;
+                if (anchored)
+                {
+                    ImGui::SameLine();
 
-                    ImGui::BeginDisabled(live <= 0.0f || exposureDriving);
-
-                    if (ImGui::Button(anchored ? "Re-anchor here" : "Anchor here"))
+                    if (ImGui::Button("Clear anchor"))
                     {
-                        config->DlssNrScanAnchorValue = live;
-                        config->DlssNrScanAnchorWhitePoint =
-                            std::max(0.01f, config->DlssNrWhitePointScale.value_or_default());
-                        config->DlssNrWhitePointFromExposure = false;
+                        config->DlssNrScanAnchorValue = 0.0f;
+                        config->DlssNrScanAnchorWhitePoint = 0.0f;
                     }
+                }
 
-                    ImGui::EndDisabled();
+                HelpMarker("Set the paper white above until the picture looks right, then press"
+                               "\nthis. That is the only manual step, and it is once per game."
+                               "\n\nAfter it, the white point follows the scan: walk into a cave and"
+                               "\nit rises, step into daylight and it falls, without being touched."
+                               "\nOnly the RATIO against the anchored value is used, so the buffer's"
+                               "\nunits never have to be known -- they cancel."
+                               "\n\nThis is also the shape that makes shared per-game profiles work."
+                               "\nOne person anchors a game and the number is the same for everyone"
+                               "\nelse, which is the only version of this that scales past the people"
+                               "\nwilling to tune sliders.");
 
-                    if (exposureDriving)
-                        ImGui::TextDisabled("(this game supplies a real exposure and it is in use -- "
-                                            "the scan is only watching)");
+                if (exposureDriving)
+                    ImGui::TextDisabled("(this game supplies a real exposure and it is in use -- "
+                                        "the scan is only watching)");
 
-                    if (anchored)
-                    {
-                        ImGui::SameLine();
+                if (anchored)
+                {
+                    // Deliberately NOT under Advanced. Get this wrong and the feature works
+                    // backwards rather than merely imprecisely, and it is the second half of a
+                    // two-click setup: anchor, then flip it if the picture moves the wrong way.
+                    bool inverted = config->DlssNrScanInverted.value_or_default();
+                    if (ImGui::Checkbox("The number runs the other way", &inverted))
+                        config->DlssNrScanInverted = inverted;
 
-                        if (ImGui::Button("Clear anchor"))
-                        {
-                            config->DlssNrScanAnchorValue = 0.0f;
-                            config->DlssNrScanAnchorWhitePoint = 0.0f;
-                        }
-                    }
+                    HelpMarker("Flip this if the picture gets worse in the direction it should be"
+                                   "\ngetting better."
+                                   "\n\nMost engines store an exposure, which falls as the scene"
+                                   "\nbrightens. Some store its reciprocal, and nothing in a buffer"
+                                   "\nfound by its shape says which. Guessing would be silently wrong"
+                                   "\nin half the games, so it is one click instead.");
 
-                    HelpMarker("Set the paper white above until the picture looks right, then press"
-                                   "\nthis. That is the only manual step, and it is once per game."
-                                   "\n\nAfter it, the white point follows the scan: walk into a cave and"
-                                   "\nit rises, step into daylight and it falls, without being touched."
-                                   "\nOnly the RATIO against the anchored value is used, so the buffer's"
-                                   "\nunits never have to be known -- they cancel."
-                                   "\n\nThis is also the shape that makes shared per-game profiles work."
-                                   "\nOne person anchors a game and the number is the same for everyone"
-                                   "\nelse, which is the only version of this that scales past the people"
-                                   "\nwilling to tune sliders.");
+                    const float ratio = inverted ? live / anchorValue : anchorValue / live;
+                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
+                                       "Anchored at %.5f -> paper white %.2f. Now %.5f, so %.2f",
+                                       anchorValue, anchorWhite, live, anchorWhite * ratio);
+                }
 
-                    if (anchored)
-                    {
-                        bool inverted = config->DlssNrScanInverted.value_or_default();
-                        if (ImGui::Checkbox("The number runs the other way", &inverted))
-                            config->DlssNrScanInverted = inverted;
-
-                        HelpMarker("Flip this if the picture gets worse in the direction it should be"
-                                       "\ngetting better."
-                                       "\n\nMost engines store an exposure, which falls as the scene"
-                                       "\nbrightens. Some store its reciprocal, and nothing in a buffer"
-                                       "\nfound by its shape says which. Guessing would be silently wrong"
-                                       "\nin half the games, so it is one click instead.");
-
-                        const float ratio = inverted ? live / anchorValue : anchorValue / live;
-                        ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                           "Anchored at %.5f -> paper white %.2f. Now %.5f, so %.2f",
-                                           anchorValue, anchorWhite, live, anchorWhite * ratio);
-                    }
-
+                // Everything below is read-out rather than control: what the scan is looking at and
+                // how to tell whether it found the right thing. Folded away because the two decisions
+                // that matter -- anchor, and which way the number runs -- are above it.
+                if (ImGui::TreeNode("Advanced"))
+                {
                     bool meter = config->DlssNrScanMeter.value_or_default();
                     if (ImGui::Checkbox("Show the light meter on screen", &meter))
                         config->DlssNrScanMeter = meter;
@@ -656,10 +661,37 @@ void RenderMenu(Config* config, float menuResScale)
                         }
 
                         ImGui::TextDisabled("Walk from shade into daylight. A real exposure moves.");
+                        ImGui::TextDisabled("One that only ever climbs is a counter, not an exposure.");
                     }
+
+                    ImGui::TreePop();
                 }
             }
+        }
 
+        float maxRatio = config->DlssNrMaxRatio.value_or_default();
+        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
+            config->DlssNrMaxRatio = maxRatio;
+
+        HelpMarker("The most the pass may move any pixel, as a multiple of what it already was --"
+                       "\nin both directions. A pixel may not be brightened past this, nor darkened"
+                       "\npast its reciprocal."
+                       "\n\nLights are where the model has least to say and where rescaling its answer"
+                       "\ninto the frame does the most damage: an early version turned every strip light"
+                       "\nin the scene into a string of coloured cells. 2x leaves detail intact while"
+                       "\nmaking that failure impossible. Raise it only if bright areas look clipped."
+                       "\n\nDarkening was once left uncapped, and the guard itself only bound the"
+                       "\ncolour-strength-zero end of the blend -- so at the default strength it bound"
+                       "\nnothing at all. Nioh 3 is why both are fixed: in a scene dark enough that the"
+                       "\nsoft knee never fires, the composition reduces to the model's own picture,"
+                       "\nand it collapsed the frame's red by more than half, once per frame, while an"
+                       "\nupward-only guard on an unreachable branch watched it happen.");
+
+        }
+
+        ImGui::SeparatorText("Inspect");
+
+        {
             bool constDepth = config->DlssNrConstantDepth.value_or_default();
             if (ImGui::Checkbox("Constant depth (the real question)", &constDepth))
                 config->DlssNrConstantDepth = constDepth;
