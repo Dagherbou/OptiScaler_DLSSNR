@@ -374,6 +374,29 @@ class Config
     // was inferred here it went straight into the interface and was wrong.
     CustomOptional<bool> DlssNrScanExposure { false };
 
+    // Anchoring the scan: the white point that looked right, and the scan's value at that moment.
+    //
+    // The absolute white point cannot be derived from a buffer whose units are unknown. What CAN be
+    // derived is every value after the first: if the scan's number halves, the scene got twice as
+    // bright, and the white point follows -- whatever the number actually means, because only the
+    // ratio is used and the units cancel.
+    //
+    // So the user sets it once, in one lighting condition, and presses a button. After that it stays
+    // correct through every cave and every noon without being touched again. Which is also the shape
+    // that makes per-game profiles work: one person anchors a game, everybody else gets the number.
+    //
+    // Zero means not anchored, and then nothing happens at all.
+    CustomOptional<float> DlssNrScanAnchorValue { 0.0f };
+    CustomOptional<float> DlssNrScanAnchorWhitePoint { 0.0f };
+
+    // Whether the scan's number rises or falls with the light.
+    //
+    // A found buffer carries no contract. Most engines store an exposure -- a multiplier that goes
+    // DOWN as the scene gets brighter -- but some store its reciprocal, and nothing in the buffer
+    // says which. Rather than guess and be silently wrong in half the games, this is one click: if
+    // the picture moves the wrong way, flip it.
+    CustomOptional<bool> DlssNrScanInverted { false };
+
     // Hand the model a depth buffer that is constant everywhere instead of the game's.
     //
     // The question this exists for is not "does the model read depth" -- that is answered, it does,

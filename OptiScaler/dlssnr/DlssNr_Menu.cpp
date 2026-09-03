@@ -313,9 +313,24 @@ void RenderMenu(Config* config, float menuResScale)
         // given game needs to go is a property of that game's exposure, not of anything we can bound.
         // One tester was still improving at 100. A linear slider over that span would spend nine
         // tenths of its travel on values nobody needs and never reach the ones they do.
+        // The two sources are mutually exclusive in the interface, not merely prioritised in the
+        // code. Two things driving one number is a class of bug worth making unreachable: whichever
+        // is on greys the other out, so it cannot be arrived at by clicking.
+        const bool scanDriving = config->DlssNrScanExposure.value_or_default() &&
+                                 config->DlssNrScanAnchorValue.value_or_default() > 1e-9f;
+
         bool fromExposure = config->DlssNrWhitePointFromExposure.value_or_default();
+
+        ImGui::BeginDisabled(scanDriving);
+
         if (ImGui::Checkbox("Take the white point from the game", &fromExposure))
             config->DlssNrWhitePointFromExposure = fromExposure;
+
+        ImGui::EndDisabled();
+
+        if (scanDriving)
+            ImGui::TextDisabled("(the scan below is anchored and driving this -- clear its anchor to "
+                                "use the game's own exposure)");
 
         HelpMarker("Use the exposure the game hands DLSS, instead of measuring or guessing."
                        "\n\nExposure is how a renderer makes a cave and a field comparable: it works in"
@@ -519,6 +534,86 @@ void RenderMenu(Config* config, float menuResScale)
 
                 if (scan)
                 {
+                    // Anchoring: one press, then it never needs touching again.
+                    //
+                    // The absolute white point cannot come out of a buffer whose units are unknown.
+                    // Every value AFTER the first can: only the ratio against the anchor is used, so
+                    // whatever the number means, it cancels. That is why this is a button and not a
+                    // measurement -- the one thing a person can supply that no amount of cleverness
+                    // can is "this looks right to me".
+                    int which = 0;
+                    float low = 0.0f, high = 0.0f;
+                    const float live = DlssNr::ExposureScan::BestValue(&which, &low, &high);
+
+                    const float anchorValue = config->DlssNrScanAnchorValue.value_or_default();
+                    const float anchorWhite = config->DlssNrScanAnchorWhitePoint.value_or_default();
+                    const bool anchored = anchorValue > 1e-9f && anchorWhite > 1e-6f;
+
+                    // Greyed while the game's own exposure is driving, because that is the conflict
+                    // worth making unreachable: two sources moving one number. Watching is not a
+                    // conflict, and forbidding it would break the only validation there is -- in a
+                    // game that supplies a real exposure, the scan running alongside it is how you
+                    // find out whether the scan found the right buffer.
+                    const bool exposureDriving = config->DlssNrWhitePointFromExposure.value_or_default() &&
+                                                 DlssNr::GameExposureStatus().everOffered;
+
+                    ImGui::BeginDisabled(live <= 0.0f || exposureDriving);
+
+                    if (ImGui::Button(anchored ? "Re-anchor here" : "Anchor here"))
+                    {
+                        config->DlssNrScanAnchorValue = live;
+                        config->DlssNrScanAnchorWhitePoint =
+                            std::max(0.01f, config->DlssNrWhitePointScale.value_or_default());
+                        config->DlssNrWhitePointFromExposure = false;
+                    }
+
+                    ImGui::EndDisabled();
+
+                    if (exposureDriving)
+                        ImGui::TextDisabled("(this game supplies a real exposure and it is in use -- "
+                                            "the scan is only watching)");
+
+                    if (anchored)
+                    {
+                        ImGui::SameLine();
+
+                        if (ImGui::Button("Clear anchor"))
+                        {
+                            config->DlssNrScanAnchorValue = 0.0f;
+                            config->DlssNrScanAnchorWhitePoint = 0.0f;
+                        }
+                    }
+
+                    HelpMarker("Set the paper white above until the picture looks right, then press"
+                                   "\nthis. That is the only manual step, and it is once per game."
+                                   "\n\nAfter it, the white point follows the scan: walk into a cave and"
+                                   "\nit rises, step into daylight and it falls, without being touched."
+                                   "\nOnly the RATIO against the anchored value is used, so the buffer's"
+                                   "\nunits never have to be known -- they cancel."
+                                   "\n\nThis is also the shape that makes shared per-game profiles work."
+                                   "\nOne person anchors a game and the number is the same for everyone"
+                                   "\nelse, which is the only version of this that scales past the people"
+                                   "\nwilling to tune sliders.");
+
+                    if (anchored)
+                    {
+                        bool inverted = config->DlssNrScanInverted.value_or_default();
+                        if (ImGui::Checkbox("The number runs the other way", &inverted))
+                            config->DlssNrScanInverted = inverted;
+
+                        HelpMarker("Flip this if the picture gets worse in the direction it should be"
+                                       "\ngetting better."
+                                       "\n\nMost engines store an exposure, which falls as the scene"
+                                       "\nbrightens. Some store its reciprocal, and nothing in a buffer"
+                                       "\nfound by its shape says which. Guessing would be silently wrong"
+                                       "\nin half the games, so it is one click instead.");
+
+                        const float ratio = inverted ? live / anchorValue : anchorValue / live;
+                        ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
+                                           "Anchored at %.5f -> paper white %.2f. Now %.5f, so %.2f",
+                                           anchorValue, anchorWhite, live, anchorWhite * ratio);
+                    }
+
                     const auto found = DlssNr::ExposureScan::Report();
                     const char* why = DlssNr::ExposureScan::Status();
 

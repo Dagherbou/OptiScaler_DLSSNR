@@ -928,6 +928,36 @@ float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
     //
     // Held across the frames where the texture is absent -- GTA V dropped it three times in one
     // session -- because falling back to a default on those frames is a flicker, not a fallback.
+    // The scan's anchor, where the game supplies no exposure of its own.
+    //
+    // Only ratios are used, so the units of the buffer never have to be known -- which is the whole
+    // reason this is anchored rather than absolute. The anchor is the user's own white point at the
+    // moment they pressed the button; everything after that is the scan moving it.
+    //
+    // Deliberately below the exposure texture in priority and mutually exclusive with it in the
+    // menu. A game that hands over a real exposure has no business being driven by a buffer found by
+    // its shape, and two sources fighting over one number is the class of bug worth making
+    // unreachable rather than merely unlikely.
+    if (!cfg.DlssNrWhitePointFromExposure.value_or_default() &&
+        cfg.DlssNrScanExposure.value_or_default())
+    {
+        const float anchorValue = cfg.DlssNrScanAnchorValue.value_or_default();
+        const float anchorWhite = cfg.DlssNrScanAnchorWhitePoint.value_or_default();
+        const float now = DlssNr::ExposureScan::BestValue();
+
+        if (anchorValue > 1e-9f && anchorWhite > 1e-6f && now > 1e-9f)
+        {
+            // An exposure is a multiplier that falls as the scene brightens, so the white point
+            // follows the anchor over the current value. A buffer holding the reciprocal moves the
+            // other way, which is what the inverted setting is for.
+            const float ratio = cfg.DlssNrScanInverted.value_or_default() ? now / anchorValue
+                                                                         : anchorValue / now;
+
+            const float trim = std::clamp(cfg.DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
+            return std::clamp(anchorWhite * ratio * trim, 0.01f, 4096.0f);
+        }
+    }
+
     if (cfg.DlssNrWhitePointFromExposure.value_or_default() && g_nr.gameExposure > 1e-6f)
     {
         // Its own setting, not the manual divisor. See Config: they are different quantities with
