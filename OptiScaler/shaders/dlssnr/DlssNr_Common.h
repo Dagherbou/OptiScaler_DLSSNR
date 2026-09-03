@@ -170,6 +170,10 @@ struct alignas(256) DlssNrConstants
     // composition). Trailing field, mirroring the shader's cbuffer, so the layout stays a flat run of
     // 4-byte scalars that C++ and HLSL agree on.
     uint32_t ReversibleMode;
+
+    // 0 = output the clean upscaler frame (the pass still runs, so Hold frame keeps a frozen frame
+    // to A/B against), 1 = apply the model's edit. Trailing scalar, mirrored in the shader cbuffer.
+    uint32_t ApplyModel;
 };
 
 class DlssNr_Common

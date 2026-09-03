@@ -281,6 +281,10 @@ class Config
     // replace. An in-game A/B and a way back. Default 0 = byte-identical to before.
     CustomOptional<uint32_t> DlssNrReversibleMode { 0 };
 
+    // Whether the model's edit is applied. Off keeps the pass running (so Hold frame works) but shows
+    // the clean upscaler frame -- for A/B'ing NR on/off on a frozen frame. Default true.
+    CustomOptional<bool> DlssNrApplyModel { true };
+
     // Frame hold: freeze the NR pass's input so a live setting change re-renders the SAME frame -- the
     // only clean way to A/B our settings. A live testing toggle, not really a saved preference; off by
     // default. See dlssnr/design/frame-hold.md.

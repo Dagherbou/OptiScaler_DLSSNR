@@ -26,6 +26,7 @@ cbuffer Params : register(b0)
     uint  gTransfer;     // 0 classic, 1 matched residual -- how a below-size model comes back
     float gDebugScale;   // what the debug views are scaled by, held still while the meter moves
     uint  gReversibleMode; // 0 knee, 1 Neutwo+composed, 2 Neutwo+replace, 3 hybrid+composed, 4 hybrid+replace
+    uint  gApplyModel;     // 0 output the clean frame (pass still runs), 1 apply the model's edit
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -727,6 +728,15 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
     float originalLuma = dot(original, kLuma);
     float proxyLuma = dot(proxy, kLuma);
+
+    // Apply the model. Off outputs the frame as the upscaler produced it (clean) while the pass keeps
+    // running -- so with Hold frame you can freeze a frame and toggle this to A/B the same frozen frame
+    // with and without Neural Rendering. In passthrough the frame is already display-referred.
+    if (gApplyModel == 0)
+    {
+        gTarget[id.xy] = float4(max(originalSample.rgb, 0.0), originalSample.a);
+        return;
+    }
 
     if (gDebugView == 1)
     {

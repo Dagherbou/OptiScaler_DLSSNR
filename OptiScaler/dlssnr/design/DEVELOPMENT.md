@@ -56,13 +56,14 @@ control, no missing one.
 | 1 game exposure | game supplies one | **Trim (x the game's exposure)** + Reset | green "exposure -> white point" readout |
 | 1 game exposure | game supplies none | Trim (x the game's exposure) + Reset | amber "supplies no exposure -- paper white in use" |
 | 2 scan | 0 anchors | **Paper white** only | "Anchor here" (greyed unless a scan value exists); **NO Trim** |
-| 2 scan | ≥1 anchor, none selected | **Paper white** (live) + **Trim (x the scan)** + Reset | Anchor here; table rows (× delete, `>` = active); readout |
+| 2 scan | ≥1 anchor, none selected | **Trim (x the scan)** + Reset only (Paper white hidden; Anchor captures the trimmed effective white) | Anchor here; table rows (× delete, `>` = active); readout |
 | 2 scan | ≥1 anchor, row selected | **Paper white (editing point N)** + Trim + Reset | as above; selected row shows `[editing]` |
 | 2 scan | exactly 1 anchor | + **"the number runs the other way"** checkbox | (checkbox hidden at 0 or ≥2 anchors) |
 
 Invariant checks against this table: Trim only with ≥1 anchor (rule 2). Inverted checkbox only at
-exactly 1 anchor (direction is in the data at ≥2). Paper white always present for source 2 (it is the
-value the next Anchor captures, or the selected point's white).
+exactly 1 anchor (direction is in the data at ≥2). Paper white shows only to set the FIRST point or
+to edit a selected row; in the steady state (≥1 anchor, none selected) it is hidden and Anchor captures
+the trimmed effective white instead.
 
 ---
 
