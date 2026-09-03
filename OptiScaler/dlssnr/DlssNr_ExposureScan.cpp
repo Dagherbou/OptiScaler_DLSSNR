@@ -19,9 +19,13 @@ namespace
 {
 
 // How many candidates are worth keeping. The shape being looked for is rare -- in a frame's worth of
-// unordered access views a game creates hundreds, and a handful are this small -- so a low cap is
-// not a compromise, it is a statement that finding twenty means the filter is wrong.
-constexpr size_t kMaxCandidates = 24;
+// A cap on how many candidates are tracked. Kept low originally as a statement that a tight filter
+// should find only a handful -- but buffer-heavy engines crowd the real exposure out of a low cap:
+// Cyberpunk's REDengine creates dozens of tiny UAV buffers the same 4/12 bytes as an exposure, and its
+// real one can land past slot 24. Now that the scan is crash-safe (references dropped at feature
+// teardown), the real discriminator is MOVEMENT, not scarcity, so a larger cap costs only a few tiny
+// copies a frame and stops the answer being crowded out.
+constexpr size_t kMaxCandidates = 64;
 
 // Ring depth for the readbacks. Four, so the slot being read is four frames behind the slot being
 // written and the read never waits on the GPU. Same depth and the same reason as the meter's.
@@ -481,6 +485,32 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
             D3D12_RANGE nothingWritten { 0, 0 };
             old->Unmap(0, &nothingWritten);
         }
+    }
+
+    // Periodic movement readout. The menu's Advanced panel shows which candidate tracks the light, but
+    // the log did not -- so a game the scan is being taught (Cyberpunk) could not be cracked from a log
+    // alone. Every ~300 frames, name the candidates that MOVE and their travel: the exposure is the one
+    // that swings widely between bright and dark. Throttled, and only while the scan is wanted.
+    if (g_scan.frames > 0 && g_scan.frames % 300 == 0)
+    {
+        unsigned int movers = 0;
+
+        for (size_t i = 0; i < g_scan.tracked.size(); ++i)
+        {
+            const Tracked& t = g_scan.tracked[i];
+
+            if (!t.moves)
+                continue;
+
+            movers++;
+            LOG_INFO("DLSS-NR scan mover: candidate {} ({}) range {:.5f}..{:.5f} (x{:.1f}), latest {:.5f}",
+                     (unsigned int) (i + 1), t.shape, t.lowest, t.highest,
+                     t.lowest > kFloor ? t.highest / t.lowest : 0.0f, t.latest);
+        }
+
+        if (movers == 0)
+            LOG_INFO("DLSS-NR scan: {} candidates tracked, none moving yet -- go between bright and dark",
+                     (unsigned int) g_scan.tracked.size());
     }
 
     ID3D12Resource* dst = g_scan.readback[g_scan.frames % kSlots];
