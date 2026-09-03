@@ -20,8 +20,22 @@ static UpscaleShaderConstants fsr1Constants {};
 
 #pragma warning(disable : 4244)
 
+// Output Scaling / Magnifier constructor: no override, so ActiveScaler() reads the global config and
+// Dispatch sizes from the current feature -- unchanged.
 OS_Vk::OS_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalDevice, bool InUpsample)
-    : Shader_Vk(InName, InDevice, InPhysicalDevice), _upsample(InUpsample)
+    : OS_Vk(InName, InDevice, InPhysicalDevice, InUpsample, Scaler::Count)
+{
+}
+
+Scaler OS_Vk::ActiveScaler() const
+{
+    return _scalerOverride != Scaler::Count ? _scalerOverride
+                                            : Config::Instance()->OutputScalingDownscaler.value_or_default();
+}
+
+OS_Vk::OS_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalDevice, bool InUpsample,
+             Scaler InScalerOverride)
+    : Shader_Vk(InName, InDevice, InPhysicalDevice), _upsample(InUpsample), _scalerOverride(InScalerOverride)
 {
     if (InDevice == VK_NULL_HANDLE)
     {
@@ -34,7 +48,7 @@ OS_Vk::OS_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalD
     // 1. Create Base Resources
     CreateSampler(VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
-    uint32_t constantSize = (Config::Instance()->OutputScalingDownscaler.value_or_default() == Scaler::FSR1)
+    uint32_t constantSize = (ActiveScaler() == Scaler::FSR1)
                                 ? sizeof(UpscaleShaderConstants)
                                 : sizeof(Constants);
     CreateConstantBuffer(constantSize);
@@ -56,7 +70,7 @@ OS_Vk::OS_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalD
 
     // 3. Load Pipeline
     std::vector<char> shaderCode;
-    if (Config::Instance()->OutputScalingDownscaler.value_or_default() == Scaler::FSR1)
+    if (ActiveScaler() == Scaler::FSR1)
     {
         shaderCode = std::vector<char>(FSR_EASU_spv, FSR_EASU_spv + sizeof(FSR_EASU_spv));
     }
@@ -68,7 +82,7 @@ OS_Vk::OS_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalD
         }
         else
         {
-            switch (Config::Instance()->OutputScalingDownscaler.value_or_default())
+            switch (ActiveScaler())
             {
             case Scaler::Bicubic:
                 shaderCode = std::vector<char>(bcds_bicubic_spv, bcds_bicubic_spv + sizeof(bcds_bicubic_spv));
@@ -113,20 +127,28 @@ bool OS_Vk::Dispatch(VkCommandBuffer InCmdList, const VkImageInfo& InResourceVie
     if (!_init || InCmdList == VK_NULL_HANDLE)
         return false;
 
+    // The resample sizes. Output Scaling and the Magnifier keep reading them from the current feature
+    // (unchanged). A Neural Rendering instance (_scalerOverride set) sizes from the passed images
+    // instead: NR's supersample up/down legs resample native<->super-native, nothing to do with the
+    // feature's render/display sizes. The group count below already uses OutResourceView.
+    const bool nr = _scalerOverride != Scaler::Count;
+    const uint32_t srcW = nr ? InResourceView.Width : State::Instance().currentFeature->TargetWidth();
+    const uint32_t srcH = nr ? InResourceView.Height : State::Instance().currentFeature->TargetHeight();
+    const uint32_t dstW = nr ? OutResourceView.Width : State::Instance().currentFeature->DisplayWidth();
+    const uint32_t dstH = nr ? OutResourceView.Height : State::Instance().currentFeature->DisplayHeight();
+
     // Update Constants
     FsrEasuCon(fsr1Constants.const0, fsr1Constants.const1, fsr1Constants.const2, fsr1Constants.const3,
-               State::Instance().currentFeature->TargetWidth(), State::Instance().currentFeature->TargetHeight(),
-               State::Instance().currentFeature->TargetWidth(), State::Instance().currentFeature->TargetHeight(),
-               State::Instance().currentFeature->DisplayWidth(), State::Instance().currentFeature->DisplayHeight());
+               srcW, srcH, srcW, srcH, dstW, dstH);
 
-    constants.srcWidth = State::Instance().currentFeature->TargetWidth();
-    constants.srcHeight = State::Instance().currentFeature->TargetHeight();
-    constants.destWidth = State::Instance().currentFeature->DisplayWidth();
-    constants.destHeight = State::Instance().currentFeature->DisplayHeight();
+    constants.srcWidth = srcW;
+    constants.srcHeight = srcH;
+    constants.destWidth = dstW;
+    constants.destHeight = dstH;
 
     if (_mappedConstantBuffer)
     {
-        if (Config::Instance()->OutputScalingDownscaler.value_or_default() == Scaler::FSR1)
+        if (ActiveScaler() == Scaler::FSR1)
             memcpy(_mappedConstantBuffer, &fsr1Constants, sizeof(UpscaleShaderConstants));
         else
             memcpy(_mappedConstantBuffer, &constants, sizeof(Constants));
@@ -158,7 +180,7 @@ bool OS_Vk::Dispatch(VkCommandBuffer InCmdList, const VkImageInfo& InResourceVie
     vkCmdBindDescriptorSets(InCmdList, VK_PIPELINE_BIND_POINT_COMPUTE, _pipelineLayout, 0, 1, &currentSet, 0, nullptr);
 
     // Dispatch
-    if (Config::Instance()->OutputScalingDownscaler.value_or_default() == Scaler::FSR1 || _upsample)
+    if (ActiveScaler() == Scaler::FSR1 || _upsample)
     {
         uint32_t groupX = (OutResourceView.Width + 15) / 16;
         uint32_t groupY = (OutResourceView.Height + 15) / 16;

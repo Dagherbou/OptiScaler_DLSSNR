@@ -8,6 +8,7 @@
 #include <NVNGX_Parameter.h>
 
 #include <shaders/dlssnr/DlssNr_Vk.h>
+#include <shaders/output_scaling/OS_Vk.h>
 
 #include <algorithm>
 #include <cmath>
@@ -78,6 +79,15 @@ struct VkState
     // cost -- then runs on this instead of the full proxy, which is the whole point of the working
     // scale slider. Unused (and never created) at scale 1, so the default path is unchanged.
     OwnedImage proxySmall;
+
+    // Supersampling (working scale > 1): the model runs above native, superUp enlarges the proxy to
+    // that size and superDown averages the answer (output) back into outputNative at native for a 1:1
+    // composite. nrScaler is the filter both were built with, so a changed DlssNrScalingDownscaler
+    // rebuilds them. Unused and never created at scale <= 1.
+    OwnedImage outputNative;
+    std::unique_ptr<OS_Vk> superUp;
+    std::unique_ptr<OS_Vk> superDown;
+    Scaler nrScaler = Scaler::Count;
 
     std::unique_ptr<DlssNr_Vk> pass;
 
@@ -180,6 +190,20 @@ uint32_t FindMemoryTypeIndex(uint32_t typeBits, VkMemoryPropertyFlags properties
 
 // STORAGE and SAMPLED both, because every one of these is written by one dispatch and read by the
 // next; TRANSFER_SRC so a capture can copy it out without a second surface.
+// Build the OS_Vk resample descriptor for one of our own images. OS_Vk reads Width/Height/Format from
+// this (the NR override makes it size from the images, not the current feature).
+static VkImageInfo ImageInfoOf(const OwnedImage& img)
+{
+    VkImageInfo info {};
+    info.ImageView = img.view;
+    info.Image = img.image;
+    info.SubresourceRange = VkImageSubresourceRange { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    info.Format = img.format;
+    info.Width = img.width;
+    info.Height = img.height;
+    return info;
+}
+
 bool CreateImage(OwnedImage& img, uint32_t width, uint32_t height, VkFormat format, bool readWrite)
 {
     DestroyImage(img);
@@ -586,7 +610,9 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
 
     // The model's working size. The slider is a fraction of the frame; at 1 it is the frame, and the
     // reduced path below never runs, so the default is byte-for-byte what it was.
-    const float workScale = std::clamp(cfg.DlssNrWorkingScale.value_or_default(), 0.25f, 1.0f);
+    // Above 1 the model supersamples (up to 2x): the proxy is enlarged, the model runs above native,
+    // and superDown averages the answer back. Vulkan matches the D3D12 cap.
+    const float workScale = std::clamp(cfg.DlssNrWorkingScale.value_or_default(), 0.25f, 2.0f);
     const uint32_t workWidth = (uint32_t) (width * workScale + 0.5f);
     const uint32_t workHeight = (uint32_t) (height * workScale + 0.5f);
     const bool reduced = workWidth != width || workHeight != height;
@@ -726,13 +752,16 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
             LOG_WARN("DLSS-NR Vulkan: no exposure meter; the white point stays on the slider");
 
         DestroyImage(g_vk.proxySmall);
+        DestroyImage(g_vk.outputNative);
 
         // output is the model's target, so it is the working size. proxy and keep are full: proxy is
         // the source the downsample reads, keep is the untouched frame the resolve composites onto.
+        // outputNative is the native buffer the supersample down-leg averages the answer into.
         const bool ok = CreateImage(g_vk.output, workWidth, workHeight, working, true) &&
                         CreateImage(g_vk.proxy, width, height, working, true) &&
                         CreateImage(g_vk.keep, width, height, working, true) &&
-                        (!reduced || CreateImage(g_vk.proxySmall, workWidth, workHeight, working, true));
+                        (!reduced || CreateImage(g_vk.proxySmall, workWidth, workHeight, working, true)) &&
+                        (workScale <= 1.0f || CreateImage(g_vk.outputNative, width, height, working, true));
 
         if (!ok)
         {
@@ -877,20 +906,70 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
 
     if (reduced && g_vk.proxySmall.Valid())
     {
-        DlssNrConstants down = encode;
-        down.Mode = DlssNrMode_Downsample;
-        down.Width = workWidth;
-        down.Height = workHeight;
+        bool built = false;
 
-        Transition(cmdBuffer, g_vk.proxy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        Transition(cmdBuffer, g_vk.proxySmall, VK_IMAGE_LAYOUT_GENERAL);
-
-        if (!g_vk.pass->Dispatch(cmdBuffer, down, workWidth, workHeight, g_vk.proxy.view, VK_NULL_HANDLE,
-                                 VK_NULL_HANDLE, VK_NULL_HANDLE, g_vk.proxySmall.view, VK_NULL_HANDLE,
-                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+        if (workScale > 1.0f)
         {
-            Fail("the downsample dispatch failed");
-            return;
+            // Supersample: upscale the proxy to the super-native working size with the chosen filter so
+            // the model sees a clean input. Rebuild both scalers when the NR downscaler changed (baked
+            // at construction). proxy -> SHADER_READ_ONLY (sampled), proxySmall -> GENERAL (storage).
+            const Scaler wantScaler = cfg.DlssNrScalingDownscaler.value_or_default();
+            if (g_vk.nrScaler != wantScaler)
+            {
+                // Rebuilding frees the old scalers' pipelines/descriptors. The filter dropdown changes
+                // no size, so this does NOT go through the resize block's drain -- and prior frames'
+                // submitted command buffers still bind these pipelines. Freeing them under in-flight GPU
+                // work is device removal (the same hazard the resize path drains for). Drain first. A
+                // filter change is rare, so the one-off stall is a hitch, not a per-frame cost.
+                if (g_vk.device != VK_NULL_HANDLE)
+                    vkDeviceWaitIdle(g_vk.device);
+                g_vk.superUp.reset();
+                g_vk.superDown.reset();
+                g_vk.nrScaler = wantScaler;
+            }
+            if (!g_vk.superUp)
+                g_vk.superUp = std::make_unique<OS_Vk>("DLSS-NR VK supersample up", device, physicalDevice,
+                                                       true, wantScaler);
+            if (!g_vk.superDown)
+                g_vk.superDown = std::make_unique<OS_Vk>("DLSS-NR VK supersample down", device,
+                                                         physicalDevice, false, wantScaler);
+
+            Transition(cmdBuffer, g_vk.proxy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            Transition(cmdBuffer, g_vk.proxySmall, VK_IMAGE_LAYOUT_GENERAL);
+
+            VkImageInfo upin = ImageInfoOf(g_vk.proxy);
+            VkImageInfo upout = ImageInfoOf(g_vk.proxySmall);
+
+            if (g_vk.superUp && g_vk.superUp->IsInit() && g_vk.superUp->Dispatch(cmdBuffer, upin, upout))
+                built = true;
+            else
+            {
+                static bool warnedVkSuper = false;
+                if (!warnedVkSuper)
+                {
+                    warnedVkSuper = true;
+                    LOG_WARN("DLSS-NR Vulkan supersample: upscaler unavailable, falling back to box enlarge.");
+                }
+            }
+        }
+
+        if (!built)
+        {
+            DlssNrConstants down = encode;
+            down.Mode = DlssNrMode_Downsample;
+            down.Width = workWidth;
+            down.Height = workHeight;
+
+            Transition(cmdBuffer, g_vk.proxy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            Transition(cmdBuffer, g_vk.proxySmall, VK_IMAGE_LAYOUT_GENERAL);
+
+            if (!g_vk.pass->Dispatch(cmdBuffer, down, workWidth, workHeight, g_vk.proxy.view, VK_NULL_HANDLE,
+                                     VK_NULL_HANDLE, VK_NULL_HANDLE, g_vk.proxySmall.view, VK_NULL_HANDLE,
+                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+            {
+                Fail("the downsample dispatch failed");
+                return;
+            }
         }
 
         modelInput = &g_vk.proxySmall;
@@ -990,15 +1069,35 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     DlssNrConstants resolve = encode;
     resolve.Mode = DlssNrMode_Resolve;
 
-    Transition(cmdBuffer, g_vk.proxy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    Transition(cmdBuffer, g_vk.output, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    // Supersampling down-leg (Vulkan). Average the Nx model answer back to native with the chosen
+    // filter so the resolve composites a native answer against the native proxy 1:1 -- not the single
+    // bilinear tap the Nx answer would otherwise get, which aliases the model's detail into noise. On
+    // failure it falls back to the Nx pair (modelInput + output), the old behaviour.
+    OwnedImage* resolveProxy = modelInput;
+    OwnedImage* resolveAnswer = &g_vk.output;
+
+    if (workScale > 1.0f && g_vk.superDown && g_vk.superDown->IsInit() && g_vk.outputNative.Valid())
+    {
+        Transition(cmdBuffer, g_vk.output, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        Transition(cmdBuffer, g_vk.outputNative, VK_IMAGE_LAYOUT_GENERAL);
+
+        VkImageInfo dsin = ImageInfoOf(g_vk.output);
+        VkImageInfo dsout = ImageInfoOf(g_vk.outputNative);
+
+        if (g_vk.superDown->Dispatch(cmdBuffer, dsin, dsout))
+        {
+            resolveProxy = &g_vk.proxy;
+            resolveAnswer = &g_vk.outputNative;
+        }
+    }
+
+    Transition(cmdBuffer, *resolveProxy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    Transition(cmdBuffer, *resolveAnswer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     Transition(cmdBuffer, g_vk.keep, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-    Transition(cmdBuffer, *modelInput, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-    if (!g_vk.pass->Dispatch(cmdBuffer, resolve, width, height, modelInput->view, g_vk.output.view, g_vk.keep.view,
-                             VK_NULL_HANDLE, colour->Resource.ImageViewInfo.ImageView, VK_NULL_HANDLE,
-                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+    if (!g_vk.pass->Dispatch(cmdBuffer, resolve, width, height, resolveProxy->view, resolveAnswer->view,
+                             g_vk.keep.view, VK_NULL_HANDLE, colour->Resource.ImageViewInfo.ImageView,
+                             VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
     {
         Fail("the resolve dispatch failed");
         return;
@@ -1053,12 +1152,16 @@ void ShutdownVk(bool deviceAlive)
         // OwnedImage/meter handles matters: the resize path gates on `.Valid()`, so a stale non-null
         // handle from the dead device would be reused on the NEW device and crash.
         g_vk.pass.release();
+        g_vk.superUp.release();
+        g_vk.superDown.release();
+        g_vk.nrScaler = Scaler::Count;
         g_vk.feature = nullptr;
         g_vk.capabilityParams = nullptr;
         g_vk.queryPool = VK_NULL_HANDLE;
         g_vk.output = OwnedImage {};
         g_vk.proxy = OwnedImage {};
         g_vk.proxySmall = OwnedImage {};
+        g_vk.outputNative = OwnedImage {};
         g_vk.keep = OwnedImage {};
         g_vk.meter = OwnedImage {};
 
@@ -1095,11 +1198,15 @@ void ShutdownVk(bool deviceAlive)
     DestroyImage(g_vk.output);
     DestroyImage(g_vk.proxy);
     DestroyImage(g_vk.proxySmall);
+    DestroyImage(g_vk.outputNative);
     DestroyImage(g_vk.keep);
     DestroyImage(g_vk.meter);
     DestroyMeterReadback();
 
     g_vk.pass.reset();
+    g_vk.superUp.reset();
+    g_vk.superDown.reset();
+    g_vk.nrScaler = Scaler::Count;
 
     if (g_vk.capabilityParams != nullptr)
     {

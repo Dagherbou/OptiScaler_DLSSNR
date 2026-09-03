@@ -150,15 +150,21 @@ void RenderMenu(Config* config, float menuResScale)
             // of them is running.
             const auto ms = vulkan ? DlssNr::LastGpuTimeVk() : DlssNr::LastGpuTime();
 
+            // With "Apply the model" off the pass STILL RUNS (so Hold-frame A/B can toggle its edit on
+            // a frozen frame) -- it only outputs the clean frame. So the cost is real, and saying so
+            // stops the reading looking like a bug. Enable Neural Rendering off is what zeroes it.
+            const char* runSuffix =
+                !config->DlssNrApplyModel.value_or_default() ? "  (model running, edit hidden)" : "";
+
             if (ms.has_value())
-                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running%s - %.2f ms per frame",
-                                   vulkan ? " natively on Vulkan" : "", ms.value());
+                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running%s - %.2f ms per frame%s",
+                                   vulkan ? " natively on Vulkan" : "", ms.value(), runSuffix);
             else if (vulkan)
                 // Measured but not yet read: the first few frames are still in the query ring.
-                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running natively on Vulkan - %llu frames",
-                                   DlssNr::FramesVk());
+                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running natively on Vulkan - %llu frames%s",
+                                   DlssNr::FramesVk(), runSuffix);
             else
-                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running.");
+                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running.%s", runSuffix);
 
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
@@ -197,7 +203,7 @@ void RenderMenu(Config* config, float menuResScale)
         }
 
         if (scalePercent > 100)
-            ImGui::TextDisabled("Supersampling %.2fx (DirectX 12 only): the model runs ABOVE native, then\n"
+            ImGui::TextDisabled("Supersampling %.2fx: the model runs ABOVE native, then\n"
                                 "is sampled back down. Experimental, and costly -- time grows with the area.",
                                 scalePercent / 100.0f);
 
