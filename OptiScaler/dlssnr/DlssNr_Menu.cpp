@@ -201,6 +201,24 @@ void RenderMenu(Config* config, float menuResScale)
                                 "is sampled back down. Experimental, and costly -- time grows with the area.",
                                 scalePercent / 100.0f);
 
+        if (scalePercent > 100)
+        {
+            static const char* dsNames[] = { "FSR1", "Bicubic", "Catmull-Rom", "Lanczos2",
+                                             "Lanczos3", "Kaiser2", "Kaiser3", "MAGIC" };
+            int ds = (int) config->DlssNrScalingDownscaler.value_or_default();
+            if (ds < 0 || ds >= IM_ARRAYSIZE(dsNames))
+                ds = (int) Scaler::Lanczos3;
+
+            if (ImGui::Combo("Downscaler (NR)", &ds, dsNames, IM_ARRAYSIZE(dsNames)))
+                config->DlssNrScalingDownscaler = (Scaler) ds;
+
+            HelpMarker("The filter that averages the model's above-native answer back to display size --"
+                           "\nthis is what turns supersampling into LESS noise rather than more. Sharper"
+                           "\nfilters (Lanczos3, Kaiser3) keep the most detail; softer ones (Bicubic,"
+                           "\nCatmull-Rom) are gentler on ringing. Independent of the Output Scaling"
+                           "\ndownscaler, so the two can differ and run at the same time.");
+        }
+
         HelpMarker("What fraction of the frame the model works at. Cost falls with the square of"
                        "\nthis, so half resolution is roughly a quarter of the time."
                        "\n\nThe frame is never reduced. Only the model's contribution is computed small"
@@ -211,12 +229,11 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nThe frame itself stays at full detail whatever this says -- only the"
                        "\nmodel's own work is done small.");
 
-        // Meaningful only when the model runs at a size different from the frame (below OR above 100%):
-        // at exactly 100 the residual collapses to the model's own picture and the modes are identical,
-        // so the control says so by going grey.
+        // Meaningful only when the model runs BELOW the frame's size. At 100% -- and above, where
+        // supersampling composites its down-legged answer at native -- the residual collapses to the
+        // model's own picture and the two modes are identical, so the control says so by going grey.
         {
-            const float ws = config->DlssNrWorkingScale.value_or_default();
-            const bool reduced = ws < 0.999f || ws > 1.001f;
+            const bool reduced = config->DlssNrWorkingScale.value_or_default() < 0.999f;
 
             if (!reduced)
                 ImGui::BeginDisabled();
@@ -230,8 +247,7 @@ void RenderMenu(Config* config, float menuResScale)
             if (!reduced)
                 ImGui::EndDisabled();
 
-            HelpMarker("How the model's work is brought back to frame size when it ran at a different"
-                       "\nsize -- below the frame, or above it when supersampling."
+            HelpMarker("How the model's work is brought back up when it ran below the frame's size."
                        "\n\nClassic composes the model's small picture directly against the full-size"
                        "\nframe. Those two disagree by the shrink's blur as well as by the model's edit,"
                        "\nand the composition cannot tell them apart -- it reads the blur as brightness"
@@ -240,9 +256,8 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nMatched residual carries up only the model's difference and lays it on the"
                        "\nframe's own proxy, so both pictures being compared are full size and the only"
                        "\nthing that came from the small raster is the edit itself."
-                       "\n\nNo effect at exactly 100%: there is no residual to carry and the two are"
-                       "\nidentical. Above 100% (supersampling) it applies the same way, now bringing the"
-                       "\nmodel's larger picture down to frame size instead of up."
+                       "\n\nNo effect at 100% or above: there is no residual to carry and the two are"
+                       "\nidentical (supersampling brings its answer down to frame size before this)."
                        "\n\nFrom hhkbble's multi-pass work on this fork.");
         }
 

@@ -217,6 +217,14 @@ struct NrState
     // so a resolution change needs no rebuild.
     OS_Dx12* superUp = nullptr;
 
+    // Supersampling down-leg: the native-sized buffer the Nx model answer is averaged into, and the
+    // downscaler that does it. With superUp this lands the super-native answer at native for a 1:1
+    // composite (no aliased minify). nrScaler is the filter both were built with, so a changed
+    // DlssNrScalingDownscaler rebuilds them.
+    ID3D12Resource* outputNative = nullptr;
+    OS_Dx12* superDown = nullptr;
+    Scaler nrScaler = Scaler::Count;
+
     // Frame hold (design/frame-hold.md): a persistent copy of the output taken on hold-on and restored
     // over the live output before the encode reads it while held, so a setting change re-renders the
     // same frame. heldWhitePoint is the snapshot used while held -- measurement is suspended.
@@ -1679,6 +1687,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             ParkNrResource(g_nr.colorCopy);
             ParkNrResource(g_nr.hdrCopy);
             ParkNrResource(g_nr.colorSmall);
+            ParkNrResource(g_nr.outputNative);
         }
     }
 
@@ -1693,6 +1702,10 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     if (reduced && g_nr.colorSmall == nullptr)
         g_nr.colorSmall = CreateScratch(device, desc.Format, workWidth, workHeight);
+
+    // The down-leg target is native (the answer is brought back to frame size before the resolve).
+    if (workScale > 1.0f && g_nr.outputNative == nullptr)
+        g_nr.outputNative = CreateScratch(device, desc.Format, width, height);
 
     if (g_nr.meter == nullptr)
     {
@@ -2064,8 +2077,21 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             // (the Output Scaling upsampler) so the model sees a clean super-native input, rather than
             // the box minifier which only makes sense going down. colorCopy is NON_PIXEL_SHADER_RESOURCE
             // from the encode (SRV-ready); colorSmall is UNORDERED_ACCESS from last frame's resolve.
+            // (Re)build the supersample scalers when missing or when the NR downscaler changed (the
+            // filter is baked at construction). Both use NR's own DlssNrScalingDownscaler, independent
+            // of Output Scaling, so the two can run different filters at once. superDown is built here
+            // and used after the model (the down-leg below).
+            const Scaler nrScaler = cfg.DlssNrScalingDownscaler.value_or_default();
+            if (g_nr.nrScaler != nrScaler)
+            {
+                if (g_nr.superUp != nullptr)   { delete g_nr.superUp;   g_nr.superUp = nullptr; }
+                if (g_nr.superDown != nullptr) { delete g_nr.superDown; g_nr.superDown = nullptr; }
+                g_nr.nrScaler = nrScaler;
+            }
             if (g_nr.superUp == nullptr)
-                g_nr.superUp = new OS_Dx12("DLSS-NR supersample up", device, true);
+                g_nr.superUp = new OS_Dx12("DLSS-NR supersample up", device, true, nrScaler);
+            if (g_nr.superDown == nullptr)
+                g_nr.superDown = new OS_Dx12("DLSS-NR supersample down", device, false, nrScaler);
 
             if (g_nr.superUp != nullptr &&
                 g_nr.superUp->Dispatch(cmdList, g_nr.colorCopy, g_nr.colorSmall))
@@ -2314,10 +2340,33 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        DispatchPass(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, motionIn,
+
+        // Supersampling down-leg. Average the Nx model answer back to native with the chosen filter, so
+        // the resolve composites a native answer against the native proxy 1:1 -- a real area resample,
+        // not the single bilinear tap the Nx answer would otherwise get in the resolve (which aliases
+        // the model's detail into noise, the "noisier above 100%" the probe showed). On success the
+        // resolve reads the native proxy (colorCopy) and native answer (outputNative); on failure it
+        // falls back to the Nx pair. g_nr.output is NPSR here; outputNative is UAV from last frame.
+        bool superDownOk = false;
+        if (workScale > 1.0f && g_nr.superDown != nullptr && g_nr.outputNative != nullptr &&
+            g_nr.superDown->Dispatch(cmdList, g_nr.output, g_nr.outputNative))
+        {
+            Barrier(cmdList, g_nr.outputNative, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            superDownOk = true;
+        }
+
+        ID3D12Resource* resolveProxy = superDownOk ? g_nr.colorCopy : modelInput;
+        ID3D12Resource* resolveAnswer = superDownOk ? g_nr.outputNative : g_nr.output;
+
+        DispatchPass(cmdList, resolveParams, resolveProxy, resolveAnswer, g_nr.hdrCopy, motionIn,
                             exposureTex, target, nullptr);
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        if (superDownOk)
+            Barrier(cmdList, g_nr.outputNative, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
         // On-demand capture works in this path too: the staging copy still holds the frame as the
         // upscaler produced it, and the edited frame is the output itself. The write happens a few
@@ -2850,6 +2899,18 @@ void Shutdown()
     {
         delete g_nr.superUp;
         g_nr.superUp = nullptr;
+    }
+
+    if (g_nr.superDown != nullptr)
+    {
+        delete g_nr.superDown;
+        g_nr.superDown = nullptr;
+    }
+
+    if (g_nr.outputNative != nullptr)
+    {
+        g_nr.outputNative->Release();
+        g_nr.outputNative = nullptr;
     }
 
     if (g_nr.heldColor != nullptr)

@@ -354,6 +354,11 @@ class Config
     // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before.
     CustomOptional<float> DlssNrWorkingScale { 1.0f };
 
+    // Filter used for NR supersampling (working scale > 1): the model runs above native, and this is
+    // the downscaler that averages its answer back to native. Independent of OutputScalingDownscaler
+    // so NR and Output Scaling can run different filters at once. Lanczos3 is the sharp default.
+    CustomOptional<Scaler> DlssNrScalingDownscaler { Scaler::Lanczos3 };
+
     // Ask the driver's own nvngx.dll whether it will dispatch Neural Rendering, once per session.
     //
     // Everything here drives the model's DLL directly through a forwarder, because the model refuses
