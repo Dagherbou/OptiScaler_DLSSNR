@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "DlssNr.h"
+#include "DlssNrFeature_Vk.h"
 
 #include <Config.h>
 
@@ -8,8 +9,11 @@
 
 #include <imgui/imgui.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cfloat>
+#include <cmath>
+#include <string>
 #include <string>
 
 namespace DlssNr
@@ -139,7 +143,7 @@ struct SliderResult
 // track the way stock ImGui::SliderFloat draws it, which is what made the handle collide with
 // the digits in the first pass.
 static SliderResult NrSlider(const char* label, float* value, float vMin, float vMax, const char* fmt, float rowWidth,
-                             bool showFill = true)
+                             bool showFill = true, bool logarithmic = false)
 {
     ImGui::PushID(label);
 
@@ -175,7 +179,7 @@ static SliderResult NrSlider(const char* label, float* value, float vMin, float 
     {
         float t = (ImGui::GetIO().MousePos.x - tMin.x) / trackWidth;
         t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
-        float newVal = vMin + t * (vMax - vMin);
+        float newVal = logarithmic ? vMin * std::pow(vMax / vMin, t) : vMin + t * (vMax - vMin);
         if (newVal != *value)
         {
             *value = newVal;
@@ -186,7 +190,7 @@ static SliderResult NrSlider(const char* label, float* value, float vMin, float 
     bool released = wasActive && !active;
     store->SetBool(wasActiveId, active);
 
-    float t = (*value - vMin) / (vMax - vMin);
+    float t = logarithmic ? std::log(*value / vMin) / std::log(vMax / vMin) : (*value - vMin) / (vMax - vMin);
     t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
     float handleX = tMin.x + t * trackWidth;
 
@@ -433,7 +437,12 @@ void RenderMenu(Config* config, float menuResScale)
         HelpMarker("Toggles Neural Rendering without opening this panel. Press the button, then the"
                    "\nkey you want. Escape cancels, Backspace unbinds, R resets it.");
 
-        if (!DlssNr::IsRunning())
+        // Either backend. They keep separate state, and on a native Vulkan game the D3D12 side is
+        // never touched -- asking only that one reports "waiting" over a pass that is demonstrably
+        // running.
+        const bool vulkan = DlssNr::IsRunningVk();
+
+        if (!DlssNr::IsRunning() && !vulkan)
         {
             const char* reason = DlssNr::FailureReason();
 
@@ -463,6 +472,11 @@ void RenderMenu(Config* config, float menuResScale)
 
             if (ms.has_value())
                 ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.45f, 1.0f), "Running - %.2f ms per frame", ms.value());
+            else if (vulkan)
+                // No timing here: the cost comes from a D3D12 query heap with no Vulkan counterpart
+                // yet. Naming the backend still beats a bare "Running."
+                ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.45f, 1.0f), "Running natively on Vulkan - %llu frames",
+                                   DlssNr::FramesVk());
             else
                 ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.45f, 1.0f), "Running.");
 
@@ -725,6 +739,26 @@ void RenderMenu(Config* config, float menuResScale)
                    "\nnever reduced -- only the model's own contribution is computed small and"
                    "\nenlarged. Applied when the handle is let go, not while it is moving.");
 
+        // How the model's work is brought back up when it ran below the frame's size. Classic
+        // composes the small picture straight against the full-size frame, which cannot tell the
+        // shrink's blur apart from the model's edit.
+        const bool reduced = config->DlssNrWorkingScale.value_or_default() < 0.999f;
+
+        ImGui::BeginDisabled(!reduced);
+        static const char* enlargeNames[] = { "Classic", "Matched residual" };
+        int enlarge = config->DlssNrTransfer.value_or_default() == 1 ? 1 : 0;
+        if (NrCombo("Enlargement", &enlarge, enlargeNames, IM_ARRAYSIZE(enlargeNames), rowWidth))
+        {
+            config->DlssNrTransfer = (uint32_t) enlarge;
+            anyChanged = true;
+        }
+        ImGui::EndDisabled();
+        HelpMarker("How the model's work is brought back up when it ran below the frame's size."
+                   "\n\nClassic composes the model's small picture directly against the full-size frame."
+                   "\nThose two disagree by the shrink's blur as well as by the model's edit, and the"
+                   "\ncomposition cannot tell them apart."
+                   "\n\nGreyed out at 100%, where there is nothing to enlarge.");
+
         SectionCaption("How much of it lands", rowWidth);
 
         float transfer = config->DlssNrTransferStrength.value_or_default();
@@ -753,8 +787,55 @@ void RenderMenu(Config* config, float menuResScale)
                                      "the upscaler's linear output is mapped into something it recognises.");
         ImGui::PopTextWrapPos();
 
+        // Exposure is how a renderer makes a cave and a field comparable, which is exactly why one
+        // fixed paper white cannot serve both: the game's own number is decided upstream and cannot
+        // be moved by anything this pass does.
+        bool fromExposure = config->DlssNrWhitePointFromExposure.value_or_default();
+        if (NrCheckbox("Take the white point from the game", &fromExposure))
+        {
+            config->DlssNrWhitePointFromExposure = fromExposure;
+            anyChanged = true;
+        }
+        HelpMarker("Uses the exposure the game hands DLSS instead of measuring or guessing."
+                   "\n\nNot every game supplies one, and some supply it only on some frames -- the last"
+                   "\ngood value is held across the gaps. Paper white below stays a multiplier on top."
+                   "\n\nA game that supplies nothing is unaffected: nothing is read and Paper white is"
+                   "\nused exactly as it would be with this off.");
+
+        // Whether this game supplies one at all, shown either way -- without it, a game that offers
+        // nothing looks identical to the option working quietly.
+        {
+            const auto ex = DlssNr::GameExposureStatus();
+
+            if (vulkan)
+                // Fetched by the D3D12 meter's readback, which this path has no counterpart to.
+                ImGui::TextColored(ImVec4(0.85f, 0.65f, 0.25f, 1.0f),
+                                   DlssNr::ExposureOfferedVk()
+                                       ? "Offered, but not read on Vulkan yet. Paper white is in use."
+                                       : "This game supplies no exposure. Paper white below is in use.");
+            else if (ex.seenFrames == 0)
+                ImGui::TextColored(kTextDim, "Waiting for a frame...");
+            else if (!ex.everOffered)
+                ImGui::TextColored(ImVec4(0.85f, 0.65f, 0.25f, 1.0f),
+                                   "This game supplies no exposure. Paper white below is in use.");
+            else if (!fromExposure)
+                ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
+                                   "This game supplies an exposure. Tick above to use it.");
+            else if (ex.exposure > 1e-6f)
+                ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f), "Game exposure %.4f  ->  white point %.2f%s",
+                                   ex.exposure,
+                                   ex.preExposure / ex.exposure * config->DlssNrWhitePointScale.value_or_default(),
+                                   ex.offeredNow ? "" : "  (held: absent this frame)");
+            else
+                ImGui::TextColored(kTextDim, "Reading the exposure...");
+        }
+
+        // 0.25 to 240, logarithmic. The old 4.0 ceiling could not reach the values games need --
+        // one tester was still improving at 100 -- and a linear track over this span would spend
+        // nine tenths of its travel below anything useful.
         float wpScale = config->DlssNrWhitePointScale.value_or_default();
-        auto rWp = NrSlider("Paper white", &wpScale, 0.25f, 4.0f, "%.2fx", rowWidth);
+        auto rWp = NrSlider(fromExposure ? "Paper white (x exposure)" : "Paper white", &wpScale, 0.25f, 240.0f, "%.2fx",
+                            rowWidth, true, true);
         if (rWp.changed)
             config->DlssNrWhitePointScale = wpScale;
         if (rWp.released)
@@ -839,6 +920,26 @@ void RenderMenu(Config* config, float menuResScale)
             {
                 config->DlssNrCompareSwap = swap;
                 anyChanged = true;
+            }
+
+            bool tags = config->DlssNrCompareTags.value_or_default();
+            if (NrCheckbox("Labels", &tags))
+            {
+                config->DlssNrCompareTags = tags;
+                anyChanged = true;
+            }
+            HelpMarker("Draws which side is which into the frame's own plane, so a screenshot still"
+                       "\nsays it. Clipped per side, so the wipe reveals and hides them exactly as it"
+                       "\ndoes the images.");
+
+            if (tags)
+            {
+                float tagScale = config->DlssNrTagScale.value_or_default();
+                auto rTag = NrSlider("Label size", &tagScale, 0.5f, 5.0f, "%.1fx", rowWidth);
+                if (rTag.changed)
+                    config->DlssNrTagScale = std::clamp(tagScale, 0.5f, 5.0f);
+                if (rTag.released)
+                    anyChanged = true;
             }
         }
 

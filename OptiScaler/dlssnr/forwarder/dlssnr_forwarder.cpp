@@ -123,6 +123,226 @@ extern "C"
     __declspec(dllexport) int dlssnr_call_last_init = 0;
     __declspec(dllexport) int dlssnr_call_last_create = 0;
 
+    // ---------------------------------------------------------------------------------------------
+    // Vulkan.
+    //
+    // The model ships a complete native Vulkan surface -- fourteen entry points against D3D12's ten --
+    // so a Vulkan game does not need the D3D12 bridge the pass currently reaches it through. It needs
+    // this: the same caller gate, because the snippet checks its caller's module path whichever API is
+    // being used, and only this DLL has a name that satisfies it.
+    //
+    // Handles are passed as void*. Every Vulkan handle this touches -- instance, physical device,
+    // device, command buffer -- is a dispatchable handle, which is a pointer on every 64-bit platform,
+    // and taking them opaquely keeps the forwarder free of a Vulkan dependency it would otherwise carry
+    // only to name types it never dereferences.
+    //
+    // Resources are the caller's problem for the same reason: NGX wants a pointer to an
+    // NVSDK_NGX_Resource_VK, the host builds it, and this passes the pointer through the same 64-bit
+    // parameter setter the D3D12 path uses for ID3D12Resource*.
+    // ---------------------------------------------------------------------------------------------
+
+    using PFN_NrVkInitExt = int(__cdecl*)(unsigned long long, const wchar_t*, void*, void*, void*, const void*, int);
+    using PFN_NrVkCreate = int(__cdecl*)(void*, int, const void*, void**);
+    using PFN_NrVkEvaluate = int(__cdecl*)(void*, const void*, const void*, void*);
+
+    struct VkSnippet
+    {
+        HMODULE module = nullptr;
+        PFN_NrVkInitExt init = nullptr;
+        PFN_NrVkCreate create = nullptr;
+        PFN_NrVkEvaluate evaluate = nullptr;
+        PFN_NrRelease release = nullptr;
+        bool initialised = false;
+    };
+
+    VkSnippet g_vk;
+
+    bool loadVkSnippet(const wchar_t* path)
+    {
+        if (g_vk.module)
+        {
+            return g_vk.create != nullptr;
+        }
+
+        g_vk.module = LoadLibraryExW(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+
+        if (!g_vk.module)
+        {
+            return false;
+        }
+
+        g_vk.init = (PFN_NrVkInitExt) GetProcAddress(g_vk.module, "NVSDK_NGX_VULKAN_Init_Ext");
+        g_vk.create = (PFN_NrVkCreate) GetProcAddress(g_vk.module, "NVSDK_NGX_VULKAN_CreateFeature");
+        g_vk.evaluate = (PFN_NrVkEvaluate) GetProcAddress(g_vk.module, "NVSDK_NGX_VULKAN_EvaluateFeature");
+        g_vk.release = (PFN_NrRelease) GetProcAddress(g_vk.module, "NVSDK_NGX_VULKAN_ReleaseFeature");
+
+        return g_vk.create != nullptr && g_vk.evaluate != nullptr;
+    }
+
+    __declspec(dllexport) int dlssnr_vk_last_init = 0;
+    __declspec(dllexport) int dlssnr_vk_last_create = 0;
+
+    // Which of the four entry points resolved, as a bit field: init 1, create 2, evaluate 4, release 8.
+    // 15 means the model's Vulkan surface is entirely reachable from here. Answered without creating
+    // anything, so the host can decide whether the native path exists before committing to it.
+    __declspec(dllexport) int dlssnr_vk_probe(const wchar_t* snippetPath)
+    {
+        loadVkSnippet(snippetPath);
+
+        int bits = 0;
+        bits |= g_vk.init != nullptr ? 1 : 0;
+        bits |= g_vk.create != nullptr ? 2 : 0;
+        bits |= g_vk.evaluate != nullptr ? 4 : 0;
+        bits |= g_vk.release != nullptr ? 8 : 0;
+
+        return bits;
+    }
+
+    __declspec(dllexport) int dlssnr_vk_init(const wchar_t* snippetPath, const wchar_t* dataPath, void* instance,
+                                             void* physicalDevice, void* device, int sdkVersion)
+    {
+        if (!loadVkSnippet(snippetPath) || g_vk.init == nullptr)
+        {
+            return -1;
+        }
+
+        if (g_vk.initialised)
+        {
+            return 1;
+        }
+
+        // Assigned rather than returned directly. A tail call becomes a jmp, and the snippet resolves its
+        // caller from the return address -- so tail calling hands it whoever called this instead of this
+        // module, and the caller gate rejects it before a single argument is read.
+        volatile int result = g_vk.init(0x0, dataPath, instance, physicalDevice, device, nullptr, sdkVersion);
+
+        dlssnr_vk_last_init = (int) result;
+        g_vk.initialised = result == 1;
+
+        return (int) result;
+    }
+
+    // Creates the feature on a Vulkan command buffer. Same contract as the D3D12 one: initialisation work
+    // is recorded into the buffer, so the handle has to outlive its execution.
+    // Creates the feature on a Vulkan command buffer. Same contract as the D3D12 one: initialisation work
+    // is recorded into the buffer, so the handle has to outlive its execution.
+    //
+    // The tuning is set here and not at evaluate, for the same reason it is on the D3D12 path: the model
+    // reads these once, when it builds the feature, and anything set only at evaluate is ignored. That was
+    // why none of these controls did anything for a long time.
+    __declspec(dllexport) void* dlssnr_vk_create(void* cmdBuffer, void* capabilityParams, unsigned int width,
+                                                 unsigned int height, int preset, float intensity, int style,
+                                                 float localStructure, float localTone, float skinStructure,
+                                                 int useAutoMask, int uiCorrection)
+    {
+        if (g_vk.create == nullptr || cmdBuffer == nullptr || capabilityParams == nullptr)
+        {
+            return nullptr;
+        }
+
+        setUInt(capabilityParams, "DLSSNR.Enabled", 1);
+        setUInt(capabilityParams, "DLSSNR.Width", width);
+        setUInt(capabilityParams, "DLSSNR.Height", height);
+        setUInt(capabilityParams, "CreationNodeMask", 1);
+        setUInt(capabilityParams, "VisibilityNodeMask", 1);
+
+        // Written unconditionally, including zero. The block belongs to the driver and outlives the
+        // feature, so skipping the write for "default" leaves the last chosen preset sitting in it.
+        setUInt(capabilityParams, "DLSSNR.Hint.Render.Preset", (unsigned int) preset);
+
+        setFloat(capabilityParams, "DLSSNR.Intensity", intensity);
+        setUInt(capabilityParams, "DLSSNR.Style", (unsigned int) style);
+        setFloat(capabilityParams, "DLSSNR.LocalStructureStrength", localStructure);
+        setFloat(capabilityParams, "DLSSNR.LocalToneStrength", localTone);
+        setFloat(capabilityParams, "DLSSNR.SkinStructureStrength", skinStructure);
+        setUInt(capabilityParams, "DLSSNR.UseAutoMask", (unsigned int) useAutoMask);
+        setUInt(capabilityParams, "DLSSNR.UICorrection", (unsigned int) uiCorrection);
+
+        void* feature = nullptr;
+        volatile int result = g_vk.create(cmdBuffer, 18, capabilityParams, &feature);
+
+        dlssnr_vk_last_create = (int) result;
+
+        return result == 1 ? feature : nullptr;
+    }
+
+    // Evaluates on Vulkan. Same parameter block as the D3D12 path, filled the same way and in the same
+    // order, because it is the same feature -- only the four resources differ, and only in that each is a
+    // pointer to an NVSDK_NGX_Resource_VK the host built rather than an ID3D12Resource. Both go through
+    // the block's 64-bit setter, so the snippet sees the same shape either way.
+    //
+    // Filling it here rather than in the host keeps the two APIs from drifting: a parameter added to one
+    // evaluate and forgotten in the other would be a bug that only appears on one backend.
+    __declspec(dllexport) int dlssnr_vk_evaluate(void* cmdBuffer, void* feature, void* capabilityParams, void* color,
+                                                 void* depth, void* motion, void* output, unsigned int width,
+                                                 unsigned int height, unsigned int guideWidth, unsigned int guideHeight,
+                                                 int depthInverted, int reset, float intensity, int style,
+                                                 float localStructure, float localTone, float skinStructure,
+                                                 int useAutoMask, float mvScaleX, float mvScaleY)
+    {
+        if (g_vk.evaluate == nullptr || feature == nullptr || capabilityParams == nullptr)
+        {
+            return -1;
+        }
+
+        setResourcePtr(capabilityParams, "DLSSNR.Color", color);
+        setResourcePtr(capabilityParams, "DLSSNR.Depth", depth);
+        setResourcePtr(capabilityParams, "DLSSNR.MVec", motion);
+        setResourcePtr(capabilityParams, "DLSSNR.Output", output);
+
+        // The block is shared with the game's own DLSS, which overwrites these between frames, so every
+        // value the feature reads is set again here rather than relying on what create left behind.
+        setUInt(capabilityParams, "DLSSNR.Enabled", 1);
+        setUInt(capabilityParams, "DLSSNR.Width", width);
+        setUInt(capabilityParams, "DLSSNR.Height", height);
+        setUInt(capabilityParams, "DLSSNR.DepthInverted", (unsigned int) depthInverted);
+        setUInt(capabilityParams, "DLSSNR.Reset", (unsigned int) reset);
+
+        setUInt(capabilityParams, "DLSSNR.ColorSubrectBaseX", 0);
+        setUInt(capabilityParams, "DLSSNR.ColorSubrectBaseY", 0);
+        setUInt(capabilityParams, "DLSSNR.ColorSubrectWidth", width);
+        setUInt(capabilityParams, "DLSSNR.ColorSubrectHeight", height);
+        setUInt(capabilityParams, "DLSSNR.OutputSubrectBaseX", 0);
+        setUInt(capabilityParams, "DLSSNR.OutputSubrectBaseY", 0);
+        setUInt(capabilityParams, "DLSSNR.OutputSubrectWidth", width);
+        setUInt(capabilityParams, "DLSSNR.OutputSubrectHeight", height);
+        setUInt(capabilityParams, "DLSSNR.DepthSubrectBaseX", 0);
+        setUInt(capabilityParams, "DLSSNR.DepthSubrectBaseY", 0);
+        setUInt(capabilityParams, "DLSSNR.DepthSubrectWidth", guideWidth);
+        setUInt(capabilityParams, "DLSSNR.DepthSubrectHeight", guideHeight);
+        setUInt(capabilityParams, "DLSSNR.MVecSubrectBaseX", 0);
+        setUInt(capabilityParams, "DLSSNR.MVecSubrectBaseY", 0);
+        setUInt(capabilityParams, "DLSSNR.MVecSubrectWidth", guideWidth);
+        setUInt(capabilityParams, "DLSSNR.MVecSubrectHeight", guideHeight);
+
+        // The game's own encoding, passed through rather than derived. Deriving it from the resolutions
+        // came out as exactly 1.0 at native, which told the model almost nothing had moved.
+        setFloat(capabilityParams, "DLSSNR.MVecScaleX", mvScaleX);
+        setFloat(capabilityParams, "DLSSNR.MVecScaleY", mvScaleY);
+
+        setFloat(capabilityParams, "DLSSNR.Intensity", intensity);
+        setUInt(capabilityParams, "DLSSNR.Style", (unsigned int) style);
+        setFloat(capabilityParams, "DLSSNR.LocalStructureStrength", localStructure);
+        setFloat(capabilityParams, "DLSSNR.LocalToneStrength", localTone);
+        setFloat(capabilityParams, "DLSSNR.SkinStructureStrength", skinStructure);
+        setUInt(capabilityParams, "DLSSNR.UseAutoMask", (unsigned int) useAutoMask);
+
+        // Assigned rather than returned. A tail call becomes a jmp and the snippet would resolve its
+        // caller past this module, which the gate rejects.
+        volatile int result = g_vk.evaluate(cmdBuffer, feature, capabilityParams, nullptr);
+
+        return (int) result;
+    }
+
+    __declspec(dllexport) void dlssnr_vk_release(void* feature)
+    {
+        if (g_vk.release != nullptr && feature != nullptr)
+        {
+            volatile int ignored = g_vk.release(feature);
+            (void) ignored;
+        }
+    }
+
     // Creates a persistent Neural Rendering feature. The handle records initialisation work into cmd, so it
     // must outlive that command list's execution; releasing it early loses the device.
     __declspec(dllexport) void* dlssnr_call_create(const wchar_t* snippetPath, const wchar_t* dataPath,
@@ -252,7 +472,12 @@ extern "C"
         {
             return;
         }
-        setFloat(capabilityParams, "DLSSNR.GlobalToneStrength", globalTone);
+        // DLSSNR.GlobalToneStrength is deliberately not written. The string does not appear anywhere in
+        // nvngx_dlssnr.dll -- the model's own vocabulary is 61 DLSSNR.* names and this is not one of them,
+        // so every write went into a map nothing reads. It exists in Streamline's sl.dlss_nr.dll, which is
+        // presumably where it was copied from. Left as a parameter here so the signature does not churn.
+        (void) globalTone;
+
         setResource(capabilityParams, "DLSSNR.UI", ui);
         setResource(capabilityParams, "DLSSNR.UIAlpha", uiAlpha);
         setResource(capabilityParams, "DLSSNR.Backbuffer", backbuffer);

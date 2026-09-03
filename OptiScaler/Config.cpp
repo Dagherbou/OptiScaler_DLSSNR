@@ -321,11 +321,16 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrTransferStrength.set_from_config(readFloat("DlssNr", "TransferStrength"));
             DlssNrColourStrength.set_from_config(readFloat("DlssNr", "ColourStrength"));
             DlssNrMaxRatio.set_from_config(readFloat("DlssNr", "MaxRatio"));
+            DlssNrTransfer.set_from_config(readUInt("DlssNr", "Transfer"));
+
+            DlssNrWhitePointFromExposure.set_from_config(readBool("DlssNr", "WhitePointFromExposure"));
             DlssNrDebugView.set_from_config(readUInt("DlssNr", "DebugView"));
             DlssNrCompare.set_from_config(readUInt("DlssNr", "Compare"));
             DlssNrCompareSplit.set_from_config(readFloat("DlssNr", "CompareSplit"));
             DlssNrCompareZoom.set_from_config(readFloat("DlssNr", "CompareZoom"));
             DlssNrCompareSwap.set_from_config(readBool("DlssNr", "CompareSwap"));
+            DlssNrCompareTags.set_from_config(readBool("DlssNr", "CompareTags"));
+            DlssNrTagScale.set_from_config(readFloat("DlssNr", "TagScale"));
             DlssNrWorkingScale.set_from_config(readFloat("DlssNr", "WorkingScale"));
             DlssNrProxyProbe.set_from_config(readBool("DlssNr", "ProxyProbe"));
             DlssNrUseProxy.set_from_config(readBool("DlssNr", "UseProxy"));
@@ -338,6 +343,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrLocalTone.set_from_config(readFloat("DlssNr", "LocalTone"));
             DlssNrSkinStructure.set_from_config(readFloat("DlssNr", "SkinStructure"));
             DlssNrAutoMask.set_from_config(readBool("DlssNr", "AutoMask"));
+            DlssNrDepthConvention.set_from_config(readUInt("DlssNr", "DepthConvention"));
+            DlssNrUICorrection.set_from_config(readBool("DlssNr", "UICorrection"));
             UseGenericAppIdWithDlss.set_from_config(readBool("DLSS", "UseGenericAppIdWithDlss"));
 
             RenderPresetOverride.set_from_config(readBool("DLSS", "RenderPresetOverride"));
@@ -1177,12 +1184,18 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "ColourStrength",
                      GetFloatValue(Instance()->DlssNrColourStrength.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MaxRatio", GetFloatValue(Instance()->DlssNrMaxRatio.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "Transfer", GetIntValue(Instance()->DlssNrTransfer.value_for_config()).c_str());
+
+        ini.SetValue("DlssNr", "WhitePointFromExposure",
+                     GetBoolValue(Instance()->DlssNrWhitePointFromExposure.value_for_config()).c_str());
         ini.SetValue("DlssNr", "DebugView", GetIntValue(Instance()->DlssNrDebugView.value_for_config()).c_str());
         ini.SetValue("DlssNr", "Compare", GetIntValue(Instance()->DlssNrCompare.value_for_config()).c_str());
         ini.SetValue("DlssNr", "CompareSplit",
                      GetFloatValue(Instance()->DlssNrCompareSplit.value_for_config()).c_str());
         ini.SetValue("DlssNr", "CompareZoom", GetFloatValue(Instance()->DlssNrCompareZoom.value_for_config()).c_str());
         ini.SetValue("DlssNr", "CompareSwap", GetBoolValue(Instance()->DlssNrCompareSwap.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "CompareTags", GetBoolValue(Instance()->DlssNrCompareTags.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "TagScale", GetFloatValue(Instance()->DlssNrTagScale.value_for_config()).c_str());
         ini.SetValue("DlssNr", "WorkingScale",
                      GetFloatValue(Instance()->DlssNrWorkingScale.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AutoCapture", GetBoolValue(Instance()->DlssNrAutoCapture.value_for_config()).c_str());
@@ -1197,6 +1210,9 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "SkinStructure",
                      GetFloatValue(Instance()->DlssNrSkinStructure.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AutoMask", GetBoolValue(Instance()->DlssNrAutoMask.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "DepthConvention",
+                     GetIntValue(Instance()->DlssNrDepthConvention.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "UICorrection", GetBoolValue(Instance()->DlssNrUICorrection.value_for_config()).c_str());
         ini.SetValue("DLSS", "RenderPresetOverride",
                      GetBoolValue(Instance()->RenderPresetOverride.value_for_config()).c_str());
         ini.SetValue("DLSS", "RenderPresetForAll",
