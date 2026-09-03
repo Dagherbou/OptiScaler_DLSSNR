@@ -614,6 +614,18 @@ void RenderMenu(Config* config, float menuResScale)
                                            anchorValue, anchorWhite, live, anchorWhite * ratio);
                     }
 
+                    bool meter = config->DlssNrScanMeter.value_or_default();
+                    if (ImGui::Checkbox("Show the light meter on screen", &meter))
+                        config->DlssNrScanMeter = meter;
+
+                    HelpMarker("A lamp in the corner: red for dark, green for full light, and the"
+                                   "\nshades between, with the reading beside it."
+                                   "\n\nIt is how you see at a glance that the scan is TRACKING rather"
+                                   "\nthan merely running. Walk into shade and it should slide toward"
+                                   "\nred; step out and it should go green. If it moves the wrong way,"
+                                   "\nthat is what the setting above is for."
+                                   "\n\nPurely a readout. It changes nothing.");
+
                     const auto found = DlssNr::ExposureScan::Report();
                     const char* why = DlssNr::ExposureScan::Status();
 

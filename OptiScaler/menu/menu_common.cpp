@@ -7644,6 +7644,54 @@ void RenderExposureScanIndicator(float alpha)
                          ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing |
                          ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove))
     {
+        // The lamp. Red for dark, green for full light, and it moves as the scene does -- which is
+        // the only way to see at a glance that the thing is tracking rather than merely running.
+        if (Config::Instance()->DlssNrScanMeter.value_or_default())
+        {
+            int which = 0;
+            float low = 0.0f, high = 0.0f;
+            const float now = DlssNr::ExposureScan::BestValue(&which, &low, &high);
+
+            if (now > 0.0f && high > low)
+            {
+                // An exposure falls as the scene brightens, so the lamp reads the value backwards
+                // unless the buffer holds the reciprocal -- the same question the anchor asks, and
+                // it has to be answered the same way here or the lamp would contradict the picture.
+                float lit = (high - now) / (high - low);
+
+                if (Config::Instance()->DlssNrScanInverted.value_or_default())
+                    lit = 1.0f - lit;
+
+                lit = lit < 0.0f ? 0.0f : (lit > 1.0f ? 1.0f : lit);
+
+                // Red to amber to green, because a straight red-to-green fade goes through a muddy
+                // brown in the middle and the middle is where most of a session is spent.
+                const ImVec4 dark(0.90f, 0.22f, 0.20f, 1.0f);
+                const ImVec4 mid(0.95f, 0.75f, 0.20f, 1.0f);
+                const ImVec4 bright(0.35f, 0.88f, 0.38f, 1.0f);
+
+                const float t = lit < 0.5f ? lit * 2.0f : (lit - 0.5f) * 2.0f;
+                const ImVec4& a = lit < 0.5f ? dark : mid;
+                const ImVec4& b = lit < 0.5f ? mid : bright;
+
+                const ImVec4 lamp(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t,
+                                  1.0f);
+
+                const float r = ImGui::GetFontSize() * 0.38f;
+                const ImVec2 at = ImGui::GetCursorScreenPos();
+                const ImVec2 centre(at.x + r, at.y + ImGui::GetTextLineHeight() * 0.5f);
+
+                ImDrawList* draw = ImGui::GetWindowDrawList();
+                draw->AddCircleFilled(centre, r, ImGui::GetColorU32(lamp), 20);
+                draw->AddCircle(centre, r, ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.6f)), 20, 1.5f);
+
+                ImGui::Dummy(ImVec2(r * 2.0f + 6.0f, ImGui::GetTextLineHeight()));
+                ImGui::SameLine();
+
+                ImGui::TextColored(lamp, "%3.0f%% lit   %.5f", lit * 100.0f, now);
+            }
+        }
+
         ImGui::TextColored(colour, "%s", line);
     }
 

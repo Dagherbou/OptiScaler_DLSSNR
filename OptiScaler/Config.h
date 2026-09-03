@@ -386,6 +386,11 @@ class Config
     // that makes per-game profiles work: one person anchors a game, everybody else gets the number.
     //
     // Zero means not anchored, and then nothing happens at all.
+    // A lamp in the corner showing what the scan currently thinks the light is doing: red for dark,
+    // green for full light, and the shades between. Off by default; it is for watching the thing
+    // work, not for playing with.
+    CustomOptional<bool> DlssNrScanMeter { false };
+
     CustomOptional<float> DlssNrScanAnchorValue { 0.0f };
     CustomOptional<float> DlssNrScanAnchorWhitePoint { 0.0f };
 
