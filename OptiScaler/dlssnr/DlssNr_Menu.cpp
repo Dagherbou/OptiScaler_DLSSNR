@@ -187,14 +187,19 @@ void RenderMenu(Config* config, float menuResScale)
                                ? pendingScale
                                : (int) lroundf(config->DlssNrWorkingScale.value_or_default() * 100.0f);
 
-        if (ImGui::SliderInt("Model resolution", &scalePercent, 25, 100, "%d%%"))
+        if (ImGui::SliderInt("Model resolution", &scalePercent, 25, 200, "%d%%"))
             pendingScale = scalePercent;
 
         if (ImGui::IsItemDeactivatedAfterEdit() && pendingScale >= 0)
         {
-            config->DlssNrWorkingScale = std::clamp(pendingScale, 25, 100) / 100.0f;
+            config->DlssNrWorkingScale = std::clamp(pendingScale, 25, 200) / 100.0f;
             pendingScale = -1;
         }
+
+        if (scalePercent > 100)
+            ImGui::TextDisabled("Supersampling %.2fx (DirectX 12 only): the model runs ABOVE native, then\n"
+                                "is sampled back down. Experimental, and costly -- time grows with the area.",
+                                scalePercent / 100.0f);
 
         HelpMarker("What fraction of the frame the model works at. Cost falls with the square of"
                        "\nthis, so half resolution is roughly a quarter of the time."
@@ -206,10 +211,12 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nThe frame itself stays at full detail whatever this says -- only the"
                        "\nmodel's own work is done small.");
 
-        // Only meaningful below 100%: at the same rate the residual collapses to the model's own
-        // picture and the two modes are identical, so the control says so by going grey.
+        // Meaningful only when the model runs at a size different from the frame (below OR above 100%):
+        // at exactly 100 the residual collapses to the model's own picture and the modes are identical,
+        // so the control says so by going grey.
         {
-            const bool reduced = config->DlssNrWorkingScale.value_or_default() < 0.999f;
+            const float ws = config->DlssNrWorkingScale.value_or_default();
+            const bool reduced = ws < 0.999f || ws > 1.001f;
 
             if (!reduced)
                 ImGui::BeginDisabled();
@@ -223,7 +230,8 @@ void RenderMenu(Config* config, float menuResScale)
             if (!reduced)
                 ImGui::EndDisabled();
 
-            HelpMarker("How the model's work is brought back up when it ran below the frame's size."
+            HelpMarker("How the model's work is brought back to frame size when it ran at a different"
+                       "\nsize -- below the frame, or above it when supersampling."
                        "\n\nClassic composes the model's small picture directly against the full-size"
                        "\nframe. Those two disagree by the shrink's blur as well as by the model's edit,"
                        "\nand the composition cannot tell them apart -- it reads the blur as brightness"
@@ -232,7 +240,9 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nMatched residual carries up only the model's difference and lays it on the"
                        "\nframe's own proxy, so both pictures being compared are full size and the only"
                        "\nthing that came from the small raster is the edit itself."
-                       "\n\nNo effect at 100%: there is no residual to carry and the two are identical."
+                       "\n\nNo effect at exactly 100%: there is no residual to carry and the two are"
+                       "\nidentical. Above 100% (supersampling) it applies the same way, now bringing the"
+                       "\nmodel's larger picture down to frame size instead of up."
                        "\n\nFrom hhkbble's multi-pass work on this fork.");
         }
 

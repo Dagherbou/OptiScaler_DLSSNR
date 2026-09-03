@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cstring>
 #include "precompile/DlssNr_Shader.h"
+#include "../output_scaling/OS_Dx12.h"
 
 namespace
 {
@@ -209,6 +210,12 @@ struct NrState
 
     // The frame shrunk for the model, when it is working below full resolution.
     ID3D12Resource* colorSmall = nullptr;
+
+    // Supersampling (working scale > 1): the Output Scaling upsampler used to enlarge the proxy to the
+    // model's larger-than-native working size with a real filter instead of the box minifier. Created
+    // lazily on the first super-native frame, released in Shutdown; sizes from the resources each call,
+    // so a resolution change needs no rebuild.
+    OS_Dx12* superUp = nullptr;
 
     // Frame hold (design/frame-hold.md): a persistent copy of the output taken on hold-on and restored
     // over the live output before the encode reads it while held, so a setting change re-renders the
@@ -1634,9 +1641,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     }
 
     // What the model works at. The frame and its edit stay full resolution; only the model's input and
-    // answer shrink, and the resolve enlarges the answer while compositing.
+    // answer change size, and the resolve enlarges (or minifies) the answer while compositing. Below 1
+    // the model runs reduced and cheaper; above 1 it SUPERSAMPLES -- the proxy is upscaled to a larger
+    // working size so the model denoises a super-native input, which the resolve then samples back down.
+    // Capped at 2x: cost grows with the area and NGX acceptance above native is what this probe tests.
     float workScale = cfg.DlssNrWorkingScale.value_or_default();
-    workScale = workScale < 0.25f ? 0.25f : (workScale > 1.0f ? 1.0f : workScale);
+    workScale = workScale < 0.25f ? 0.25f : (workScale > 2.0f ? 2.0f : workScale);
     const auto workWidth = (unsigned int) (width * workScale + 0.5f);
     const auto workHeight = (unsigned int) (height * workScale + 0.5f);
     const bool reduced = workWidth != width || workHeight != height;
@@ -2028,14 +2038,51 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     if (reduced && g_nr.colorSmall != nullptr)
     {
-        DlssNrConstants down {};
-        down.Mode = DlssNrMode_Downsample;
-        down.Width = workWidth;
-        down.Height = workHeight;
-        DispatchPass(cmdList, down, modelInput, nullptr, nullptr, nullptr, nullptr,
-                            g_nr.colorSmall, nullptr);
-        Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        bool built = false;
+
+        if (workScale > 1.0f)
+        {
+            // Supersample: enlarge the proxy to the larger working size with a real upscaling filter
+            // (the Output Scaling upsampler) so the model sees a clean super-native input, rather than
+            // the box minifier which only makes sense going down. colorCopy is NON_PIXEL_SHADER_RESOURCE
+            // from the encode (SRV-ready); colorSmall is UNORDERED_ACCESS from last frame's resolve.
+            if (g_nr.superUp == nullptr)
+                g_nr.superUp = new OS_Dx12("DLSS-NR supersample up", device, true);
+
+            if (g_nr.superUp != nullptr &&
+                g_nr.superUp->Dispatch(cmdList, g_nr.colorCopy, g_nr.colorSmall))
+            {
+                Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                built = true;
+            }
+        }
+
+        if (!built)
+        {
+            if (workScale > 1.0f)
+            {
+                // Wanted to supersample but the upscaler was not available -- warn once; the box path
+                // below can only enlarge blockily, so the user should know the clean path is off.
+                static bool warnedSuper = false;
+                if (!warnedSuper)
+                {
+                    warnedSuper = true;
+                    LOG_WARN("DLSS-NR supersample: upscaler unavailable, falling back to a blocky enlarge.");
+                }
+            }
+
+            // Sub-native (or the upsampler could not be built): box-resample the proxy to the work size.
+            DlssNrConstants down {};
+            down.Mode = DlssNrMode_Downsample;
+            down.Width = workWidth;
+            down.Height = workHeight;
+            DispatchPass(cmdList, down, modelInput, nullptr, nullptr, nullptr, nullptr,
+                                g_nr.colorSmall, nullptr);
+            Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
+
         modelInput = g_nr.colorSmall;
     }
 
@@ -2107,6 +2154,20 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         g_ngxTime->End(cmdList);
 
     g_nr.reset = false;
+
+    // Supersampling probe: report the model working ABOVE native so a test log tells us whether NGX even
+    // accepts a super-native evaluate and what it returns. Once per working-size change, or on any error.
+    if (workWidth > width || workHeight > height)
+    {
+        static unsigned int lastSuper = 0;
+        if (lastSuper != workWidth || result != 1)
+        {
+            lastSuper = workWidth;
+            LOG_INFO("DLSS-NR SUPERSAMPLE: model at {}x{} = {:.2f}x native {}x{}, evaluate result {} ({})",
+                     workWidth, workHeight, (float) workWidth / (float) width, width, height, result,
+                     NgxResultName((unsigned int) result));
+        }
+    }
 
     // Once, a few seconds in, so it lands after the values have been written at least once.
     static bool tuningReported = false;
@@ -2763,6 +2824,12 @@ void Shutdown()
     {
         g_nr.colorSmall->Release();
         g_nr.colorSmall = nullptr;
+    }
+
+    if (g_nr.superUp != nullptr)
+    {
+        delete g_nr.superUp;
+        g_nr.superUp = nullptr;
     }
 
     if (g_nr.heldColor != nullptr)
