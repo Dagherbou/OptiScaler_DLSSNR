@@ -20,7 +20,7 @@ namespace
 // How many candidates are worth keeping. The shape being looked for is rare -- in a frame's worth of
 // unordered access views a game creates hundreds, and a handful are this small -- so a low cap is
 // not a compromise, it is a statement that finding twenty means the filter is wrong.
-constexpr size_t kMaxCandidates = 12;
+constexpr size_t kMaxCandidates = 24;
 
 // Ring depth for the readbacks. Four, so the slot being read is four frames behind the slot being
 // written and the read never waits on the GPU. Same depth and the same reason as the meter's.
@@ -29,6 +29,11 @@ constexpr unsigned int kSlots = 4;
 // Every candidate's value lands in one buffer, at its own offset, so there is one copy per candidate
 // but only one buffer per slot. 16 bytes each is enough for the widest format worth reading.
 constexpr unsigned int kStride = 16;
+
+// What an exposure could plausibly be. Outside these it is a flag, a counter, a sentinel or a
+// zeroed buffer nobody has written yet -- Nioh 3 offers all four, including one holding 1000000.
+constexpr float kFloor = 1e-6f;
+constexpr float kCeiling = 1e4f;
 
 struct Tracked
 {
@@ -215,10 +220,13 @@ bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsi
     if (rd.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
     {
         // Unreal moved eye adaptation off a texture and onto a buffer, so buffers have to be in
-        // scope or a whole engine's worth of games is invisible. 4kB rather than 64 bytes for the
-        // same reason the texture bound moved: a buffer holding an exposure and some history is
-        // still small, but it is not necessarily four bytes.
-        if (rd.Width == 0 || rd.Width > 4096)
+        // scope or a whole engine's worth of games is invisible.
+        //
+        // 128 bytes, down from 4kB. The wider bound filled all twelve slots in Nioh 3 with 256, 512
+        // and 768 byte buffers that never held anything but zero, and the real answer -- eight bytes
+        // -- only made the list because it happened to be created early. A cap that can be filled by
+        // junk is a cap that can hide the answer.
+        if (rd.Width == 0 || rd.Width > 128)
             return false;
 
         *outIsBuffer = true;
@@ -386,10 +394,17 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
                     t.highest = std::max(t.highest, value);
                 }
 
-                // "Moves" is the whole point of the readout. An exposure changes with the lighting;
-                // a constant somebody happened to put in a 1x1 texture does not. Ten percent of
-                // travel is well above readback noise and well below what walking outdoors does.
-                if (t.reads > 0 && t.highest > 0.0f && (t.highest - t.lowest) > 0.10f * std::abs(t.highest))
+                // "Moves" is the whole point of the readout, and the first version of this test
+                // was wrong in a way that mattered: a spread of ten percent of the highest value
+                // seen is a threshold of zero when the highest value seen is zero, so three buffers
+                // sitting at 0.00000 with float noise around them all reported MOVES.
+                //
+                // Ratios, not differences, and only over values that could be an exposure at all.
+                // An exposure is positive, is not a thousandth of a thousandth, and does not sit at
+                // a million. Nioh 3's real one runs 0.0019 to 0.616 -- a factor of three hundred --
+                // so a quarter is a low bar that noise cannot reach.
+                if (t.reads > 0 && t.lowest > kFloor && t.highest < kCeiling &&
+                    t.highest > t.lowest * 1.25f)
                     t.moves = true;
 
                 t.latest = value;
@@ -524,19 +539,36 @@ const char* Headline()
     case Verdict::Found:
     {
         std::lock_guard<std::mutex> lock(g_scanMutex);
-        line = "DLSS-NR exposure scan: FOUND one that moves -- open the menu";
+
+        // The widest travel wins where several move. An exposure swings by orders of magnitude
+        // between a dark interior and open daylight; anything that merely wobbles is something else.
+        size_t best = 0;
+        float bestRatio = 0.0f;
 
         for (size_t i = 0; i < g_scan.tracked.size(); ++i)
         {
-            if (g_scan.tracked[i].moves)
+            const Tracked& t = g_scan.tracked[i];
+
+            if (!t.moves || t.lowest <= kFloor)
+                continue;
+
+            const float ratio = t.highest / t.lowest;
+
+            if (ratio > bestRatio)
             {
-                line = "DLSS-NR exposure scan: candidate " + std::to_string(i + 1) + " MOVES (" +
-                       std::to_string(g_scan.tracked[i].lowest) + " to " +
-                       std::to_string(g_scan.tracked[i].highest) + ")";
-                break;
+                bestRatio = ratio;
+                best = i;
             }
         }
 
+        char buf[192];
+        // The live value is in here so the line visibly ticks. Without it the indicator looks stuck
+        // the moment the range settles, which is exactly when it has succeeded.
+        snprintf(buf, sizeof(buf),
+                 "DLSS-NR exposure scan: FOUND -- candidate %zu = %.5f  (%.5f..%.5f, x%.0f)  done",
+                 best + 1, g_scan.tracked[best].latest, g_scan.tracked[best].lowest,
+                 g_scan.tracked[best].highest, bestRatio);
+        line = buf;
         break;
     }
 
