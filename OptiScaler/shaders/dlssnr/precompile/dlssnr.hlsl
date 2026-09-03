@@ -217,7 +217,7 @@ Texture2D<float4>   gOriginal : register(t2);  // resolve: the untouched frame.
 #ifdef VK_MODE
 [[vk::binding(4, 0)]]
 #endif
-Texture2D<float4>   gMotion   : register(t3);  // resolve, accumulating: the game's motion vectors.
+Texture2D<float4>   gMotion   : register(t3);  // t3: meter exposure (Mode 3, tile 0) or resolve full-res encode (colorCopy / g_vk.proxy). Name is the slot's history; nothing here reads motion vectors.
 #ifdef VK_MODE
 [[vk::binding(5, 0)]]
 #endif
@@ -263,12 +263,10 @@ float3 EditAt(float2 uvq)
 }
 
 
-// The soft knee, shared by the encode and the resolve.
+// The soft knee, applied by the encode only.
 //
-// The encode applies it on the way in; the resolve has to be able to reproduce it, because the
-// matched-residual path needs the frame's own proxy at full resolution and the encode only ever
-// wrote a reduced one. It is a pure function of the pixel, so recomputing costs less than the
-// texture read it replaces.
+// The knee is applied on the way in. The resolve reads the encode's output back (t3) when it
+// needs the frame's own proxy at full resolution; it does not recompute the curve.
 float3 SoftKnee(float3 display)
 {
     if (gPassthrough != 0)
@@ -338,7 +336,8 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // which is how a device is lost. Reading it as an SRV in a pass that is already running costs
         // nothing and touches no state -- and it rides back on the readback that already exists.
         //
-        // The motion slot is free here: the meter has no use for motion vectors.
+        // t3 is free here; the meter puts the game's exposure texture in it, the resolve the
+        // full-resolution encode.
         if (id.x == 0 && id.y == 0)
         {
             gTarget[id.xy] = float4(gMotion.Load(int3(0, 0, 0)).r, 0.0, 0.0, 1.0);
@@ -462,7 +461,8 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // A soft knee instead of a hard ceiling. Anything above 0.75 is rolled off rather than
         // clipped, so the model is never shown a field of flat white whose blown pixels flip between
         // frames -- unstable input is unstable output, and this is where a bright scene would produce
-        // it. The resolve reproduces this exactly, so the two agree on what the frame's own proxy is.
+        // it. The resolve reads this texture back rather than recomputing it, so the two cannot
+        // disagree on what the frame's own proxy is.
         float3 display = SoftKnee(frame / max(gWhitePoint, 1e-4));
 
         gTarget[id.xy] = float4(LinearToSrgb(display), source.a);
@@ -566,6 +566,10 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // Said plainly because the comment that survived the removal did not say it, and a later reader
     // took it for a description of live code and planned on top of machinery that is not here.
 
+    // Measured on the model's own answer, before the residual below may replace `model`. An empty
+    // frame from the model is "hand the frame back", whatever the residual would have made of it.
+    const bool emptyModel = dot(model, kLuma) <= 1e-5;
+
     // Matched residual: put the two pictures being compared at the same resolution first.
     //
     // Classic hands the composition below a low-resolution `proxy` and a low-resolution `model`
@@ -574,46 +578,33 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // the frame has and the model never saw, which is a term that grows as the model's raster
     // shrinks. That is the resolution-dependent colour shift measured at 50%.
     //
-    // Here the frame's own proxy is rebuilt at full resolution -- the encode is a pure function, so
-    // SoftKnee reproduces it exactly -- and only the model's *difference* is carried up from small.
-    // Both pictures handed to the composition are then full resolution and the only thing that came
-    // from the reduced raster is the edit itself, which is what was wanted from it.
+    // Here the full-resolution proxy is the encode itself, read from t3, and only the model's
+    // *difference* is carried up from small. Both pictures handed to the composition are then full
+    // resolution and the only thing that came from the reduced raster is the edit itself, which is
+    // what was wanted from it.
     //
     // The residual and its cube scaling are hhkbble's, from the multi-pass PR against this fork.
     //
-    // Taken only when the model actually worked below the frame. At the same rate the arithmetic
-    // collapses -- fullProxy + (model - proxy) is model, because proxy already is the frame's own
-    // full-resolution proxy -- but only in exact arithmetic. The one this pass reads has been through
-    // an sRGB encode, a texture, and a decode, while the one SoftKnee rebuilds has not, so the two
-    // agree to within the proxy surface's precision rather than exactly. Skipping the path when there
-    // is no residual to carry makes 100% bit-identical to Classic instead of nearly identical, which
-    // is what lets this default to on: the shipped configuration cannot be changed by it at all.
+    // Taken only when the model actually worked below the frame. Skipped when there is no residual
+    // to carry -- that skip is what keeps Classic and Matched bit-identical at 100%, which is what
+    // lets this default to on: the shipped configuration cannot be changed by it at all.
     uint proxyW, proxyH;
     gSource.GetDimensions(proxyW, proxyH);
     const bool modelRanSmall = proxyW != gWidth || proxyH != gHeight;
 
     if (gTransfer == 1 && modelRanSmall)
     {
-        // Saturated, because that is what the encode does and this has to reproduce it exactly.
-        //
-        // The encode writes LinearToSrgb(SoftKnee(frame / paperwhite)), and LinearToSrgb saturates
-        // before it does anything else -- so the proxy the Classic path reads back is always inside
-        // the unit cube. SoftKnee alone is not: it rolls luminance off above 0.75 but leaves a
-        // channel free to sit above 1, and with a measured white point of 0.1 in a dark red interior
-        // the red channel of anything lit is far above 1.
-        //
-        // CubeScaleResidual then computes (1 - P) / d to find how far the residual may travel before
-        // leaving the cube. With P above 1 that numerator is negative, alpha comes out negative,
-        // saturate(alpha) is zero, and the entire edit is discarded -- leaving the knee'd proxy as
-        // the answer, which is darker than the frame everywhere the knee fired. That is the darker,
-        // redder 50% picture: not the working scale, and not the residual idea, just a proxy that was
-        // never clamped the way the one it stands in for is.
-        float3 fullProxy = saturate(SoftKnee(original));
+        // The frame's own proxy at full resolution is the encode this pass already wrote; on the
+        // resolve t3 is that texture. Read the way `original` is read: sampled for side by side,
+        // loaded otherwise. Decoded like `proxy` and `model` above. Not saturated again: the encode
+        // went through LinearToSrgb, which saturates first, so this is already inside the unit
+        // cube, and a passthrough frame must come back exactly as it was stored.
+        const float4 encodeSample = gCompareMode == 1 ? gMotion.SampleLevel(gLinear, cmpUv, 0)
+                                                      : gMotion.Load(int3(id.xy, 0));
+        const float3 fullProxy = gPassthrough != 0 ? encodeSample.rgb : SrgbToLinear(encodeSample.rgb);
+
         proxy = fullProxy;
         proxyLuma = dot(proxy, kLuma);
-
-        // At the same rate there is no residual to carry: the model's own picture is already at the
-        // frame's resolution, and P + (m - p) collapses to m exactly.
         model = CubeScaleResidual(fullProxy, fullProxy + edit);
     }
 
@@ -625,10 +616,12 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     float modelLuma = dot(model, kLuma);
     float3 upgraded;
 
-    if (modelLuma <= 1e-5)
+    // Two reasons to hand the frame back untouched. The model returned an empty frame for this
+    // pixel (emptyModel, measured before the residual). Or the composed model picture is black
+    // here, which the residual can legitimately produce on a dark pixel; the highlight branch below
+    // divides by modelLuma and needs it non-zero.
+    if (emptyModel || modelLuma <= 1e-5)
     {
-        // The model can return an empty frame for an input it cannot read. Rescaling that collapses
-        // the picture to black, so the frame is handed back untouched instead.
         upgraded = original;
     }
     else

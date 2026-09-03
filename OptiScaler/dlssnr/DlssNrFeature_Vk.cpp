@@ -684,7 +684,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     Transition(cmdBuffer, g_vk.keep, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     if (!g_vk.pass->Dispatch(cmdBuffer, resolve, width, height, g_vk.proxy.view, g_vk.output.view, g_vk.keep.view,
-                             VK_NULL_HANDLE, colour->Resource.ImageViewInfo.ImageView, VK_NULL_HANDLE))
+                             g_vk.proxy.view, colour->Resource.ImageViewInfo.ImageView, VK_NULL_HANDLE))
     {
         Fail("the resolve dispatch failed");
         return;

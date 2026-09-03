@@ -1625,9 +1625,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     if (result == NVSDK_NGX_Result_Success)
     {
-        // Resolve takes the difference between what the model returned and what it was shown, and adds
-        // that back to the frame. At strength zero the result is what the upscaler produced, exactly, and
-        // anything the model left alone is untouched rather than round-tripped through the curve.
+        // The resolve composes the model's answer against the keep (hdrCopy) as the shader describes;
+        // the additive description is from an older composition. At strength zero the keep comes
+        // back as stored.
         DlssNrConstants resolveParams {};
         resolveParams.Mode = DlssNrMode_Resolve;
         resolveParams.WhitePoint = whitePoint;
@@ -1705,7 +1705,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        DispatchPass(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, motionIn,
+        DispatchPass(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, g_nr.colorCopy,
                             nullptr, target, nullptr);
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);

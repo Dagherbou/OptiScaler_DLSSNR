@@ -218,7 +218,7 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nown, rescaled so its luminance sits where the original says it should. This"
                        "\nblends between the two, so both ends are real pictures and everything between"
                        "\nthem is one too."
-                       "\n\n0 gives back exactly what the upscaler produced. 1 is the model's picture."
+                       "\n\n0 leaves the frame as it arrived, with none of the model's picture in it. 1 is the model's picture."
                        "\n\nAbove 1 carries on past it in the same direction, which is not something the"
                        "\nmodel asked for -- use it to see what it is doing, then come back down. This"
                        "\nis the control to push if you want more effect: Intensity belongs to the model"
