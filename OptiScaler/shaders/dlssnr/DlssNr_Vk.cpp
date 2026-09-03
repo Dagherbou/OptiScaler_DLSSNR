@@ -32,8 +32,8 @@ DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InP
     const VkDeviceSize alignment = std::max<VkDeviceSize>(props.limits.minUniformBufferOffsetAlignment, 1);
     _slotStride = ((sizeof(DlssNrConstants) + alignment - 1) / alignment) * alignment;
 
-    if (!CreateBufferResource(_device, _physicalDevice, &_constantBuffer, &_constantBufferMemory,
-                              _slotStride * kSlots, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+    if (!CreateBufferResource(_device, _physicalDevice, &_constantBuffer, &_constantBufferMemory, _slotStride * kSlots,
+                              VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
     {
         LOG_ERROR("DLSS-NR Vulkan pass: could not allocate the constant ring");
@@ -52,15 +52,15 @@ DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InP
     // samplers for the reads: the shader declares its sampler separately, and a combined descriptor
     // satisfies a separately declared sampled image with the sampler half simply unused.
     std::vector<VkDescriptorSetLayoutBinding> bindings = {
-        CreateBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER),          // Params
-        CreateBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),  // gSource
-        CreateBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),  // gModel
-        CreateBinding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),  // gOriginal
-        CreateBinding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),  // gMotion
-        CreateBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),           // gTarget
-        CreateBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),           // gKeep
-        CreateBinding(7, VK_DESCRIPTOR_TYPE_SAMPLER),                 // gLinear
-        CreateBinding(8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),  // gExposure
+        CreateBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER),         // Params
+        CreateBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER), // gSource
+        CreateBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER), // gModel
+        CreateBinding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER), // gOriginal
+        CreateBinding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER), // gMotion
+        CreateBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),          // gTarget
+        CreateBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),          // gKeep
+        CreateBinding(7, VK_DESCRIPTOR_TYPE_SAMPLER),                // gLinear
+        CreateBinding(8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER), // gExposure
     };
 
     CreateLayouts(bindings);
@@ -200,10 +200,7 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
     };
 
     const auto writeInfo = [&](VkImageView v)
-    {
-        return VkDescriptorImageInfo { VK_NULL_HANDLE, v != VK_NULL_HANDLE ? v : _dummyView,
-                                       VK_IMAGE_LAYOUT_GENERAL };
-    };
+    { return VkDescriptorImageInfo { VK_NULL_HANDLE, v != VK_NULL_HANDLE ? v : _dummyView, VK_IMAGE_LAYOUT_GENERAL }; };
 
     VkDescriptorImageInfo sourceInfo = readInfo(source, sourceLayout);
     VkDescriptorImageInfo modelInfo = readInfo(model, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -240,9 +237,8 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
 
 bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InConstants, uint32_t InThreadsX,
                          uint32_t InThreadsY, VkImageView InSource, VkImageView InModel, VkImageView InOriginal,
-                         VkImageView InMotion, VkImageView InTarget, VkImageView InKeep,
-                         VkImageLayout InSourceLayout, VkImageLayout InMotionLayout, VkImageView InExposure,
-                         VkImageLayout InExposureLayout)
+                         VkImageView InMotion, VkImageView InTarget, VkImageView InKeep, VkImageLayout InSourceLayout,
+                         VkImageLayout InMotionLayout, VkImageView InExposure, VkImageLayout InExposureLayout)
 {
     if (!CanRender() || InCmdList == VK_NULL_HANDLE)
         return false;

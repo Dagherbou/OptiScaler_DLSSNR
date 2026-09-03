@@ -466,8 +466,7 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         LOG_DEBUG("Dispatch!!");
         dx12EvalResult = dx12Feature->Evaluate(cmdList, InParameters);
 
-        const bool nrExposureThisFrame =
-            dx11Exp.Dx12Resource != nullptr && dx11Exp.LastPreparedFrame == cache.frameId;
+        const bool nrExposureThisFrame = dx11Exp.Dx12Resource != nullptr && dx11Exp.LastPreparedFrame == cache.frameId;
         InParameters->Set(NVSDK_NGX_Parameter_ExposureTexture,
                           nrExposureThisFrame ? (void*) dx11Exp.Dx12Resource : nullptr);
 
@@ -480,9 +479,8 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         if (!reportedNrOffer)
         {
             reportedNrOffer = true;
-            LOG_INFO("DLSS-NR: the D3D11 bridge reached the hand-off (upscale ok: {}, enabled: {})",
-                     dx12EvalResult, Config::Instance()->DlssNrEnabled.value_or_default());
-
+            LOG_INFO("DLSS-NR: the D3D11 bridge reached the hand-off (upscale ok: {}, enabled: {})", dx12EvalResult,
+                     Config::Instance()->DlssNrEnabled.value_or_default());
         }
 
         if (dx12EvalResult && Config::Instance()->DlssNrEnabled.value_or_default())

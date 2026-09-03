@@ -15,11 +15,11 @@ inline float SanitizeExposure(float e)
 inline float GameWhite(float e, float p, float s)
 {
     e = SanitizeExposure(e);
-    p = (std::max)(FoldZeroToOne(p), 1e-4f);
-    s = (std::max)(FoldZeroToOne(s), 1e-4f);
-    const float gameW = p / (std::max)(e * s, 1e-4f);
+    p = (std::max) (FoldZeroToOne(p), 1e-4f);
+    s = (std::max) (FoldZeroToOne(s), 1e-4f);
+    const float gameW = p / (std::max) (e * s, 1e-4f);
     // T0 invert: return e * s / p;
-    return (std::max)(gameW, 1e-4f);
+    return (std::max) (gameW, 1e-4f);
 }
 
 struct WhitePointDecision
@@ -39,7 +39,7 @@ inline WhitePointDecision DecideWhitePoint(uint32_t source,      // WhitePointSo
                                            float exposureScale,  // frame.ExposureScale
                                            float anchoredOrZero) // ExposureScan::AnchoredWhitePoint(...) or 0
 {
-    WhitePointDecision d{scale, 0};
+    WhitePointDecision d { scale, 0 };
     if (!isHdrBuffer)
         return d;
     if (source == 0)

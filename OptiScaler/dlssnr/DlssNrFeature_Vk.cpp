@@ -26,8 +26,8 @@ namespace
 // it, whichever API is being used, so these calls go through the same shim the D3D12 path does.
 using PFN_VkProbe = int(__cdecl*)(const wchar_t*);
 using PFN_VkInit = int(__cdecl*)(const wchar_t*, const wchar_t*, void*, void*, void*, int);
-using PFN_VkCreate = void*(__cdecl*)(void*, void*, unsigned int, unsigned int, int, float, int, float, float, float,
-                                     int, int);
+using PFN_VkCreate = void*(__cdecl*) (void*, void*, unsigned int, unsigned int, int, float, int, float, float, float,
+                                      int, int);
 using PFN_VkEvaluate = int(__cdecl*)(void*, void*, void*, void*, void*, void*, void*, unsigned int, unsigned int,
                                      unsigned int, unsigned int, int, int, float, int, float, float, float, int, float,
                                      float);
@@ -281,8 +281,8 @@ bool CreateMeterReadback()
         VkMemoryAllocateInfo alloc {};
         alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         alloc.allocationSize = req.size;
-        alloc.memoryTypeIndex = FindMemoryTypeIndex(
-            req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        alloc.memoryTypeIndex = FindMemoryTypeIndex(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
         if (alloc.memoryTypeIndex == UINT32_MAX ||
             vkAllocateMemory(g_vk.device, &alloc, nullptr, &g_vk.meterReadbackMemory[i]) != VK_SUCCESS ||
@@ -511,8 +511,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     // number, not a lost device, and the gate on the readback throws a wrong number away.
     NVSDK_NGX_Resource_VK* exposure = nullptr;
     float preExposure = 1.0f;
-    const bool havePre =
-        params->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, &preExposure) == NVSDK_NGX_Result_Success;
+    const bool havePre = params->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, &preExposure) == NVSDK_NGX_Result_Success;
 
     params->Get(NVSDK_NGX_Parameter_ExposureTexture, (void**) &exposure);
 
@@ -558,8 +557,8 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         std::abs(loggedExposure - g_vk.gameExposure) > std::max(0.02f * g_vk.gameExposure, 1e-5f))
     {
         loggedExposure = g_vk.gameExposure;
-        LOG_INFO("DLSS-NR Vulkan: the game's exposure is {}, pre-exposure {}, so white point {}",
-                 g_vk.gameExposure, g_vk.gamePreExposure, g_vk.gamePreExposure / g_vk.gameExposure);
+        LOG_INFO("DLSS-NR Vulkan: the game's exposure is {}, pre-exposure {}, so white point {}", g_vk.gameExposure,
+                 g_vk.gamePreExposure, g_vk.gamePreExposure / g_vk.gameExposure);
     }
 
     if (colour == nullptr || depth == nullptr || motion == nullptr)
@@ -631,9 +630,8 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
             return;
         }
 
-        const int result =
-            g_vk.init(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                      (void*) instance, (void*) physicalDevice, (void*) device, 0x0000015);
+        const int result = g_vk.init(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
+                                     (void*) instance, (void*) physicalDevice, (void*) device, 0x0000015);
 
         if (result != 1)
         {
@@ -695,8 +693,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
 
     // Resize. The feature is built for a size and has to be rebuilt when the frame OR the working
     // size changes -- moving the slider is a rebuild, which is why it is compared here.
-    if (g_vk.width != width || g_vk.height != height || g_vk.workWidth != workWidth ||
-        g_vk.workHeight != workHeight)
+    if (g_vk.width != width || g_vk.height != height || g_vk.workWidth != workWidth || g_vk.workHeight != workHeight)
     {
         // This block releases the feature and frees the surfaces below IMMEDIATELY. A frame-size
         // change is already fenced by the game -- it recreates the swapchain around it -- but moving
@@ -718,9 +715,9 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
 
         // The meter is a fixed 8x8 whatever the frame is, so it is only built the once -- but it is
         // built alongside the rest so that a failure here is caught by the same check.
-        const bool meterReady = (g_vk.meter.Valid() || CreateImage(g_vk.meter, kMeterSide, kMeterSide,
-                                                                   VK_FORMAT_R32_SFLOAT, true)) &&
-                                CreateMeterReadback();
+        const bool meterReady =
+            (g_vk.meter.Valid() || CreateImage(g_vk.meter, kMeterSide, kMeterSide, VK_FORMAT_R32_SFLOAT, true)) &&
+            CreateMeterReadback();
 
         if (!meterReady)
             LOG_WARN("DLSS-NR Vulkan: no exposure meter; the white point stays on the slider");
@@ -779,8 +776,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     {
         unsigned int gameReset = 0;
 
-        if (params->Get(NVSDK_NGX_Parameter_Reset, &gameReset) == NVSDK_NGX_Result_Success &&
-            gameReset != 0)
+        if (params->Get(NVSDK_NGX_Parameter_Reset, &gameReset) == NVSDK_NGX_Result_Success && gameReset != 0)
         {
             g_vk.reset = true;
 
@@ -855,9 +851,8 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     // storage image, which is only legal in GENERAL, and nothing transitions it in between. It is the
     // upscaler's output, a storage image the upscaler has just written, so GENERAL is what it is.
     // Inert on the only hardware this model runs on, wrong everywhere it is read.
-    if (!g_vk.pass->Dispatch(cmdBuffer, encode, width, height, colour->Resource.ImageViewInfo.ImageView,
-                             VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, g_vk.proxy.view, g_vk.keep.view,
-                             VK_IMAGE_LAYOUT_GENERAL))
+    if (!g_vk.pass->Dispatch(cmdBuffer, encode, width, height, colour->Resource.ImageViewInfo.ImageView, VK_NULL_HANDLE,
+                             VK_NULL_HANDLE, VK_NULL_HANDLE, g_vk.proxy.view, g_vk.keep.view, VK_IMAGE_LAYOUT_GENERAL))
     {
         Fail("the encode dispatch failed");
         return;
@@ -918,8 +913,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
 
             if (g_vk.pass->Dispatch(cmdBuffer, meter, kMeterSide, kMeterSide, VK_NULL_HANDLE, VK_NULL_HANDLE,
                                     VK_NULL_HANDLE, VK_NULL_HANDLE, g_vk.meter.view, VK_NULL_HANDLE,
-                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                     exposure->Resource.ImageViewInfo.ImageView,
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
             {

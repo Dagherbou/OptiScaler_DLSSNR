@@ -23,8 +23,8 @@ int main()
     expect(DecideWhitePoint(2, false, true, true, scale, trim, held, pre, es, 0.0f), scale, 0);
     expect(DecideWhitePoint(0, true, true, true, scale, trim, held, pre, es, anchored), scale, 0);
     expect(DecideWhitePoint(1, true, true, false, scale, trim, held, pre, es, 0.0f), trim, 1);
-    expect(DecideWhitePoint(1, true, false, true, scale, trim, held, pre, es, 0.0f),
-           trim * GameWhite(held, pre, es), 0);
+    expect(DecideWhitePoint(1, true, false, true, scale, trim, held, pre, es, 0.0f), trim * GameWhite(held, pre, es),
+           0);
     expect(DecideWhitePoint(1, true, false, false, scale, trim, 0.012f, pre, es, 0.0f), scale, 0);
     expect(DecideWhitePoint(2, true, true, true, scale, trim, held, pre, es, anchored), anchored, 0);
     expect(DecideWhitePoint(2, true, true, true, scale, trim, held, pre, es, 0.0f), scale, 0);

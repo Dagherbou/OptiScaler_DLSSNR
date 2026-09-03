@@ -35,8 +35,8 @@ class DlssNr_Vk : public Shader_Vk
     static constexpr uint32_t kFramesInFlight = 3;
     static constexpr uint32_t kSlots = kSlotsPerFrame * kFramesInFlight;
 
-    VkDeviceSize _slotStride = 0;   // sizeof(DlssNrConstants), rounded up to the device's alignment
-    uint32_t _slot = 0;             // next slot to hand out, wrapping
+    VkDeviceSize _slotStride = 0; // sizeof(DlssNrConstants), rounded up to the device's alignment
+    uint32_t _slot = 0;           // next slot to hand out, wrapping
 
     // Stands in for a resource a given mode does not read. One pixel, never sampled for its content,
     // present only because Vulkan will not accept an unwritten binding.

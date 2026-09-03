@@ -34,20 +34,14 @@ namespace DlssNr
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
                           ID3D12CommandQueue* timingQueue = nullptr);
 
-
-
 // Frame generation titles tag their UI layer through Streamline; a copy of it makes the HUD mask
 // exact at the finished frame. Called at tag time.
-
-
-
 
 // The settings panel, drawn inside OptiScaler's menu.
 void RenderMenu(::Config* config, float menuResScale);
 
 // Clears the session failure latch, so a failure caused by transient thrash does not cost a restart.
 void RetryAfterFailure();
-
 
 // Asks the model whether it will work on Direct3D 11 at all, once, and logs the answer.
 //
@@ -92,7 +86,6 @@ GameExposureReadout GameExposureMenuReadout();
 std::optional<double> LastGpuTime();
 
 // What the white point meter last settled on, or 0 when it is not running. For the menu.
-
 
 // Writes a run of consecutive frames, each as the upscaler produced it and again after the model's edit.
 // The pair is a control: same frames, same run, one variable.
