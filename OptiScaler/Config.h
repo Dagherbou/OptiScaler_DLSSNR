@@ -281,6 +281,11 @@ class Config
     // replace. An in-game A/B and a way back. Default 0 = byte-identical to before.
     CustomOptional<uint32_t> DlssNrReversibleMode { 0 };
 
+    // Frame hold: freeze the NR pass's input so a live setting change re-renders the SAME frame -- the
+    // only clean way to A/B our settings. A live testing toggle, not really a saved preference; off by
+    // default. See dlssnr/design/frame-hold.md.
+    CustomOptional<bool> DlssNrHoldFrame { false };
+
 
     // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
     // light source, whatever the model returns.

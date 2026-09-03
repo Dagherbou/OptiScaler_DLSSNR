@@ -897,6 +897,25 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nRaw, into a dlssnr-capture folder beside OptiScaler. Bounded to eight frames,"
                        "\nand each run overwrites the last.");
 
+        ImGui::SeparatorText("Compare");
+
+        // Freeze the frame the model works on, so a setting change re-renders it in place -- the only
+        // clean way to A/B our own settings (a moving scene confounds every other comparison). See
+        // design/frame-hold.md.
+        bool held = config->DlssNrHoldFrame.value_or_default();
+        if (ImGui::Checkbox("Hold frame", &held))
+            config->DlssNrHoldFrame = held;
+
+        HelpMarker("Freezes the frame the model works on. While held, change paper white, the"
+                       "\nstrengths, the reversible mode, the model preset -- anything below the"
+                       "\nupscaler -- and only that setting moves; the scene does not."
+                       "\n\nWhat it CANNOT show: DLSS/FSR/XeSS upscaler presets or anything upstream"
+                       "\n(the upscaler is not re-run on a held frame), and the game's own HUD and"
+                       "\npost-processing, which run after this pass and keep updating. The white"
+                       "\npoint stops being measured and holds its value while frozen, so it cannot"
+                       "\ndrift and confound the comparison."
+                       "\n\nHide the menu and it stays held. Untoggle to resume.");
+
         static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
         int compare = (int) config->DlssNrCompare.value_or_default();
         if (ImGui::Combo("Compare", &compare, compareNames, IM_ARRAYSIZE(compareNames)))

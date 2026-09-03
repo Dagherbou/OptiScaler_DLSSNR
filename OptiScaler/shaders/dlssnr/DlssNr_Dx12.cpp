@@ -210,6 +210,16 @@ struct NrState
     // The frame shrunk for the model, when it is working below full resolution.
     ID3D12Resource* colorSmall = nullptr;
 
+    // Frame hold (design/frame-hold.md): a persistent copy of the output taken on hold-on and restored
+    // over the live output before the encode reads it while held, so a setting change re-renders the
+    // same frame. heldWhitePoint is the snapshot used while held -- measurement is suspended.
+    ID3D12Resource* heldColor = nullptr;
+    bool heldActive = false;
+    unsigned int heldWidth = 0;
+    unsigned int heldHeight = 0;
+    DXGI_FORMAT heldFormat = DXGI_FORMAT_UNKNOWN;
+    float heldWhitePoint = 1.0f;
+
     unsigned int workWidth = 0;
     unsigned int workHeight = 0;
 
@@ -1912,7 +1922,76 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     g_nr.gamePreExposure = frame.PreExposure;
 
-    const float whitePoint = ResolveWhitePoint(cfg, isHdrBuffer);
+    float whitePoint = ResolveWhitePoint(cfg, isHdrBuffer);
+
+    // Frame hold. Freeze the encode's input so a live setting change re-renders the same frame. This
+    // is self-contained on purpose: it copies the output aside on hold-on and copies it BACK over the
+    // live output before the encode reads it while held, so the encode's own path and barriers below
+    // are untouched and the default (hold off) is byte-identical. See design/frame-hold.md.
+    //
+    // `target` is UAV here (normalised at entry, restored by the meter block above). The held copy is
+    // left in COPY_SOURCE after capture and stays there for every restore.
+    {
+        const bool hold = cfg.DlssNrHoldFrame.value_or_default();
+
+        if (hold)
+        {
+            const D3D12_RESOURCE_DESC td = target->GetDesc();
+            const bool needCapture = !g_nr.heldActive || g_nr.heldColor == nullptr ||
+                                     (unsigned int) td.Width != g_nr.heldWidth ||
+                                     td.Height != g_nr.heldHeight || td.Format != g_nr.heldFormat;
+
+            if (needCapture)
+            {
+                // Hold-on (or the output changed shape under a hold): capture THIS frame, do not
+                // restore -- target already holds the frame to freeze, and the pass runs on it.
+                if (g_nr.heldColor != nullptr)
+                    ParkNrResource(g_nr.heldColor);
+
+                g_nr.heldColor = CreateScratch(device, td.Format, (unsigned int) td.Width, td.Height);
+
+                if (g_nr.heldColor != nullptr)
+                {
+                    Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                            D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    Barrier(cmdList, g_nr.heldColor, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                            D3D12_RESOURCE_STATE_COPY_DEST);
+                    cmdList->CopyResource(g_nr.heldColor, target);
+                    Barrier(cmdList, g_nr.heldColor, D3D12_RESOURCE_STATE_COPY_DEST,
+                            D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    Barrier(cmdList, target, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+                    g_nr.heldActive = true;
+                    g_nr.heldWidth = (unsigned int) td.Width;
+                    g_nr.heldHeight = td.Height;
+                    g_nr.heldFormat = td.Format;
+                    g_nr.heldWhitePoint = whitePoint;
+                }
+            }
+            else
+            {
+                // Held: restore the frozen frame onto the live output before the encode reads it.
+                Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                        D3D12_RESOURCE_STATE_COPY_DEST);
+                cmdList->CopyResource(target, g_nr.heldColor);
+                Barrier(cmdList, target, D3D12_RESOURCE_STATE_COPY_DEST,
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            }
+
+            // Suspend white-point measurement while held: use the snapshot so it cannot drift and
+            // confound the comparison. (No-op on the capture frame, where the snapshot IS whitePoint.)
+            if (g_nr.heldActive)
+                whitePoint = g_nr.heldWhitePoint;
+        }
+        else if (g_nr.heldActive)
+        {
+            // Released: let go of the frozen frame and resume live input next frame.
+            if (g_nr.heldColor != nullptr)
+                ParkNrResource(g_nr.heldColor);
+            g_nr.heldActive = false;
+        }
+    }
 
     DlssNrConstants encodeParams {};
     encodeParams.Mode = DlssNrMode_Encode;
@@ -2684,6 +2763,13 @@ void Shutdown()
         g_nr.colorSmall->Release();
         g_nr.colorSmall = nullptr;
     }
+
+    if (g_nr.heldColor != nullptr)
+    {
+        g_nr.heldColor->Release();
+        g_nr.heldColor = nullptr;
+    }
+    g_nr.heldActive = false;
 
     if (g_nr.meter != nullptr)
     {
