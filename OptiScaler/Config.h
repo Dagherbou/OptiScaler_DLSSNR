@@ -415,49 +415,11 @@ class Config
     // the picture moves the wrong way, flip it.
     CustomOptional<bool> DlssNrScanInverted { false };
 
-    // Hand the model a depth buffer that is constant everywhere instead of the game's.
-    //
-    // The question this exists for is not "does the model read depth" -- that is answered, it does,
-    // weakly. It is "does the model need REAL depth", which is the one that decides whether any of
-    // this can run in a game that has no upscaler to borrow a depth buffer from. Motion vectors can
-    // be manufactured from a finished frame; depth cannot, except as a rough estimate from flow
-    // parallax, and that estimate is unavailable whenever the camera is not translating.
-    //
-    // So: if a constant plane is good enough, the depth problem disappears entirely and no estimate
-    // is needed. If it is not, the estimate has to be good, and the whole plan gets much harder.
-    //
-    // Implemented as a clone that is created and never written. A D3D12 committed resource is
-    // zero-initialised, and with a reverse-Z game that reads as the far plane -- every pixel at
-    // infinity. That is a legitimate constant rather than garbage, and it costs nothing to produce.
-    CustomOptional<bool> DlssNrConstantDepth { false };
 
-    // Diagnostics: stop refreshing a guide and keep handing the model the one it already has.
-    //
-    // These answer "does the model actually use this input", which decides whether Neural Rendering
-    // can ever run in a game that has no upscaler to borrow guides from. A frozen guide is not a
-    // degenerate input -- it is perfectly valid depth or motion, just wrong for this frame -- so a
-    // model that reads it must produce a different picture once the camera moves. A model that does
-    // not read it produces an identical one.
-    //
-    // FreezeMotion is the control and is not optional to the experiment. Freezing the vectors must
-    // visibly break the picture; if it does not, the mechanism itself is broken and any conclusion
-    // drawn from FreezeDepth is worthless. Never read one without the other.
-    CustomOptional<bool> DlssNrFreezeDepth { false };
-    CustomOptional<bool> DlssNrFreezeMotion { false };
 
-    // Multiplies the motion vector scale handed to the model. 1 is honest.
-    //
-    // The stronger control for the freeze test above. Freezing a guide substitutes data that is
-    // stale but entirely plausible, and a model that leans on motion only for frame-to-frame
-    // stability answers that with swimming detail rather than a broken picture -- which is easy to
-    // miss in a few seconds of looking around, and is exactly what happened on the first attempt.
-    //
-    // This is not subtle. At 8x the model is told every pixel moved eight times as far as it did, in
-    // any scene, moving or still. If that leaves the picture unchanged the model is not reading the
-    // vectors at all, and no freeze result means anything. It is a float on a parameter we already
-    // send, so unlike swapping the textures around there is no format to get wrong and nothing that
-    // can fail.
-    CustomOptional<float> DlssNrMvScaleAbuse { 1.0f };
+
+
+
 
     // The trim on an exposure-derived white point, kept apart from the manual divisor on purpose.
     //
@@ -477,6 +439,18 @@ class Config
     // other. Sharing one slider meant switching source silently carried a number across, so a
     // picture that had been tuned came back wrong for a reason nothing on screen explained.
     CustomOptional<float> DlssNrScanTrim { 1.0f };
+
+    // How many times to run the model over the same frame, each pass fed the previous one's answer.
+    //
+    // 1 is what the model was trained for and what every published number describes. Above that it
+    // is being asked to enhance its own output, which is outside its training distribution: detail
+    // compounds, and so does anything it got wrong. Two often looks richer. Four usually looks
+    // synthetic. Eight is there because somebody will want to see it.
+    //
+    // The cost is exactly linear -- the model is 98% of the frame's expense and every pass pays it
+    // again -- so 8 costs eight times, near enough. There is no shortcut and no amortisation: the
+    // passes are sequential and each one needs the last one's output.
+    CustomOptional<uint32_t> DlssNrPasses { 1 };
 
     // Which depth convention the model is told the guide uses.
     //

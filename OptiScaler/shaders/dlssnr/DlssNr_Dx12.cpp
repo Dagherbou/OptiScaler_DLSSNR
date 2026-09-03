@@ -1120,26 +1120,15 @@ ID3D12Resource* CreateGuideClone(ID3D12Device* device, ID3D12Resource* source)
 // A frozen guide is valid data that is wrong for this frame, which is a far better probe than a
 // constant would be. A constant is degenerate and a model may special-case it; stale depth is
 // ordinary depth that simply disagrees with the picture, and anything reading it has to notice.
-// What the model should be handed in place of the live guide.
-enum class GuideMode
-{
-    Live,     // the game's own buffer, refreshed every frame
-    Frozen,   // the buffer as it was when the toggle went on -- stale but plausible
-    Constant  // a buffer that was never written -- one value everywhere
-};
-
+// Hands back something the model can actually read: the guide itself when it is typed, or a typed
+// copy of it when it is not. NGX requires its inputs in NON_PIXEL_SHADER_RESOURCE at evaluate time,
+// which is a documented contract rather than a guess about any one game's frame graph, so that is
+// the state transitioned away from and back to here.
 ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
-                              ID3D12Resource* source, ID3D12Resource** clone, GuideMode mode)
+                              ID3D12Resource* source, ID3D12Resource** clone)
 {
-    if (source == nullptr)
+    if (source == nullptr || !IsTypeless(source->GetDesc().Format))
         return source;
-
-    // Normally only a typeless guide needs a copy. Anything but Live always does, because the whole
-    // point is to read something other than what the game just wrote.
-    if (mode == GuideMode::Live && !IsTypeless(source->GetDesc().Format))
-        return source;
-
-    bool justCreated = false;
 
     if (*clone == nullptr)
     {
@@ -1148,56 +1137,8 @@ ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* c
         if (*clone == nullptr)
             return nullptr;
 
-        justCreated = true;
-
-        LOG_DEBUG("DLSS-NR cloned a guide as format {}",
-                 (int) TypedGuideFormat(source->GetDesc().Format));
-    }
-
-    // Constant never copies at all, not even once. A D3D12 committed resource comes back
-    // zero-initialised, so an unwritten clone is a flat buffer -- which for a reverse-Z game is the
-    // far plane everywhere. The one thing it must not do is inherit whatever a previous mode left in
-    // the clone, so it gets a surface of its own rather than sharing the frozen one.
-    if (mode == GuideMode::Constant)
-    {
-        // Created as COPY_DEST and never copied into, so it has to be walked to the state the model
-        // reads in exactly once. Skipping this leaves the model reading a resource in a state it was
-        // never promised -- zeros either way on this hardware, but zeros for the wrong reason.
-        if (justCreated)
-            Barrier(cmdList, *clone, D3D12_RESOURCE_STATE_COPY_DEST,
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-        static const void* saidConst = nullptr;
-
-        if (saidConst != (const void*) *clone)
-        {
-            saidConst = (const void*) *clone;
-            LOG_WARN("DLSS-NR diagnostic: the model is being handed a CONSTANT depth, never written -- "
-                     "if the picture holds up, real depth is not required");
-        }
-
-        return *clone;
-    }
-
-    // A clone that has never been filled holds nothing, so the first frame of a freeze still copies.
-    // After that the copy is skipped and the model keeps reading the frame it was given.
-    if (mode == GuideMode::Frozen && !justCreated)
-    {
-        // Says out loud that the substitution actually happened. Without this the only evidence a
-        // freeze was live was that the toggle had been read, which is a different claim -- and when
-        // the first test came back null there was no way to tell a model that ignores the guide from
-        // a switch that never moved anything. LOG_DEBUG would not do: debug logging is off in the
-        // logs that come back, so the line that mattered was never in any of them.
-        static const void* saidFor = nullptr;
-
-        if (saidFor != (const void*) *clone)
-        {
-            saidFor = (const void*) *clone;
-            LOG_WARN("DLSS-NR diagnostic: the model is now being handed a frozen copy, not the live "
-                     "resource -- the substitution is live");
-        }
-
-        return *clone;
+        LOG_DEBUG("DLSS-NR cloned a typeless guide as format {}",
+                  (int) TypedGuideFormat(source->GetDesc().Format));
     }
 
     Barrier(cmdList, source, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -2021,48 +1962,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         modelInput = g_nr.colorSmall;
     }
 
-    // Diagnostics. See Config -- FreezeMotion is the control for FreezeDepth and neither reading
-    // means anything without the other.
-    const bool freezeDepth = cfg.DlssNrFreezeDepth.value_or_default();
-    const bool freezeMotion = cfg.DlssNrFreezeMotion.value_or_default();
-
-    {
-        static bool saidDepth = false, saidMotion = false;
-
-        if (saidDepth != freezeDepth)
-        {
-            saidDepth = freezeDepth;
-            LOG_WARN("DLSS-NR diagnostic: depth is now {} -- if the picture does not change while the "
-                     "camera moves, the model is not reading depth",
-                     freezeDepth ? "FROZEN" : "live again");
-        }
-
-        if (saidMotion != freezeMotion)
-        {
-            saidMotion = freezeMotion;
-            LOG_WARN("DLSS-NR diagnostic: motion vectors are now {} -- this is the control, and it "
-                     "MUST visibly break the picture",
-                     freezeMotion ? "FROZEN" : "live again");
-        }
-    }
-
-    // Constant wins over frozen: it is the stronger statement and there is no sense doing both.
-    const GuideMode depthMode = cfg.DlssNrConstantDepth.value_or_default() ? GuideMode::Constant
-                                : freezeDepth                             ? GuideMode::Frozen
-                                                                          : GuideMode::Live;
-
-    // Once a frame, on a command list that is already recording and already ours to record on.
-    DlssNr::ExposureScan::Tick(device, cmdList);
-
-    // Once a frame, on a command list that is already recording and already ours to record on.
-    DlssNr::ExposureScan::Tick(device, cmdList);
-
-    ID3D12Resource* depthIn =
-        ReadableGuide(device, cmdList, depth, depthMode == GuideMode::Constant ? &g_nr.depthConstant
-                                                                               : &g_nr.depthClone,
-                      depthMode);
-    ID3D12Resource* motionIn = ReadableGuide(device, cmdList, motion, &g_nr.motionClone,
-                                             freezeMotion ? GuideMode::Frozen : GuideMode::Live);
+    ID3D12Resource* depthIn = ReadableGuide(device, cmdList, depth, &g_nr.depthClone);
+    ID3D12Resource* motionIn = ReadableGuide(device, cmdList, motion, &g_nr.motionClone);
 
     if (depthIn == nullptr || motionIn == nullptr)
     {
@@ -2074,23 +1975,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     }
 
     // The vectors were scaled to full-frame pixels; the image the model reprojects is the working size.
-    // The diagnostic rides on the scale rather than on the texture, so there is no format to get
-    // wrong. 1 is honest; see Config.
-    const float mvAbuse = std::clamp(cfg.DlssNrMvScaleAbuse.value_or_default(), 0.0f, 32.0f);
-
-    {
-        static float saidAbuse = 1.0f;
-
-        if (saidAbuse != mvAbuse)
-        {
-            saidAbuse = mvAbuse;
-            LOG_WARN("DLSS-NR diagnostic: motion vector scale is being multiplied by {} -- at anything "
-                     "but 1 the picture MUST change, or the model is not reading the vectors",
-                     mvAbuse);
-        }
-    }
-
-    const float mvToWork = (width != 0 ? (float) workWidth / (float) width : 1.0f) * mvAbuse;
+    // The vectors were scaled to full-frame pixels; the image the model reprojects is the
+    // working size.
+    const float mvToWork = width != 0 ? (float) workWidth / (float) width : 1.0f;
 
     SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
 
@@ -2123,14 +2010,69 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (g_ngxTime != nullptr)
         g_ngxTime->Start(cmdList);
 
-    const int result = g_nr.evaluate(
-        cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
-        workWidth, workHeight, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0,
-        g_nr.reset ? 1 : 0, cfg.DlssNrIntensity.value_or_default(),
-        (int) cfg.DlssNrStyle.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
-        cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
-        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, g_nr.guideMvScaleX * mvToWork,
-        g_nr.guideMvScaleY * mvToWork);
+    // Run the model more than once over the same frame, each pass fed the last one's answer.
+    //
+    // Only legal because both surfaces are ours. The copy is output -> modelInput, and modelInput is
+    // colorCopy or colorSmall depending on whether the model runs below frame size -- either way a
+    // surface this pass created, so its state is ours to move rather than something to assume.
+    //
+    // Guarded on the two descriptions matching, because CopyResource requires it and a mismatch is
+    // the kind of thing that shows up as a device removal minutes later rather than as an error
+    // here. If they ever diverge, this quietly runs one pass, which is the behaviour it replaced.
+    unsigned int passes = std::clamp(cfg.DlssNrPasses.value_or_default(), 1u, 8u);
+
+    if (passes > 1 && modelInput != nullptr)
+    {
+        const D3D12_RESOURCE_DESC a = modelInput->GetDesc();
+        const D3D12_RESOURCE_DESC b = g_nr.output->GetDesc();
+
+        if (a.Format != b.Format || a.Width != b.Width || a.Height != b.Height)
+        {
+            static bool said = false;
+
+            if (!said)
+            {
+                said = true;
+                LOG_WARN("DLSS-NR: extra passes need the model's input and output to match, and here "
+                         "they do not ({}x{} fmt {} vs {}x{} fmt {}). Running one.",
+                         (unsigned int) a.Width, a.Height, (int) a.Format, (unsigned int) b.Width,
+                         b.Height, (int) b.Format);
+            }
+
+            passes = 1;
+        }
+    }
+
+    int result = 1;
+
+    for (unsigned int pass = 0; pass < passes && result == 1; ++pass)
+    {
+        if (pass > 0)
+        {
+            Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_COPY_SOURCE);
+            Barrier(cmdList, modelInput, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COPY_DEST);
+
+            cmdList->CopyResource(modelInput, g_nr.output);
+
+            Barrier(cmdList, modelInput, D3D12_RESOURCE_STATE_COPY_DEST,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        }
+
+        // Reset belongs to the frame, not to the pass. Telling the model to forget its history on
+        // the second pass of the same frame would throw away what the first pass just established.
+        result = g_nr.evaluate(
+            cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
+            workWidth, workHeight, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0,
+            (pass == 0 && g_nr.reset) ? 1 : 0, cfg.DlssNrIntensity.value_or_default(),
+            (int) cfg.DlssNrStyle.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
+            cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
+            cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, g_nr.guideMvScaleX * mvToWork,
+            g_nr.guideMvScaleY * mvToWork);
+    }
 
     if (g_ngxTime != nullptr)
         g_ngxTime->End(cmdList);
@@ -2333,11 +2275,11 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // COPY_DEST, because a frozen frame does not copy. Putting it back unconditionally would be a
     // barrier from a state it is not in, so the frozen case is skipped here and picked up by the
     // first live frame after the toggle goes off -- which is a copy, and copies transition it.
-    if (g_nr.depthClone != nullptr && depthMode == GuideMode::Live)
+    if (g_nr.depthClone != nullptr)
         Barrier(cmdList, g_nr.depthClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COPY_DEST);
 
-    if (g_nr.motionClone != nullptr && !freezeMotion)
+    if (g_nr.motionClone != nullptr)
         Barrier(cmdList, g_nr.motionClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COPY_DEST);
 
@@ -2835,11 +2777,7 @@ void Shutdown()
         g_nr.depthClone = nullptr;
     }
 
-    if (g_nr.depthConstant != nullptr)
-    {
-        g_nr.depthConstant->Release();
-        g_nr.depthConstant = nullptr;
-    }
+
 
     if (g_nr.motionClone != nullptr)
     {

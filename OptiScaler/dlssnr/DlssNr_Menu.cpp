@@ -152,6 +152,48 @@ void RenderMenu(Config* config, float menuResScale)
 
         ImGui::SeparatorText("Cost");
 
+        {
+            // Coloured by what it costs, because the number alone does not say. The model is 98% of
+            // this pass's expense and every run pays it again, so the scale is linear and brutal:
+            // four passes is four times the model, not four percent more.
+            //
+            // Green at 1 because that is what the model was trained for. Amber at 2 and 3, where it
+            // is being asked to enhance its own output -- outside its training distribution, often
+            // richer, sometimes overcooked. Red from 4, where it usually stops looking rendered.
+            int passes = (int) config->DlssNrPasses.value_or_default();
+
+            if (passes < 1)
+                passes = 1;
+
+            const ImVec4 colour = passes <= 1   ? ImVec4(0.35f, 0.88f, 0.38f, 1.0f)
+                                  : passes <= 3 ? ImVec4(0.95f, 0.70f, 0.20f, 1.0f)
+                                                : ImVec4(0.92f, 0.30f, 0.25f, 1.0f);
+
+            ImGui::PushStyleColor(ImGuiCol_Text, colour);
+            ImGui::PushStyleColor(ImGuiCol_SliderGrab, colour);
+
+            if (ImGui::SliderInt("Passes", &passes, 1, 8, passes == 1 ? "%d (native)" : "%dx cost"))
+                config->DlssNrPasses = (uint32_t) (passes < 1 ? 1 : (passes > 8 ? 8 : passes));
+
+            ImGui::PopStyleColor(2);
+
+            HelpMarker("How many times the model runs over the same frame, each pass handed the"
+                           "\nprevious one's answer."
+                           "\n\nCOST IS LINEAR AND IT IS THE WHOLE COST. The model is about 98% of"
+                           "\nwhat this pass spends -- our own shader work is the other 2% -- so four"
+                           "\npasses is four times the model, not four percent more. There is no"
+                           "\namortisation available: the passes are sequential, because each one"
+                           "\nneeds the last one's output."
+                           "\n\n1 is what the model was trained for and what every published figure"
+                           "\ndescribes. Above that it is being asked to enhance its own output,"
+                           "\nwhich is outside its training distribution -- detail compounds, and so"
+                           "\ndoes anything it got wrong. 2 often looks richer. 4 usually looks"
+                           "\nsynthetic. 8 is there because somebody was going to ask."
+                           "\n\nIf the model is running below frame size, extra passes need its input"
+                           "\nand output to match; where they do not, this quietly runs one and says"
+                           "\nso in the log.");
+        }
+
         // Any percentage, rather than a handful of steps somebody chose in advance. The lower bound
         // is 25%: below that the model is working on so little of the picture that its answer no
         // longer survives being enlarged onto it.

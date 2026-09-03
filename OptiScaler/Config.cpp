@@ -344,13 +344,10 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrWhitePointSource.set_from_config(readUInt("DlssNr", "WhitePointSource"));
             DlssNrScanMeter.set_from_config(readBool("DlssNr", "ScanMeter"));
             DlssNrScanTrim.set_from_config(readFloat("DlssNr", "ScanTrim"));
+            DlssNrPasses.set_from_config(readUInt("DlssNr", "Passes"));
             DlssNrScanAnchorValue.set_from_config(readFloat("DlssNr", "ScanAnchorValue"));
             DlssNrScanAnchorWhitePoint.set_from_config(readFloat("DlssNr", "ScanAnchorWhitePoint"));
             DlssNrScanInverted.set_from_config(readBool("DlssNr", "ScanInverted"));
-            DlssNrConstantDepth.set_from_config(readBool("DlssNr", "ConstantDepth"));
-            DlssNrFreezeDepth.set_from_config(readBool("DlssNr", "FreezeDepth"));
-            DlssNrFreezeMotion.set_from_config(readBool("DlssNr", "FreezeMotion"));
-            DlssNrMvScaleAbuse.set_from_config(readFloat("DlssNr", "MvScaleAbuse"));
             DlssNrWhitePointTrim.set_from_config(readFloat("DlssNr", "WhitePointTrim"));
             DlssNrAutoCapture.set_from_config(readBool("DlssNr", "AutoCapture"));
             DlssNrWhitePointScale.set_from_config(readFloat("DlssNr", "WhitePointScale"));
