@@ -1134,10 +1134,17 @@ ID3D12Resource* CreateGuideClone(ID3D12Device* device, ID3D12Resource* source)
 // ordinary depth that simply disagrees with the picture, and anything reading it has to notice.
 // Hands back something the model can actually read: the guide itself when it is typed, or a typed
 // copy of it when it is not. NGX requires its inputs in NON_PIXEL_SHADER_RESOURCE at evaluate time,
-// which is a documented contract rather than a guess about any one game's frame graph, so that is
-// the state transitioned away from and back to here.
+// which is a documented contract rather than a guess about any one game's frame graph.
+//
+// arrival is the state the game actually left the guide in, from DepthResourceBarrier /
+// MVResourceBarrier -- the same keys every upscaler in this tree honours for these two
+// resources (FSR2Feature_Dx12.cpp:136). Unset means the contract holds and arrival is
+// NON_PIXEL_SHADER_RESOURCE, which is what this transitioned from unconditionally before; a game that
+// deviates was transitioned from a state it was not in, and under vkd3d-proton a wrong oldLayout in
+// vkCmdPipelineBarrier is undefined rather than ignored.
 ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
-                              ID3D12Resource* source, ID3D12Resource** clone)
+                              ID3D12Resource* source, ID3D12Resource** clone,
+                              D3D12_RESOURCE_STATES arrival)
 {
     if (source == nullptr || !IsTypeless(source->GetDesc().Format))
         return source;
@@ -1170,11 +1177,9 @@ ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* c
                   (int) TypedGuideFormat(source->GetDesc().Format));
     }
 
-    Barrier(cmdList, source, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Barrier(cmdList, source, arrival, D3D12_RESOURCE_STATE_COPY_SOURCE);
     cmdList->CopyResource(*clone, source);
-    Barrier(cmdList, source, D3D12_RESOURCE_STATE_COPY_SOURCE,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Barrier(cmdList, source, D3D12_RESOURCE_STATE_COPY_SOURCE, arrival);
     Barrier(cmdList, *clone, D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     return *clone;
@@ -1707,6 +1712,14 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             LOG_INFO("DLSS-NR: white point meter up, {}x{} tiles", kDlssNrMeterGrid, kDlssNrMeterGrid);
     }
 
+    // On an engine that needs its compute state put back -- the bindless quirks -- the envelope can
+    // only restore what was captured. If nothing was captured for this list, the upscaler decided
+    // touching state was unsafe this frame, and binding the pass now would leave state the envelope
+    // cannot clean up. So on those games, skip the frame rather than corrupt it. Ordinary games do
+    // not require restore, so they are unaffected and the pass runs as before.
+    const bool restoreRequired = cfg.RestoreComputeSignature.value_or_default() ||
+                                 cfg.RestoreGraphicSignature.value_or_default();
+
     if (g_nr.feature == nullptr && g_nr.output != nullptr && g_nr.colorCopy != nullptr &&
         g_nr.hdrCopy != nullptr)
     {
@@ -1723,6 +1736,20 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             device->Release();
             return;
         }
+
+        // Creation records onto the game's command list, so it binds NGX's own heaps, root signature
+        // and pipeline exactly as a dispatch would. The envelope further down covers every frame that
+        // reaches it; this one returns before it, and left those bindings live -- the state the
+        // envelope's own comment describes as removing the device on a bindless engine. Same guard,
+        // same envelope, applied to the frame the crash reports single out.
+        if (restoreRequired && !D3D12Hooks::CanRestoreRootSignature(cmdList))
+        {
+            ReportSkipOnce("the upscaler could not restore state on the creation frame");
+            device->Release();
+            return;
+        }
+
+        ScopedNrStateEnvelope creationEnvelope(cmdList);
 
         SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
         g_nr.feature =
@@ -1833,14 +1860,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // represent -- it exists precisely because the proxy is meant to clip. Normalising the highlights
     // away first leaves it nothing to give back.
 
-    // On an engine that needs its compute state put back -- the bindless quirks -- the envelope can
-    // only restore what was captured. If nothing was captured for this list, the upscaler decided
-    // touching state was unsafe this frame, and binding the pass now would leave state the envelope
-    // cannot clean up. So on those games, skip the frame rather than corrupt it. Ordinary games do
-    // not require restore, so they are unaffected and the pass runs as before.
-    const bool restoreRequired = cfg.RestoreComputeSignature.value_or_default() ||
-                                 cfg.RestoreGraphicSignature.value_or_default();
-
     if (restoreRequired && !D3D12Hooks::CanRestoreRootSignature(cmdList))
     {
         ReportSkipOnce("the upscaler could not restore state this frame");
@@ -1899,10 +1918,33 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         meterParams.Width = 1;
         meterParams.Height = 1;
 
+        // The game's exposure texture is read here as an SRV. D3D12 has no image layouts, so leaving
+        // it alone costs nothing there; Vulkan does, and a read still requires a shader-readable
+        // layout, so vkd3d-proton faults on what Windows ignores. ExposureResourceBarrier is the key
+        // every upscaler in this tree already honours for this resource
+        // (FSR2Feature_Dx12.cpp:164); unset means it arrives shader-readable and both of these are
+        // no-ops Barrier() skips.
+        auto* exposure = (ID3D12Resource*) frame.ExposureTexture;
+
+        const D3D12_RESOURCE_STATES exposureArrival =
+            cfg.ExposureResourceBarrier.has_value()
+                ? (D3D12_RESOURCE_STATES) cfg.ExposureResourceBarrier.value()
+                : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+
         Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        DispatchPass(cmdList, meterParams, target, nullptr, nullptr,
-                     (ID3D12Resource*) frame.ExposureTexture, nullptr, g_nr.meter, nullptr);
+
+        if (exposure != nullptr)
+            Barrier(cmdList, exposure, exposureArrival,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+        DispatchPass(cmdList, meterParams, target, nullptr, nullptr, exposure, nullptr, g_nr.meter,
+                     nullptr);
+
+        if (exposure != nullptr)
+            Barrier(cmdList, exposure, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    exposureArrival);
+
         Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
@@ -1962,8 +2004,21 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // Read the exposure scan's candidates on the pass's own command list, once a frame.
     DlssNr::ExposureScan::Tick(device, cmdList);
 
-    ID3D12Resource* depthIn = ReadableGuide(device, cmdList, depth, &g_nr.depthClone);
-    ID3D12Resource* motionIn = ReadableGuide(device, cmdList, motion, &g_nr.motionClone);
+    // The state the game left its guides in, read the same way the output's is at the top of this
+    // function and the same way every upscaler in this tree reads it. Unset means the NGX contract
+    // holds and they arrive shader-readable, which is what this pass assumed unconditionally before.
+    const D3D12_RESOURCE_STATES depthArrival =
+        cfg.DepthResourceBarrier.has_value()
+            ? (D3D12_RESOURCE_STATES) cfg.DepthResourceBarrier.value()
+            : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+
+    const D3D12_RESOURCE_STATES motionArrival =
+        cfg.MVResourceBarrier.has_value()
+            ? (D3D12_RESOURCE_STATES) cfg.MVResourceBarrier.value()
+            : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+
+    ID3D12Resource* depthIn = ReadableGuide(device, cmdList, depth, &g_nr.depthClone, depthArrival);
+    ID3D12Resource* motionIn = ReadableGuide(device, cmdList, motion, &g_nr.motionClone, motionArrival);
 
     if (depthIn == nullptr || motionIn == nullptr)
     {
@@ -1974,6 +2029,28 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         device->Release();
         return;
     }
+
+    // A typed guide is handed to the model as it stands -- no clone, so ReadableGuide issued no
+    // barriers and it is still in the state the game left it. The model reads it, so it has to be
+    // shader-readable for that read, and is put back before this function returns. Both transitions
+    // are no-ops Barrier() skips when the arrival state already is NON_PIXEL_SHADER_RESOURCE.
+    const bool depthPassedThrough = depthIn == depth;
+    const bool motionPassedThrough = motionIn == motion;
+
+    if (depthPassedThrough)
+        Barrier(cmdList, depth, depthArrival, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    if (motionPassedThrough)
+        Barrier(cmdList, motion, motionArrival, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    const auto restoreGuides = [&]()
+    {
+        if (depthPassedThrough)
+            Barrier(cmdList, depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, depthArrival);
+
+        if (motionPassedThrough)
+            Barrier(cmdList, motion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, motionArrival);
+    };
 
     // The vectors were scaled to full-frame pixels; the image the model reprojects is the working size.
     // The vectors were scaled to full-frame pixels; the image the model reprojects is the
@@ -2004,6 +2081,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                       proxyResult, NgxResultName(proxyResult));
         }
 
+        restoreGuides();
         Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, outputArrival);
         device->Release();
         return;
@@ -2240,7 +2318,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
-    // Hand the output back in the state the upscaler and the game expect.
+    // Hand the guides and the output back in the states the upscaler and the game expect.
+    restoreGuides();
     Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, outputArrival);
 
     device->Release();
