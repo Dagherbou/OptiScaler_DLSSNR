@@ -1,4 +1,8 @@
 #include "pch.h"
+
+#include <dlssnr/DlssNr_ExposureScan.h>
+
+#include <dlssnr/DlssNr_ExposureScan.h>
 #include "ResTrack_dx12.h"
 
 #include <Config.h>
@@ -592,6 +596,16 @@ void ResTrack_Dx12::hkCreateUnorderedAccessView(ID3D12Device* This, ID3D12Resour
             }
         }
     }
+
+    // Every unordered access view the game makes passes through here, which is the one place a
+    // buffer shaped like an exposure can be spotted without knowing anything about the game. Silent
+    // and cheap for everything that does not match, and inert unless the scan is switched on.
+    DlssNr::ExposureScan::NoteUav(pResource, pDesc);
+
+    // Every unordered access view the game makes passes through here, which is the one place a
+    // buffer shaped like an exposure can be spotted without knowing anything about the game. Silent
+    // and cheap for everything that does not match, and inert unless the scan is switched on.
+    DlssNr::ExposureScan::NoteUav(pResource, pDesc);
 
     o_CreateUnorderedAccessView(This, pResource, pCounterResource, pDesc, DestDescriptor);
 

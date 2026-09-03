@@ -2,6 +2,7 @@
 #include "DlssNrFeature_Vk.h"
 
 #include "DlssNr.h"
+#include "DlssNr_ExposureScan.h"
 
 
 #include <Config.h>
@@ -495,6 +496,63 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::SeparatorText("Inspect");
 
         {
+            {
+                bool scan = config->DlssNrScanExposure.value_or_default();
+                if (ImGui::Checkbox("Look for the game's own exposure", &scan))
+                    config->DlssNrScanExposure = scan;
+
+                HelpMarker("Games that never hand DLSS an exposure texture still COMPUTE an exposure"
+                               "\n-- eye adaptation writes one into a tiny buffer every frame. It just"
+                               "\nnever reaches the upscaler. This looks for it."
+                               "\n\nWhy it matters: where a game's exposure moves and we cannot see it,"
+                               "\nthe white point is one constant divisor against a moving target, and"
+                               "\nthe picture drifts or flickers as the lighting changes. That is the"
+                               "\nSpider-Man report, and it is not a badly chosen value -- it is one"
+                               "\nnumber being asked to be two things."
+                               "\n\nThis only WATCHES. It changes nothing about the picture. What to"
+                               "\nlook for below is a candidate whose value MOVES as you walk between"
+                               "\nlight and shade -- a constant that happens to live in a small buffer"
+                               "\nis not an exposure."
+                               "\n\nOff by default because reading a buffer the game owns means"
+                               "\nassuming what state it is in, and a buffer found by its shape comes"
+                               "\nwith no promise about that. Switch it off when you are done looking.");
+
+                if (scan)
+                {
+                    const auto found = DlssNr::ExposureScan::Report();
+                    const char* why = DlssNr::ExposureScan::Status();
+
+                    if (found.empty())
+                    {
+                        ImGui::TextDisabled("%s", why != nullptr && why[0] != 0
+                                                      ? why
+                                                      : "nothing matched yet.");
+                    }
+                    else
+                    {
+                        for (size_t i = 0; i < found.size(); ++i)
+                        {
+                            const auto& c = found[i];
+
+                            if (c.reads == 0)
+                            {
+                                ImGui::TextDisabled("%zu. %s -- not read yet", i + 1, c.shape.c_str());
+                                continue;
+                            }
+
+                            // Moving is the whole signal, so it is the thing that is coloured.
+                            ImGui::TextColored(c.moves ? ImVec4(0.45f, 0.8f, 0.45f, 1.0f)
+                                                       : ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                                               "%zu. %s = %.5f  (seen %.5f..%.5f) %s", i + 1,
+                                               c.shape.c_str(), c.latest, c.lowest, c.highest,
+                                               c.moves ? "MOVES" : "flat so far");
+                        }
+
+                        ImGui::TextDisabled("Walk from shade into daylight. A real exposure moves.");
+                    }
+                }
+            }
+
             bool constDepth = config->DlssNrConstantDepth.value_or_default();
             if (ImGui::Checkbox("Constant depth (the real question)", &constDepth))
                 config->DlssNrConstantDepth = constDepth;

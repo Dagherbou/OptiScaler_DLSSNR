@@ -362,17 +362,18 @@ class Config
     // Off until it is shown to produce the same picture. If it does, the forwarder can go.
     CustomOptional<bool> DlssNrUseProxy { false };
 
-    // Diagnostics: stop refreshing a guide and keep handing the model the one it already has.
+    // Look for the exposure the game computed but never handed to the upscaler.
     //
-    // These answer "does the model actually use this input", which decides whether Neural Rendering
-    // can ever run in a game that has no upscaler to borrow guides from. A frozen guide is not a
-    // degenerate input -- it is perfectly valid depth or motion, just wrong for this frame -- so a
-    // model that reads it must produce a different picture once the camera moves. A model that does
-    // not read it produces an identical one.
+    // Off by default, and it has to be. Reading a resource the game owns means assuming what state
+    // it is in, and unlike depth and motion vectors -- where NGX documents the contract -- a buffer
+    // found by its shape comes with no promise at all. UNORDERED_ACCESS is the reasonable
+    // assumption, since every candidate got here by having a UAV made on it, but it is an
+    // assumption, and nobody who has not asked for the scan should be carrying that risk.
     //
-    // FreezeMotion is the control and is not optional to the experiment. Freezing the vectors must
-    // visibly break the picture; if it does not, the mechanism itself is broken and any conclusion
-    // drawn from FreezeDepth is worthless. Never read one without the other.
+    // It decides nothing either way. It watches and it reports, because the last two times a number
+    // was inferred here it went straight into the interface and was wrong.
+    CustomOptional<bool> DlssNrScanExposure { false };
+
     // Hand the model a depth buffer that is constant everywhere instead of the game's.
     //
     // The question this exists for is not "does the model read depth" -- that is answered, it does,
@@ -389,6 +390,17 @@ class Config
     // infinity. That is a legitimate constant rather than garbage, and it costs nothing to produce.
     CustomOptional<bool> DlssNrConstantDepth { false };
 
+    // Diagnostics: stop refreshing a guide and keep handing the model the one it already has.
+    //
+    // These answer "does the model actually use this input", which decides whether Neural Rendering
+    // can ever run in a game that has no upscaler to borrow guides from. A frozen guide is not a
+    // degenerate input -- it is perfectly valid depth or motion, just wrong for this frame -- so a
+    // model that reads it must produce a different picture once the camera moves. A model that does
+    // not read it produces an identical one.
+    //
+    // FreezeMotion is the control and is not optional to the experiment. Freezing the vectors must
+    // visibly break the picture; if it does not, the mechanism itself is broken and any conclusion
+    // drawn from FreezeDepth is worthless. Never read one without the other.
     CustomOptional<bool> DlssNrFreezeDepth { false };
     CustomOptional<bool> DlssNrFreezeMotion { false };
 

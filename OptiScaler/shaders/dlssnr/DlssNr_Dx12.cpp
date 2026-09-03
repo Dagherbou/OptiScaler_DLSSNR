@@ -7,6 +7,8 @@
 
 #include <dlssnr/DlssNr_Capture.h>
 #include <dlssnr/DlssNr_Proxy.h>
+#include <dlssnr/DlssNr_ExposureScan.h>
+#include <dlssnr/DlssNr_ExposureScan.h>
 
 #include "DlssNr_Dx12.h"
 
@@ -1972,6 +1974,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     const GuideMode depthMode = cfg.DlssNrConstantDepth.value_or_default() ? GuideMode::Constant
                                 : freezeDepth                             ? GuideMode::Frozen
                                                                           : GuideMode::Live;
+
+    // Once a frame, on a command list that is already recording and already ours to record on.
+    DlssNr::ExposureScan::Tick(device, cmdList);
+
+    // Once a frame, on a command list that is already recording and already ours to record on.
+    DlssNr::ExposureScan::Tick(device, cmdList);
 
     ID3D12Resource* depthIn =
         ReadableGuide(device, cmdList, depth, depthMode == GuideMode::Constant ? &g_nr.depthConstant

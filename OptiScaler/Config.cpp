@@ -335,6 +335,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrWorkingScale.set_from_config(readFloat("DlssNr", "WorkingScale"));
             DlssNrProxyProbe.set_from_config(readBool("DlssNr", "ProxyProbe"));
             DlssNrUseProxy.set_from_config(readBool("DlssNr", "UseProxy"));
+            DlssNrScanExposure.set_from_config(readBool("DlssNr", "ScanExposure"));
             DlssNrConstantDepth.set_from_config(readBool("DlssNr", "ConstantDepth"));
             DlssNrFreezeDepth.set_from_config(readBool("DlssNr", "FreezeDepth"));
             DlssNrFreezeMotion.set_from_config(readBool("DlssNr", "FreezeMotion"));

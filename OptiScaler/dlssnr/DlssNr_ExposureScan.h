@@ -1,0 +1,77 @@
+#pragma once
+
+// Looking for the exposure the game computed but never handed over.
+//
+// The problem this exists for: a game whose exposure moves with the lighting, and which does not
+// pass an exposure texture to the upscaler. Spider-Man and Kingdom Come 2 are both this. The white
+// point is then a constant divisor against a moving exposure, and the picture drifts or flickers as
+// the scene's lighting changes -- which is not a value the user chose badly, it is one number being
+// asked to be two things.
+//
+// The observation this is built on: those games still COMPUTE an exposure. Essentially every engine
+// with eye adaptation writes one into a tiny texture or buffer every frame, reads its own previous
+// value to smooth it, and uses it downstream. It simply never reaches the upscaler. So the number is
+// not something to reconstruct from pixels -- it is sitting in memory, unread.
+//
+// Which matters because every attempt to reconstruct it from pixels has failed, twice, for the same
+// reason each time. Anything measured off a frame is a statement about that frame's content, and the
+// finished frame is downstream of bloom, depth of field, the interface and our own edit. The game's
+// own number is upstream of all of it.
+//
+// WHAT THIS DOES NOT DO
+//
+// It does not decide anything. It watches, and it reports what it found, and that is deliberate: the
+// last two times a number was inferred here it went straight into the interface as a suggestion and
+// was wrong -- 8 where 240 was right, and confidently offered on a black screen. So this ships as an
+// instrument. Whether a found value is worth consuming is a question for after the readout has been
+// looked at in real games, not a question this answers.
+//
+// A found buffer also carries no contract. NVIDIA's exposure texture is defined by the SDK as "the
+// final exposure scale"; a buffer we discovered ourselves might hold a multiplier, a divisor, or a
+// stop value in log space, and nothing in it says which. That is why the eventual use is a RATIO
+// against the value at the moment the user set their white point, where the units cancel -- not an
+// absolute number.
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+struct ID3D12Device;
+struct ID3D12Resource;
+struct ID3D12GraphicsCommandList;
+struct D3D12_UNORDERED_ACCESS_VIEW_DESC;
+
+namespace DlssNr
+{
+namespace ExposureScan
+{
+
+// One thing that looks like it could be an exposure, and what it has been seen doing.
+struct Candidate
+{
+    std::string shape;  // "1x1 R32_FLOAT" and the like, for the readout
+    float latest = 0.0f;
+    float lowest = 0.0f;
+    float highest = 0.0f;
+    unsigned int reads = 0;
+    bool moves = false; // has it changed by more than noise since it was first read
+};
+
+// Called from the resource tracker every time the game creates an unordered access view. Cheap and
+// silent for everything that does not match; the shape being looked for is rare enough that the
+// filter rejects almost every call on its first comparison.
+void NoteUav(ID3D12Resource* resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* desc);
+
+// Called once per frame from the Neural Rendering pass, on its command list. Copies one value out of
+// each candidate and reads back the copies taken a few frames ago.
+void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList);
+
+// For the menu.
+std::vector<Candidate> Report();
+const char* Status();
+bool Scanning();
+
+void Shutdown();
+
+} // namespace ExposureScan
+} // namespace DlssNr
