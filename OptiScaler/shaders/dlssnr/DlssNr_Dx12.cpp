@@ -2064,12 +2064,19 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         // Reset belongs to the frame, not to the pass. Telling the model to forget its history on
         // the second pass of the same frame would throw away what the first pass just established.
+        //
+        // Tone belongs to the frame too, for a plainer reason: it is a look, and a look is applied
+        // once. Passing it every pass meant the second re-graded an already-graded picture and the
+        // third re-graded that, so colour compounded while detail did not -- the passes visibly
+        // stacked warmth and contrast, which is not what turning the count up is asking for.
+        // Structure is the thing worth repeating; tone is not.
+        const float passTone = pass == 0 ? cfg.DlssNrLocalTone.value_or_default() : 0.0f;
         result = g_nr.evaluate(
             cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
             workWidth, workHeight, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0,
             (pass == 0 && g_nr.reset) ? 1 : 0, cfg.DlssNrIntensity.value_or_default(),
             (int) cfg.DlssNrStyle.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
-            cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
+            passTone, cfg.DlssNrSkinStructure.value_or_default(),
             cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, g_nr.guideMvScaleX * mvToWork,
             g_nr.guideMvScaleY * mvToWork);
     }

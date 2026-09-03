@@ -433,9 +433,22 @@ void RenderMenu(Config* config, float menuResScale)
             }
             else if (source == 2)
             {
+                // "Nothing found" and "found several, none of them moving" are different states,
+                // and this said the first for both. In GTA V the log carried eight candidates while
+                // the panel claimed there were none, which reads as the scan being broken when what
+                // it actually needs is for the light to change.
                 if (anchorNow <= 0.0f)
-                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
-                                       "Nothing found yet -- walk between light and shade.");
+                {
+                    const unsigned int watching = (unsigned int) DlssNr::ExposureScan::Report().size();
+
+                    if (watching == 0)
+                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
+                                           "Nothing in this game is shaped like an exposure.");
+                    else
+                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
+                                           "Watching %u, none moving yet -- go between light and shade.",
+                                           watching);
+                }
                 else if (!haveAnchor)
                     ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
                                        "Found one. Set paper white below until the picture looks "
