@@ -25,7 +25,7 @@ cbuffer Params : register(b0)
     uint  gCompareSwap;  // put the edited frame on the other side
     uint  gTransfer;     // 0 classic, 1 matched residual -- how a below-size model comes back
     float gDebugScale;   // what the debug views are scaled by, held still while the meter moves
-    uint  gReversibleMode; // 0 knee+composition, 1 Neutwo+composition, 2 Neutwo+pure-inverse replace
+    uint  gReversibleMode; // 0 knee, 1 Neutwo+composed, 2 Neutwo+replace, 3 hybrid+composed
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -353,6 +353,37 @@ float3 NeutwoDecode(float3 y)
     return y * (x / m);
 }
 
+// The hybrid proxy (mode 3): the fix for the two curves each only winning in some scenes. The soft
+// knee is fine in the midtones but crushes highlights; Neutwo fixes the highlights but compresses the
+// midtones too, so it only helps where the knee was hurting (bright content) and is a downgrade in
+// soft-lit content. The hybrid is IDENTITY below the knee -- so midtones are exactly what the soft
+// knee already gave (as good as Off) -- and an unclipped, gentle Neutwo-of-the-excess ABOVE it, so
+// highlights get the gradation the model needs. C1-continuous at the knee. One proxy that is >= Off
+// everywhere: no midtone loss, plus the highlight win. (Composed only -- mode 3 does not replace.)
+float HybridCurve(float m)
+{
+    const float k = 0.75; // knee point: identity below, gentle unclipped roll above
+
+    if (m <= k)
+        return m;
+
+    const float e = (m - k) / (1.0 - k);         // excess above the knee, [0, inf)
+    return k + (1.0 - k) * (e * rsqrt(e * e + 1.0)); // Neutwo(e) scaled into [k, 1); -> 1, never clips
+}
+
+float3 HybridEncode(float3 v)
+{
+    v = max(v, 0.0);
+    float m = max(v.r, max(v.g, v.b));
+
+    if (m <= 1e-6)
+        return v;
+
+    // One scalar on the peak channel, hue preserved. Below the knee the scalar is 1 (identity); above
+    // it the peak lands at HybridCurve(m) < 1, so no channel clips.
+    return v * (HybridCurve(m) / m);
+}
+
 // Scale a residual so the result cannot leave the unit cube, without changing its direction.
 //
 // The model's edit is carried up from a smaller raster and laid on the frame's own proxy, so nothing
@@ -589,7 +620,13 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // is not passthrough (handled and returned above), so NeutwoEncode never sees a tone-mapped
         // frame. Both are undone by the resolve: the knee approximately, Neutwo exactly.
         float3 normalized = frame / max(gWhitePoint, 1e-4);
-        float3 display = gReversibleMode != 0 ? NeutwoEncode(normalized) : SoftKnee(normalized);
+        float3 display;
+        if (gReversibleMode == 0)
+            display = SoftKnee(normalized);        // soft knee
+        else if (gReversibleMode == 3)
+            display = HybridEncode(normalized);    // hybrid: identity midtones + unclipped highlights
+        else
+            display = NeutwoEncode(normalized);    // 1 composed, 2 replace -- both the full Neutwo proxy
 
         // The reversible proxy forces opaque alpha -- feature 18 expects an opaque colour input, and
         // the frame's own alpha is not part of what the model reads. The knee path keeps the frame's
@@ -751,7 +788,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // lands in [0,1), so it needs no saturate.
         float3 fullProxy = gPassthrough != 0
                                ? saturate(original)
-                               : (gReversibleMode != 0 ? NeutwoEncode(original) : saturate(SoftKnee(original)));
+                               : (gReversibleMode == 0   ? saturate(SoftKnee(original))
+                                  : gReversibleMode == 3 ? HybridEncode(original)
+                                                         : NeutwoEncode(original));
         proxy = fullProxy;
         proxyLuma = dot(proxy, kLuma);
 

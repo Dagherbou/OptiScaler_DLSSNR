@@ -246,33 +246,32 @@ void RenderMenu(Config* config, float menuResScale)
                        "\npictures rather than adding a colour difference to one, which is what used to"
                        "\nlet a warm subject come back green.");
 
-        // Experimental. 0 off (soft knee + our composition), 1 Neutwo proxy + our composition,
-        // 2 Neutwo proxy + pure-inverse replace. Always shown, no dead-control risk.
+        // Experimental. 0 off (soft knee), 1 Neutwo + our composition, 2 Neutwo + pure-inverse replace,
+        // 3 hybrid (identity midtones + unclipped highlights) + our composition. Always shown.
         static const char* reversibleNames[] = { "Off (soft knee)", "Neutwo proxy + composed",
-                                                 "Neutwo proxy + replace" };
+                                                 "Neutwo proxy + replace", "Hybrid proxy + composed" };
         int reversible = (int) config->DlssNrReversibleMode.value_or_default();
-        if (reversible < 0 || reversible > 2)
+        if (reversible < 0 || reversible > 3)
             reversible = 0;
         if (ImGui::Combo("Reversible proxy (experimental)", &reversible, reversibleNames,
                          IM_ARRAYSIZE(reversibleNames)))
             config->DlssNrReversibleMode = (uint32_t) reversible;
 
         HelpMarker("What the model is shown, and how its answer comes back."
-                       "\n\nThe default soft knee rolls highlights off so hard that a scene twice as"
-                       "\nbright as white and one four times as bright arrive about a thousandth apart,"
-                       "\nand the model cannot resolve anything between them -- highlights come back"
-                       "\nwith light but no detail. The other two show the model an unclipped curve"
-                       "\ninstead (RenoDX's), where those two land far apart, so the detail is there."
-                       "\n\nComposed: that better proxy, then everything above -- Detail and Colour"
-                       "\nstrength, the highlight guard, the game's palette -- unchanged. This is the"
-                       "\none to use; it keeps the product controls."
-                       "\n\nReplace: the model's answer straight back through the exact inverse, with"
-                       "\nNONE of that -- no guard, no palette, no strengths. The raw model, RenoDX's"
-                       "\nway. Its highlight slope is steep, so bright lights FLASH in motion; a"
-                       "\ncomparison lever,"
-                       "\nnot the recommended setting."
-                       "\n\nBoth shift the effective paper white (white lands dimmer for the model), so"
-                       "\nre-check paper white when you switch. Off is byte-identical to before.");
+                       "\n\nOff (soft knee): the default. It rolls highlights off so hard the model"
+                       "\ncannot resolve detail in them -- fine in soft-lit scenes, weak in bright ones."
+                       "\n\nNeutwo composed: an unclipped curve so the model sees highlight detail, then"
+                       "\neverything above (Detail/Colour strength, highlight guard, palette). It wins in"
+                       "\nbright scenes, but the curve compresses MIDTONES too, so in soft-lit content it"
+                       "\ncan be worse than Off. It also shifts paper white -- re-check it when you switch."
+                       "\n\nHybrid composed: the best of both, and the one to use. Identity in the"
+                       "\nmidtones -- as good as Off there -- and the unclipped roll only in the"
+                       "\nhighlights, so it recovers the detail Off crushes without giving up the"
+                       "\nmidtones Neutwo does. It barely shifts paper white."
+                       "\n\nReplace: the raw model straight back through the exact inverse, none of the"
+                       "\ncomposition -- no guard, no palette, no strengths. Gorgeous where there are no"
+                       "\nbright lights, but they FLASH in motion. A reference, not a daily setting."
+                       "\n\nOff is byte-identical to before.");
 
         ImGui::SeparatorText("Model");
 
