@@ -142,6 +142,9 @@ float AnchoredWhitePoint(float scanNow, bool inverted, float trim);
 void LoadAnchors(const std::string& serialized);
 std::string SerializeAnchors();
 
+// Release the scan's references to captured resources (call at feature teardown -- see the .cpp).
+void ReleaseTrackedResources();
+
 void Shutdown();
 
 } // namespace ExposureScan

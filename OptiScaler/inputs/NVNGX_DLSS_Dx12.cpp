@@ -6,6 +6,7 @@
 #include "NVNGX_Parameter.h"
 #include "proxies/NVNGX_Proxy.h"
 #include "dlssnr/DlssNr.h"
+#include "dlssnr/DlssNr_ExposureScan.h"
 #include <upscalers/dlss/DLSSFeature_Dx12.h>
 #include <shaders/output_scaling/OS_Dx12.h>
 
@@ -816,6 +817,13 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
 
     if (!InHandle)
         return NVSDK_NGX_Result_Success;
+
+    // Before any feature's resources are freed, drop the exposure scan's references to whatever it
+    // captured. The scan AddRef's candidates and never released them; a Streamline/DLSS-D resource it
+    // pinned would otherwise be used after its heap is freed here -- the Cyberpunk device-removal.
+    // Capture is gated on NR being enabled (not the scan source), so this drops whatever was captured
+    // whenever NR is on; a no-op only when NR is off.
+    DlssNr::ExposureScan::ReleaseTrackedResources();
 
     auto handleId = InHandle->Id;
 

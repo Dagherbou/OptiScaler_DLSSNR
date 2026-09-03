@@ -63,6 +63,7 @@ struct ScanState
     unsigned long long frames = 0;
     const char* status = "not started";
     bool complained = false;
+    unsigned int nearMissLogged = 0;   // bounded diagnostic; see NoteResource
 };
 
 ScanState g_scan;
@@ -315,7 +316,23 @@ void NoteResource(const D3D12_RESOURCE_DESC* desc, ID3D12Resource* resource)
     g_scan.examined++;
 
     if (!LooksLikeANumber(*desc, &shape, &bytes, &isBuffer, &fmt))
+    {
+        // Near-miss diagnostic. A resource a shader writes (UAV) that the filter rejected: logging its
+        // shape -- bounded to the first 40 so it cannot flood -- reveals whether a game the scan finds
+        // nothing in (Cyberpunk 2077) has an exposure the filter narrowly misses (a small UAV texture
+        // in an unlisted format, or a UAV buffer just over 128 bytes -> widen precisely to match) or
+        // nothing scannable at all (only large buffers/textures -> the exposure is baked in a bigger
+        // buffer and no filter change can help). Read these against Examined() in the log.
+        if ((desc->Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0 && g_scan.nearMissLogged < 40)
+        {
+            g_scan.nearMissLogged++;
+            LOG_INFO("DLSS-NR scan near-miss #{}: UAV dim {} {}x{}x{} fmt {} (filter rejected)",
+                     g_scan.nearMissLogged, (int) desc->Dimension, (unsigned int) desc->Width,
+                     desc->Height, desc->DepthOrArraySize, (int) desc->Format);
+        }
+
         return;
+    }
 
     Adopt(resource, shape, bytes, isBuffer, fmt);
 }
@@ -891,6 +908,32 @@ std::string SerializeAnchors()
     }
 
     return out;
+}
+
+// Drop the scan's references to the resources it captured, WITHOUT touching our own readback buffers.
+//
+// The scan AddRef's every candidate it adopts (Adopt) but nothing ever released them -- Shutdown() has
+// no callers -- so a Streamline/DLSS-D-owned resource that passes the filter is pinned by our stray
+// AddRef, and when the driver frees its (placed) heap at feature teardown the surviving wrapper points
+// at freed memory: the use-after-free that removed the device in Cyberpunk (a lock on a freed object in
+// nvwgf2umx). Calling this at feature release drops our references first, so nothing we hold outlives
+// the heap. Only the candidates (foreign resources) are released here -- NOT the readback ring, which
+// is ours and may have GPU copies in flight; freeing that here would be a new hazard. Capture is gated
+// on NR being ENABLED (not on the scan source), so this releases whatever was captured whenever NR is
+// on -- scan selected or not; it is a no-op only when NR is off (nothing captured), so FSR/XeSS users
+// with NR off pay nothing. The scan re-adopts candidates next frame.
+void ReleaseTrackedResources()
+{
+    std::lock_guard<std::mutex> lock(g_scanMutex);
+
+    for (Tracked& t : g_scan.tracked)
+    {
+        if (t.resource != nullptr)
+            t.resource->Release();
+    }
+
+    g_scan.tracked.clear();
+    g_scan.complained = false;
 }
 
 void Shutdown()
