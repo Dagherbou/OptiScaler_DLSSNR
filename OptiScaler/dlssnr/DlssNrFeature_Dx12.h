@@ -54,27 +54,23 @@ bool IsRunning();
 // Why it is not, if it is not. Empty while it is running or has not been tried yet.
 const char* FailureReason();
 
-// What the game offers by way of exposure. Observed every frame whether or not the setting is on, so
-// the menu can say whether turning it on would do anything here.
-struct ExposureStatus
+// Menu queries. Read atomics only; never take g_nrMutex.
+bool GameExposureCanEnable();
+bool GameExposureEffective();
+enum class GameExposureWait { NativeVulkan, Waiting, Passthrough, Absent, Available };
+GameExposureWait GameExposureUiState();   // first match in 4.3
+struct GameExposureReadout
 {
-    unsigned long long seenFrames = 0;   // evaluates observed; 0 means nothing has run yet
-    bool offeredNow = false;             // a texture on the most recent frame
-    bool everOffered = false;            // a texture on any frame so far
-    float exposure = 0.0f;               // last value read back, 0 if none
-    float preExposure = 1.0f;
+    bool haveNumbers;
+    float e, p, s;
+    float gameW;
+    float slider;
 };
+GameExposureReadout GameExposureMenuReadout();
 
-ExposureStatus GameExposureStatus();
-
-// The white point the exposure meter has settled on, or 0 if it has not taken a reading yet. For the
-// overlay, so the number in use is visible rather than inferred.
 
 // What the pass last cost on the GPU, in milliseconds, or nothing if it has not been measured yet.
 std::optional<double> LastGpuTime();
-
-// What the white point meter last settled on, or 0 when it is not running. For the menu.
-
 
 // Writes a run of consecutive frames, each as the upscaler produced it and again after the model's edit.
 // The pair is a control: same frames, same run, one variable.

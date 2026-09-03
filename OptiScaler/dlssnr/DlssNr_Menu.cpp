@@ -292,115 +292,120 @@ void RenderMenu(Config* config, float menuResScale)
 
         ImGui::SeparatorText("Colour");
 
-        ImGui::TextDisabled("The model was trained on finished, sRGB-encoded frames. The upscaler's\n"
-                            "output is not one: it is linear and open-ended. These decide how it is\n"
-                            "mapped into something the model recognises. A frame the game reports as\n"
-                            "already tone-mapped is passed over untouched and none of this applies.");
+        ImGui::TextDisabled("The model was trained on finished, sRGB-encoded frames. The upscaler\xE2\x80\x99s\n"
+                            "output is not one: it is linear and open-ended. Paper white is how that\n"
+                            "buffer is mapped into something the model recognises. A frame the game\n"
+                            "reports as already tone-mapped is passed over untouched and none of\n"
+                            "this applies.");
 
         {
-        // Logarithmic, because the useful range is not linear. A quarter to 240: the low end because
-        // a frame the game already tone mapped wants roughly 1, the high end because there is no
-        // principled ceiling -- this is a divisor on an open-ended linear buffer, and how far up a
-        // given game needs to go is a property of that game's exposure, not of anything we can bound.
-        // One tester was still improving at 100. A linear slider over that span would spend nine
-        // tenths of its travel on values nobody needs and never reach the ones they do.
-        bool fromExposure = config->DlssNrWhitePointFromExposure.value_or_default();
-        if (ImGui::Checkbox("Take the white point from the game", &fromExposure))
-            config->DlssNrWhitePointFromExposure = fromExposure;
+        const bool canEnable = DlssNr::GameExposureCanEnable();
+        const bool effective = DlssNr::GameExposureEffective();
 
-        HelpMarker("Use the exposure the game hands DLSS, instead of measuring or guessing."
-                       "\n\nExposure is how a renderer makes a cave and a field comparable: it works in"
-                       "\narbitrary units and multiplies by this before tone mapping. That is exactly why"
-                       "\none fixed paper white cannot serve both, and why the game's own number is the"
-                       "\nright source -- it is decided upstream and cannot be moved by anything this pass"
-                       "\ndoes, which is what went wrong with measuring it from the frame."
-                       "\n\nNot every game supplies it, and some supply it only on some frames; the last"
-                       "\ngood value is held across the gaps. Paper white below stays a multiplier on top."
-                       "\n\nOn by default. A game that supplies no exposure is unaffected -- nothing is"
-                       "\nread, nothing is dispatched, and the paper white below is used exactly as it"
-                       "\nwould be with this off. Only a game that hands one over behaves differently.");
-
-        // Whether this game supplies one at all, shown whether or not the box is ticked. Without this
-        // the only way to find out was to read the log, and a game that supplies nothing looks exactly
-        // like a game where the option is doing its job quietly.
+        ImGui::BeginDisabled(!canEnable);
+        bool shown = effective;
+        bool disabledUnchecked = false;
+        if (ImGui::Checkbox("Take white point from the game",
+                            canEnable ? &shown : &disabledUnchecked) &&
+            canEnable)
         {
-            const auto ex = DlssNr::GameExposureStatus();
+            config->DlssNrWhitePointFromExposure = shown;
+        }
+        ImGui::EndDisabled();
 
-            if (DlssNr::IsRunningVk())
-            {
-                // The exposure is fetched by the D3D12 meter's readback, which this path has no
-                // counterpart to. Saying so beats "waiting for a frame" forever over a pass that is
-                // running and is never going to read one.
-                ImGui::TextColored(ImVec4(0.85f, 0.65f, 0.25f, 1.0f),
-                                   DlssNr::ExposureOfferedVk()
-                                       ? "This game offers one, but it is not read on Vulkan yet. Paper white is in use."
-                                       : "This game supplies no exposure. Paper white below is in use.");
-            }
-            else if (ex.seenFrames == 0)
-            {
-                ImGui::TextDisabled("Waiting for a frame...");
-            }
-            else if (!ex.everOffered)
-            {
-                ImGui::TextColored(ImVec4(0.85f, 0.65f, 0.25f, 1.0f),
-                                   "This game supplies no exposure. Paper white below is in use.");
-                HelpMarker("The game declined to hand DLSS an exposure texture, so there is nothing to"
-                               "\nread and this option will do nothing here."
-                               "\n\nThat is not a fault. A game can either hand over its exposure or apply"
-                               "\nit to the picture before the upscaler sees it, and both are correct."
-                               "\nCyberpunk 2077 does the second, which means the scene-to-scene variation"
-                               "\nthis option exists to cancel has already been cancelled upstream -- so one"
-                               "\nfixed paper white is the right answer there rather than a compromise.");
-            }
-            else if (!fromExposure)
-            {
-                ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                   "This game supplies an exposure. Tick above to use it.");
-            }
-            else if (ex.exposure > 1e-6f)
-            {
-                const float wp = ex.preExposure / ex.exposure *
-                                 config->DlssNrWhitePointScale.value_or_default();
+        std::string boxHelp =
+            "When a game hands DLSS a 1\xC3\x97" "1 exposure texture, that texture is the\n"
+            "engine\xE2\x80\x99s own scale for the colour buffer. Tick this to derive paper\n"
+            "white from it instead of guessing."
+            "\n\nThe box is disabled when this session has not seen such a texture, when\n"
+            "the buffer is already tone-mapped, or on native Vulkan (the image\n"
+            "layout is not known, so it is not sampled)."
+            "\n\nThe preference is kept if the box is disabled. A later D3D12 game that\n"
+            "does supply an exposure will use it again.";
 
-                ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                   "Game exposure %.4f  ->  white point %.2f%s", ex.exposure, wp,
-                                   ex.offeredNow ? "" : "  (held: absent this frame)");
+        if (DlssNr::IsRunningVk() && DlssNr::ExposureOfferedVk())
+            boxHelp += "\n\nThis game offered one; it is not sampled on this path.";
+
+        HelpMarker(boxHelp.c_str());
+
+        const ImVec4 statusGreen(0.45f, 0.8f, 0.45f, 1.0f);
+
+        switch (DlssNr::GameExposureUiState())
+        {
+        case DlssNr::GameExposureWait::NativeVulkan:
+            ImGui::TextDisabled("This path cannot sample the game\xE2\x80\x99s exposure. Paper white below is in use.");
+            break;
+        case DlssNr::GameExposureWait::Waiting:
+            ImGui::TextDisabled("Waiting for Neural Rendering.");
+            break;
+        case DlssNr::GameExposureWait::Passthrough:
+            ImGui::TextDisabled("This buffer is already tone-mapped. Paper white is unused.");
+            break;
+        case DlssNr::GameExposureWait::Absent:
+            ImGui::TextDisabled("This game does not supply an exposure.");
+            break;
+        case DlssNr::GameExposureWait::Available:
+            if (effective)
+                ImGui::TextColored(statusGreen, "Using the game\xE2\x80\x99s exposure.");
+            else
+                ImGui::TextColored(statusGreen, "This game supplies an exposure.");
+            break;
+        }
+
+        float wpScale = config->DlssNrWhitePointScale.value_or_default();
+        if (ImGui::SliderFloat("Paper white", &wpScale, 0.25f, 240.0f,
+                               effective ? "%.2f\xC3\x97" : "%.2f", ImGuiSliderFlags_Logarithmic))
+            config->DlssNrWhitePointScale = wpScale;
+
+        if (effective)
+        {
+            HelpMarker("A multiplier on the white point taken from the game. 1.00\xC3\x97 means use\n"
+                       "that value as-is."
+                       "\n\nAbove 1 the picture handed to the model is darker; below 1, brighter.\n"
+                       "If a game still looks washed out after taking its exposure, this is\n"
+                       "the bias."
+                       "\n\nAt detail strength 0 this does not move the edited picture.");
+        }
+        else
+        {
+            HelpMarker("What the frame is divided by before the model sees it."
+                       "\n\nThe model was trained on finished frames where white sits at 1. The\n"
+                       "upscaler\xE2\x80\x99s output is linear and open-ended, so something has to say\n"
+                       "where white is, and 1.0 is right for most games that do not supply\n"
+                       "an exposure."
+                       "\n\nAbove 1 the picture handed over is darker; below 1, the opposite.\n"
+                       "If a game looks washed out or flat, this is the first thing to move."
+                       "\n\nAt detail strength 0 this does not move the edited picture.");
+        }
+
+        if (canEnable)
+        {
+            const auto readout = DlssNr::GameExposureMenuReadout();
+            const ImVec4 live(0.4f, 0.85f, 0.9f, 1.0f);
+
+            if (readout.haveNumbers)
+            {
+                ImGui::TextColored(live, "Exposure %.3f \xC2\xB7 pre %.2f \xC2\xB7 scale %.2f", readout.e,
+                                   readout.p, readout.s);
+                if (effective)
+                    ImGui::TextColored(live, "game white %.1f \xC2\xB7 in use %.1f", readout.gameW,
+                                       readout.slider * readout.gameW);
+                else
+                    ImGui::TextColored(live, "game white %.1f \xC2\xB7 not in use", readout.gameW);
             }
             else
             {
-                ImGui::TextDisabled("Reading the exposure...");
+                ImGui::TextColored(live, "Exposure \xE2\x80\x94 \xC2\xB7 pre %.2f \xC2\xB7 scale %.2f",
+                                   readout.p, readout.s);
+                if (effective)
+                    ImGui::TextColored(live, "game white \xE2\x80\x94 \xC2\xB7 in use \xE2\x80\x94");
+                else
+                    ImGui::TextColored(live, "game white \xE2\x80\x94 \xC2\xB7 not in use");
             }
+
+            HelpMarker("Shown for the menu. The pass samples the texture on the GPU; this number can lag"
+                       " a frame or two.");
         }
-
-
-
-
-
-        float wpScale = config->DlssNrWhitePointScale.value_or_default();
-        if (ImGui::SliderFloat(fromExposure ? "Paper white (x exposure)" : "Paper white", &wpScale, 0.25f,
-                               240.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
-            config->DlssNrWhitePointScale = wpScale;
-
-        HelpMarker("What the frame is divided by before the model sees it. There is no other white"
-                       "\npoint; this is the whole of it."
-                       "\n\nThe model was trained on finished frames where white sits at 1. The"
-                       "\nupscaler's output is linear and open-ended, so something has to say where"
-                       "\nwhite is -- and where the game's DLSS buffer is linear HDR, that number is"
-                       "\nrarely anywhere near 1. Measured in Monster Hunter Wilds it takes 16 or more"
-                       "\nbefore the model's detail reaches the frame at all, and the value that suits"
-                       "\na shaded camp is still too small for the same game out in daylight."
-                       "\n\nToo low and almost every pixel trips the soft knee: the model is shown a"
-                       "\nflat near-white picture, its answer is scaled away, and only its hue"
-                       "\nsurvives -- which reads as a colour cast rather than as lost detail. Too"
-                       "\nhigh and it is shown an underexposed one, its answer degrades, and this same"
-                       "\nnumber multiplies that error on the way out."
-                       "\n\nRaise it until the picture stops improving. Past that point it does not"
-                       "\nplateau, it gets worse in the other direction."
-                       "\n\nThis was once a multiplier on a measured white point. The measurement is"
-                       "\ngone: it read scene brightness rather than where white belongs, handed the"
-                       "\nmodel a picture three times too dark, and left the highlight path nothing to"
-                       "\ngive back."
-                       "\n\nAt strength zero the frame is still bit-identical whatever this says.");
 
         float maxRatio = config->DlssNrMaxRatio.value_or_default();
         if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))

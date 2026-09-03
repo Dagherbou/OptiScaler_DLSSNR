@@ -60,13 +60,14 @@ DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InP
         CreateBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),           // gTarget
         CreateBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),           // gKeep
         CreateBinding(7, VK_DESCRIPTOR_TYPE_SAMPLER),                 // gLinear
+        CreateBinding(8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),  // gExposure
     };
 
     CreateLayouts(bindings);
 
     std::vector<VkDescriptorPoolSize> poolSizes = {
         { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kSlots },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * kSlots },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5 * kSlots },
         { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * kSlots },
         { VK_DESCRIPTOR_TYPE_SAMPLER, kSlots },
     };
@@ -116,8 +117,8 @@ DlssNr_Vk::~DlssNr_Vk()
 
 // One pixel, R16G16B16A16_SFLOAT so it is legal for both a sampled read and a storage write, moved
 // once into GENERAL and left there. Its content is never read: it exists because Vulkan rejects a
-// descriptor set with an unwritten binding, and the shader declares all seven resources at file scope
-// whichever mode is running.
+// descriptor set with an unwritten binding, and the shader declares all eight resources at file scope
+// whichever mode is running. The fifth read (binding 8) is always this placeholder.
 bool DlssNr_Vk::CreateDummy(VkCommandBuffer cmdList)
 {
     if (_dummyReady)
@@ -211,6 +212,7 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
     VkDescriptorImageInfo targetInfo = writeInfo(target);
     VkDescriptorImageInfo keepInfo = writeInfo(keep);
     VkDescriptorImageInfo samplerInfo { _textureSampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED };
+    VkDescriptorImageInfo exposureInfo = readInfo(VK_NULL_HANDLE);
 
     const VkWriteDescriptorSet writes[] = {
         { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr,
@@ -229,6 +231,8 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
           nullptr, nullptr },
         { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 7, 0, 1, VK_DESCRIPTOR_TYPE_SAMPLER, &samplerInfo,
           nullptr, nullptr },
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 8, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+          &exposureInfo, nullptr, nullptr },
     };
 
     vkUpdateDescriptorSets(_device, (uint32_t) (sizeof(writes) / sizeof(writes[0])), writes, 0, nullptr);

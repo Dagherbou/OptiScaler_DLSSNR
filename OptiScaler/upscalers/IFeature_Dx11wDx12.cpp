@@ -114,7 +114,14 @@ bool IFeature_Dx11wDx12::ProcessDx11Textures(const NVSDK_NGX_Parameter* InParame
     auto mask = Dx11WithDx12::ResourceMask::Color | Dx11WithDx12::ResourceMask::Mv | Dx11WithDx12::ResourceMask::Depth |
                 Dx11WithDx12::ResourceMask::Output;
 
-    if (!AutoExposure())
+    ID3D11Resource* peekedExposure = nullptr;
+    if (InParameters != nullptr)
+    {
+        if (InParameters->Get(NVSDK_NGX_Parameter_ExposureTexture, &peekedExposure) != NVSDK_NGX_Result_Success)
+            InParameters->Get(NVSDK_NGX_Parameter_ExposureTexture, (void**) &peekedExposure);
+    }
+
+    if (peekedExposure != nullptr || !AutoExposure())
         mask |= Dx11WithDx12::ResourceMask::Exposure;
     else
         LOG_DEBUG("AutoExposure enabled!");
@@ -134,7 +141,7 @@ bool IFeature_Dx11wDx12::ProcessDx11Textures(const NVSDK_NGX_Parameter* InParame
 
     if (!prepareResult.Success)
     {
-        if (prepareResult.MissingExposure)
+        if (prepareResult.MissingExposure && !AutoExposure())
         {
             LOG_WARN("AutoExposure disabled but ExposureTexture does not exist, enabling auto exposure and changing "
                      "backend");
@@ -403,6 +410,11 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
 
         LOG_DEBUG("Dispatch!!");
         dx12EvalResult = dx12Feature->Evaluate(cmdList, InParameters);
+
+        const bool nrExposureThisFrame =
+            dx11Exp.Dx12Resource != nullptr && dx11Exp.LastPreparedFrame == cache.frameId;
+        InParameters->Set(NVSDK_NGX_Parameter_ExposureTexture,
+                          nrExposureThisFrame ? (void*) dx11Exp.Dx12Resource : nullptr);
 
         // DLSS 5 Neural Rendering rides the bridge: at this moment the block carries the D3D12 copies
         // of every input, the list is still recording, and the model's edit lands on the D3D12 output

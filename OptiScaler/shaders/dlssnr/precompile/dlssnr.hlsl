@@ -25,6 +25,9 @@ cbuffer Params : register(b0)
     uint  gCompareSwap;  // put the edited frame on the other side
     uint  gTransfer;     // 0 classic, 1 matched residual -- how a below-size model comes back
     float gDebugScale;   // what the debug views are scaled by, held still while the meter moves
+    uint  gUseGameExposure;
+    float gPreExposure;
+    float gExposureScale;
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -217,7 +220,11 @@ Texture2D<float4>   gOriginal : register(t2);  // resolve: the untouched frame.
 #ifdef VK_MODE
 [[vk::binding(4, 0)]]
 #endif
-Texture2D<float4>   gMotion   : register(t3);  // t3: meter exposure (Mode 3, tile 0) or resolve full-res encode (colorCopy / g_vk.proxy). Name is the slot's history; nothing here reads motion vectors.
+Texture2D<float4>   gMotion   : register(t3);  // t3: resolve full-res encode (colorCopy / g_vk.proxy). Name is the slot's history; nothing here reads motion vectors.
+#ifdef VK_MODE
+[[vk::binding(8, 0)]]
+#endif
+Texture2D<float4>   gExposure : register(t4);  // t4: the game's 1x1 exposure. Mode 3 tile 0, and PaperWhite() when the flag is set.
 #ifdef VK_MODE
 [[vk::binding(5, 0)]]
 #endif
@@ -310,6 +317,22 @@ float3 CubeScaleResidual(float3 P, float3 T)
     return P + saturate(alpha) * d;
 }
 
+float PaperWhite()
+{
+    float slider = max(gWhitePoint, 1e-4);
+    if (gUseGameExposure == 0)
+        return slider;
+
+    float e = gExposure.Load(int3(0, 0, 0)).r;
+    if (!(e > 1e-6 && e < 1e6))
+        e = 1.0;
+
+    float s = max(gExposureScale, 1e-4);
+    float p = max(gPreExposure, 1e-4);
+    float gameW = p / max(e * s, 1e-4);   // starting polarity; see T0
+    return max(slider * gameW, 1e-4);
+}
+
 [numthreads(8, 8, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID)
 {
@@ -336,11 +359,10 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // which is how a device is lost. Reading it as an SRV in a pass that is already running costs
         // nothing and touches no state -- and it rides back on the readback that already exists.
         //
-        // t3 is free here; the meter puts the game's exposure texture in it, the resolve the
-        // full-resolution encode.
+        // t4 carries the game's exposure; the resolve still reads the full-resolution encode from t3.
         if (id.x == 0 && id.y == 0)
         {
-            gTarget[id.xy] = float4(gMotion.Load(int3(0, 0, 0)).r, 0.0, 0.0, 1.0);
+            gTarget[id.xy] = float4(gExposure.Load(int3(0, 0, 0)).r, 0.0, 0.0, 1.0);
             return;
         }
 
@@ -463,7 +485,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // frames -- unstable input is unstable output, and this is where a bright scene would produce
         // it. The resolve reads this texture back rather than recomputing it, so the two cannot
         // disagree on what the frame's own proxy is.
-        float3 display = SoftKnee(frame / max(gWhitePoint, 1e-4));
+        float3 display = SoftKnee(frame / PaperWhite());
 
         gTarget[id.xy] = float4(LinearToSrgb(display), source.a);
         return;
@@ -523,7 +545,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // the shadow branch never fires, every pixel takes the highlight branch, and the clamp flattens
     // the result to a near-constant scale. Colour still moves, because that comes from the model's
     // own hue, which is what makes the failure so confusing to look at.
-    const float normScale = gPassthrough != 0 ? 1.0 : max(gWhitePoint, 1e-4);
+    const float normScale = gPassthrough != 0 ? 1.0 : PaperWhite();
     float3 original = originalSample.rgb / normScale;
 
     float originalLuma = dot(original, kLuma);
@@ -727,7 +749,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
     // A hairline so the two sides are never mistaken for one picture.
     if (onDivider)
-        result = float3(gWhitePoint, gWhitePoint, gWhitePoint);
+        result = float3(PaperWhite(), PaperWhite(), PaperWhite());
 
     gTarget[id.xy] = float4(max(result, float3(0.0, 0.0, 0.0)), originalSample.a);
 }

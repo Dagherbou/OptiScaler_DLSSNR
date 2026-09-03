@@ -9,10 +9,11 @@
 //
 // Three things are worth knowing before reading the implementation.
 //
-// Every binding is written every dispatch. The shader declares all seven resources at file scope and
+// Every binding is written every dispatch. The shader declares all eight resources at file scope and
 // branches on gMode, so all of them are statically reachable from the entry point and Vulkan requires
 // a valid descriptor for each one whether a given mode reads it or not. Slots a mode has no use for
-// get a 1x1 dummy rather than a null handle.
+// get a 1x1 dummy rather than a null handle. Binding 8 (gExposure) is always that dummy: native
+// Vulkan does not sample the game's exposure image.
 //
 // Constants are slotted rather than overwritten. A single mapped uniform buffer would be wrong here:
 // encode and resolve run in the same frame with different constants, and the second write would land
@@ -55,8 +56,9 @@ class DlssNr_Vk : public Shader_Vk
 
     // One dispatch of the composition shader.
     //
-    // Any of the four read views may be VK_NULL_HANDLE, in which case the dummy is bound; the two
-    // written views may not, because a mode that writes nothing has no reason to run. Images are
+    // Any of the five reads may be VK_NULL_HANDLE, in which case the dummy is bound; the two
+    // written views may not, because a mode that writes nothing has no reason to run. The fifth
+    // read is binding 8 and is always the dummy inside WriteDescriptors. Images are
     // expected in SHADER_READ_ONLY_OPTIMAL for reads and GENERAL for writes -- this records the
     // dispatch and the barrier that follows it, not the transitions that got them there.
     bool Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InConstants, uint32_t InThreadsX,

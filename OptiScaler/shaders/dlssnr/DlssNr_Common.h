@@ -10,6 +10,7 @@
 // do. The model itself is separate again: creating and evaluating an NGX feature is not a dispatch,
 // so it does not belong in a shader class.
 
+#include <cstddef>
 #include <cstdint>
 
 // Which of the passes a dispatch is. One shader, because they read and write the same set of
@@ -82,6 +83,10 @@ struct DlssNrFrameInfo
     // The scale the game multiplied its buffer by for float precision, which DLSS is told so it can
     // undo it. Usually 1. Divided out before the exposure is applied, exactly as FSR's PrepareRgb does.
     float PreExposure = 1.0f;
+
+    // NGX DLSS.Exposure.Scale. Missing or 0 is already 1 at the reader. The paper-white slider
+    // lives in Config, not on this struct.
+    float ExposureScale = 1.0f;
 };
 
 struct alignas(256) DlssNrConstants
@@ -150,7 +155,20 @@ struct alignas(256) DlssNrConstants
     // two captures at different exposures then differ by the exposure, whatever the edit did. This
     // is the user's own multiplier, which holds still while the meter works.
     float DebugScale;
+
+    // 1 only when Effective and this frame's exposure resource is usable. The shader's PaperWhite
+    // then Loads t4; otherwise gWhitePoint is already the absolute W (slider, or the hole product).
+    uint32_t UseGameExposure;
+    float PreExposure;
+    float ExposureScale;
 };
+
+static_assert(offsetof(DlssNrConstants, Transfer) == 68);
+static_assert(offsetof(DlssNrConstants, DebugScale) == 72);
+static_assert(offsetof(DlssNrConstants, UseGameExposure) == 76);
+static_assert(offsetof(DlssNrConstants, PreExposure) == 80);
+static_assert(offsetof(DlssNrConstants, ExposureScale) == 84);
+static_assert(sizeof(DlssNrConstants) == 256);
 
 class DlssNr_Common
 {

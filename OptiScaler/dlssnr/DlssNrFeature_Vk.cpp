@@ -597,8 +597,8 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     // and encoding an already tone-mapped frame a second time looks washed out and banded.
     const bool linearHdr = gameSaysHdr && FormatCanHoldLinearHdr(colour->Resource.ImageViewInfo.Format);
 
-    // The slider only. The exposure source rides on the D3D12 meter's readback, which has no Vulkan
-    // counterpart yet, so this path is deliberately manual rather than quietly reading nothing.
+    // The slider only. Native Vulkan does not sample the game's ExposureTexture (layout is
+    // unknown; see the peek above). UseGameExposure stays 0 and binding 8 is the dummy.
     const float whitePoint = cfg.DlssNrWhitePointScale.value_or_default();
 
     static bool saidEncoding = false;
@@ -616,6 +616,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     encode.Width = width;
     encode.Height = height;
     encode.WhitePoint = whitePoint;
+    encode.UseGameExposure = 0;
     encode.Passthrough = linearHdr ? 0u : 1u;
     encode.TransferStrength = cfg.DlssNrTransferStrength.value_or_default();
     encode.ColourStrength = cfg.DlssNrColourStrength.value_or_default();

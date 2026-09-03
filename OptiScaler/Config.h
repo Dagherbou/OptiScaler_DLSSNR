@@ -285,21 +285,8 @@ class Config
     // residual. Only has an effect when Model resolution is under 100%.
     CustomOptional<uint32_t> DlssNrTransfer { 1 };
 
-    // Measure the white point from the frame instead of taking it from the slider. On a frame the
-    // game already tone mapped there is nothing to measure and this has no effect.
-    //
-    // Off by default, because it is not finished. The pass writes its result back into the same buffer
-    // the meter reads, so with the pass running the meter is partly measuring its own output and the
-    // two chase each other: Enshrouded, one session, 1545 samples spanning 0.01 to 97.9 with 57 jumps
-    // beyond 1.5x in a single frame. Measured in the same spot seconds apart, 41.31 with the pass off
-    // against 0.46 with it on. That is visible as the picture pumping and occasionally flickering.
-    //
-    // The slider is the supported control until the loop is broken. This stays as an opt-in so the
-    // behaviour can still be looked at.
-
-
-    // Take the white point from the game's own exposure texture instead of measuring or guessing.
-    // Off by default until it has been seen to work in more than one game.
+    // Preference to take paper white from the game's exposure texture. Default true. This is not a
+    // promise that this frame used the texture.
     CustomOptional<bool> DlssNrWhitePointFromExposure { true };
 
     // 0 off, 1 the picture the model was shown, 2 its raw answer, 3 what it changed, amplified.
@@ -368,8 +355,8 @@ class Config
 
 
 
-    // Multiplies the (auto or manual) white point before the encode: what the model considers "white".
-    // Higher means highlights sit lower on the curve and the model treats them as less extreme.
+    // The paper-white slider. Absolute W when the game's exposure is not driving the picture, or a
+    // multiplier on the game's W when it is.
     CustomOptional<float> DlssNrWhitePointScale { 1.0f };
 
 
