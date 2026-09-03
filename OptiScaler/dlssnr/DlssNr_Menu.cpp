@@ -620,8 +620,13 @@ void RenderMenu(Config* config, float menuResScale)
             // true exposure held still. Their ratio moved 14x. That is an accumulator, not an
             // eye adaptation.
 
+                // Only where it means something. The lamp reads the scan, so offering it beside a
+                // white point that comes from the game's own exposure is offering a control that
+                // cannot light up.
                 bool meter = config->DlssNrScanMeter.value_or_default();
-                if (ImGui::Checkbox("Show the light meter on screen", &meter))
+
+                if (config->DlssNrWhitePointSource.value_or_default() == 2 &&
+                    ImGui::Checkbox("Show the light meter on screen", &meter))
                     config->DlssNrScanMeter = meter;
 
                 HelpMarker("A lamp in the corner: red for dark, green for full light, and the"

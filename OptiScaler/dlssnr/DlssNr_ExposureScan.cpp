@@ -46,6 +46,7 @@ struct Tracked
     float lowest = 0.0f;
     float highest = 0.0f;
     unsigned int reads = 0;
+    unsigned int inRange = 0;   // reads that could plausibly be an exposure
     bool moves = false;
 };
 
@@ -396,7 +397,23 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
                 if (!std::isfinite(value))
                     continue;
 
-                if (t.reads == 0)
+                // Only values that could BE an exposure are allowed into the range, and this is
+                // the whole of "8 watching, none moving" never changing.
+                //
+                // A buffer is usually zero the first time it is read -- created but not yet
+                // written, or read a frame before the game fills it. That zero became `lowest`,
+                // and since movement is a ratio guarded by `lowest > kFloor`, one early zero
+                // disqualified that candidate for the rest of the session however the light
+                // changed. The range has to be built from plausible samples, not from whichever
+                // sample happened to be first.
+                if (value <= kFloor || value >= kCeiling)
+                {
+                    t.latest = value;
+                    t.reads++;
+                    continue;
+                }
+
+                if (t.inRange == 0)
                 {
                     t.lowest = value;
                     t.highest = value;
@@ -407,6 +424,8 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
                     t.highest = std::max(t.highest, value);
                 }
 
+                t.inRange++;
+
                 // "Moves" is the whole point of the readout, and the first version of this test
                 // was wrong in a way that mattered: a spread of ten percent of the highest value
                 // seen is a threshold of zero when the highest value seen is zero, so three buffers
@@ -416,8 +435,7 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
                 // An exposure is positive, is not a thousandth of a thousandth, and does not sit at
                 // a million. Nioh 3's real one runs 0.0019 to 0.616 -- a factor of three hundred --
                 // so a quarter is a low bar that noise cannot reach.
-                if (t.reads > 0 && t.lowest > kFloor && t.highest < kCeiling &&
-                    t.highest > t.lowest * 1.25f)
+                if (t.inRange > 1 && t.highest > t.lowest * 1.25f)
                     t.moves = true;
 
                 t.latest = value;

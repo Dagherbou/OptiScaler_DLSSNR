@@ -184,6 +184,21 @@ struct NrState
     NVSDK_NGX_Parameter* capabilityParams = nullptr;
     void* feature = nullptr;
 
+    // A feature per extra pass, each with its own temporal history.
+    //
+    // One feature run three times in a frame is told three frames passed with nothing moving between
+    // them, so its history fights every pass after the first -- which is what "loses detail on later
+    // passes" was. Separate features each see one frame per frame, which is the contract they were
+    // built for.
+    //
+    // It is also the only reading that fits the one clue we have about how this is done elsewhere:
+    // that implementation's memory grows with the pass count, and reusing a single feature cannot do
+    // that. A feature apiece can, because each carries its own history.
+    //
+    // Indexed by pass, so [0] is unused and the first extra pass is [1]. Wasting one pointer keeps
+    // every index here equal to the pass number it belongs to.
+    void* passFeature[4] = {};
+
     // The model cannot read and write one resource, so the frame is staged through these.
     ID3D12Resource* colorCopy = nullptr;
     ID3D12Resource* output = nullptr;
@@ -681,6 +696,10 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
     ForgetCalibration();
 
     ParkNrFeature(g_nr.feature);
+
+    // The extras go with it: they were built for this raster and this tuning too.
+    for (void*& f : g_nr.passFeature)
+        ParkNrFeature(f);
 
     for (ID3D12Resource** r :
          { &g_nr.output, &g_nr.colorCopy, &g_nr.hdrCopy, &g_nr.colorSmall })
@@ -1606,6 +1625,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         // deep in work that references all of it.
         ParkNrFeature(g_nr.feature);
 
+        for (void*& f : g_nr.passFeature)
+            ParkNrFeature(f);
+
         // Only a resolution change invalidates the scratch textures. Tuning does not, and throwing
         // them away for it would mean a reallocation every time a slider moves.
         if (resolutionChanged)
@@ -2010,6 +2032,50 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (g_ngxTime != nullptr)
         g_ngxTime->Start(cmdList);
 
+    // A feature for each extra pass, built when first needed and released when it stops being.
+    //
+    // Built here rather than beside the first because the pass count is a live setting: somebody who
+    // never raises it never pays the memory, and somebody who lowers it gets it back.
+    {
+        const unsigned int want = std::clamp(cfg.DlssNrPasses.value_or_default(), 1u, 3u);
+
+        for (unsigned int i = 1; i < 4; ++i)
+        {
+            if (i < want && g_nr.passFeature[i] == nullptr && g_nr.feature != nullptr)
+            {
+                auto snip = Util::FindFilePath(g_dllDir, "nvngx_dlssnr.dll");
+
+                if (!snip.has_value())
+                    snip = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssnr.dll");
+
+                if (snip.has_value())
+                {
+                    g_nr.passFeature[i] = g_nr.create(
+                        snip->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
+                        device, cmdList, g_nr.capabilityParams, workWidth, workHeight,
+                        (int) cfg.DlssNrPreset.value_or_default(), cfg.DlssNrIntensity.value_or_default(),
+                        (int) cfg.DlssNrStyle.value_or_default(),
+                        cfg.DlssNrLocalStructure.value_or_default(),
+                        // Tone belongs to the frame, not the pass, so a later pass's feature is built
+                        // with none of it -- the same rule the evaluate below follows.
+                        0.0f, cfg.DlssNrSkinStructure.value_or_default(),
+                        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, 1);
+
+                    LOG_INFO("DLSS-NR: feature for pass {} {}", i + 1,
+                             g_nr.passFeature[i] != nullptr ? "built" : "FAILED to build");
+                }
+            }
+            else if (i >= want && g_nr.passFeature[i] != nullptr)
+            {
+                // Parked, not released. The GPU can be several frames behind and this work rides the
+                // game's own queue, so freeing a feature under in-flight work is exactly the device
+                // hang the retirement list exists to prevent.
+                LOG_INFO("DLSS-NR: releasing the feature for pass {}", i + 1);
+                ParkNrFeature(g_nr.passFeature[i]);
+            }
+        }
+    }
+
     // Run the model more than once over the same frame, each pass fed the last one's answer.
     //
     // Only legal because both surfaces are ours. The copy is output -> modelInput, and modelInput is
@@ -2071,8 +2137,14 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         // stacked warmth and contrast, which is not what turning the count up is asking for.
         // Structure is the thing worth repeating; tone is not.
         const float passTone = pass == 0 ? cfg.DlssNrLocalTone.value_or_default() : 0.0f;
+        // Each pass on its own feature where one exists, so no history is shared. If a later one
+        // failed to build, that pass falls back to the first rather than not running -- a repeated
+        // pass on a shared history is worse than a separate one, but it is not nothing.
+        void* passUses = (pass > 0 && g_nr.passFeature[pass] != nullptr) ? g_nr.passFeature[pass]
+                                                                        : g_nr.feature;
+
         result = g_nr.evaluate(
-            cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
+            cmdList, passUses, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
             workWidth, workHeight, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0,
             (pass == 0 && g_nr.reset) ? 1 : 0, cfg.DlssNrIntensity.value_or_default(),
             (int) cfg.DlssNrStyle.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
@@ -2705,6 +2777,14 @@ void Shutdown()
         g_nr.release(g_nr.feature);
 
     g_nr.feature = nullptr;
+
+    for (void*& f : g_nr.passFeature)
+    {
+        if (f != nullptr && g_nr.release != nullptr)
+            g_nr.release(f);
+
+        f = nullptr;
+    }
 
     if (g_nr.output != nullptr)
     {
