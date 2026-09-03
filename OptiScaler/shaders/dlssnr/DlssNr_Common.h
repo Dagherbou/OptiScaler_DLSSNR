@@ -174,6 +174,12 @@ struct alignas(256) DlssNrConstants
     // 0 = output the clean upscaler frame (the pass still runs, so Hold frame keeps a frozen frame
     // to A/B against), 1 = apply the model's edit. Trailing scalar, mirrored in the shader cbuffer.
     uint32_t ApplyModel;
+
+    // D3D12 source-1 zero-latency exposure. UseGameExposure = 1 makes the shader read the game's live
+    // exposure texture (bound at t4) instead of the CPU-resolved white point; ExposurePreMul is
+    // preExposure * trim, so the live white point is ExposurePreMul / exposure. Mirrored in the cbuffer.
+    uint32_t UseGameExposure;
+    float ExposurePreMul;
 };
 
 class DlssNr_Common

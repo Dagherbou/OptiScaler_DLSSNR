@@ -27,6 +27,8 @@ cbuffer Params : register(b0)
     float gDebugScale;   // what the debug views are scaled by, held still while the meter moves
     uint  gReversibleMode; // 0 knee, 1 Neutwo+composed, 2 Neutwo+replace, 3 hybrid+composed, 4 hybrid+replace
     uint  gApplyModel;     // 0 output the clean frame (pass still runs), 1 apply the model's edit
+    uint  gUseGameExposure;// D3D12 source-1 only: 1 = read the game's live exposure in-shader (t4)
+    float gExposurePreMul; // preExposure * trim, so the live white point is gExposurePreMul / exposure
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -220,6 +222,13 @@ Texture2D<float4>   gOriginal : register(t2);  // resolve: the untouched frame.
 [[vk::binding(4, 0)]]
 #endif
 Texture2D<float4>   gMotion   : register(t3);  // resolve, accumulating: the game's motion vectors.
+
+// The game's 1x1 exposure texture, bound at t4 (DispatchPass's "prev edit" SRV slot). D3D12 only:
+// Vulkan has no eighth descriptor for it and keeps computing the white point on the CPU, so the whole
+// live path is compiled out under VK_MODE and gUseGameExposure is never set on that backend.
+#ifndef VK_MODE
+Texture2D<float4>   gExposure : register(t4);
+#endif
 #ifdef VK_MODE
 [[vk::binding(5, 0)]]
 #endif
@@ -232,6 +241,27 @@ RWTexture2D<float4> gKeep     : register(u1);  // encode: the untouched copy. un
 [[vk::binding(7, 0)]]
 #endif
 SamplerState        gLinear   : register(s0);  // so the edit can be read at a different size
+
+// The picture white point. Sources 0 (paper white) and 2 (scan) resolve it on the CPU and pass it in
+// gWhitePoint; source 1 (the game's own exposure) also passes a CPU value in gWhitePoint as a fallback,
+// but when the exposure texture is bound (D3D12) it is recomputed HERE from the live exposure --
+// gExposurePreMul (= preExposure * trim) / exposure -- which removes the 3-4 frame CPU-readback lag the
+// meter path has. The clamp matches the CPU path's [0.01, 4096]. Vulkan compiles the live path out and
+// always returns the CPU value, so its behaviour is unchanged.
+float WhitePoint()
+{
+#ifndef VK_MODE
+    if (gUseGameExposure != 0)
+    {
+        float e = gExposure.Load(int3(0, 0, 0)).r;
+        if (e > 1e-6 && e < 1e6)
+            return clamp(gExposurePreMul / e, 0.01, 4096.0);
+        // A missing or absurd sample falls through to the CPU value the meter path still maintains.
+    }
+#endif
+    return max(gWhitePoint, 1e-4);
+}
+
 
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 
@@ -647,7 +677,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // that shows the model highlight gradation the knee throws away. Reached only when the frame
         // is not passthrough (handled and returned above), so NeutwoEncode never sees a tone-mapped
         // frame. Both are undone by the resolve: the knee approximately, Neutwo exactly.
-        float3 normalized = frame / max(gWhitePoint, 1e-4);
+        float3 normalized = frame / WhitePoint();
         float3 display;
         if (gReversibleMode == 0)
             display = SoftKnee(normalized);        // soft knee
@@ -723,7 +753,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // the shadow branch never fires, every pixel takes the highlight branch, and the clamp flattens
     // the result to a near-constant scale. Colour still moves, because that comes from the model's
     // own hue, which is what makes the failure so confusing to look at.
-    const float normScale = gPassthrough != 0 ? 1.0 : max(gWhitePoint, 1e-4);
+    const float normScale = gPassthrough != 0 ? 1.0 : WhitePoint();
     float3 original = originalSample.rgb / normScale;
 
     float originalLuma = dot(original, kLuma);
@@ -972,7 +1002,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
     // A hairline so the two sides are never mistaken for one picture.
     if (onDivider)
-        result = float3(gWhitePoint, gWhitePoint, gWhitePoint);
+        result = float3(WhitePoint(), WhitePoint(), WhitePoint());
 
     gTarget[id.xy] = float4(max(result, float3(0.0, 0.0, 0.0)), originalSample.a);
 }
