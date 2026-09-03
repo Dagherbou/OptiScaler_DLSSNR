@@ -74,6 +74,12 @@ void NoteResource(const D3D12_RESOURCE_DESC* desc, ID3D12Resource* resource);
 // buffer" from "the hook is not running", which are the same empty list and very different problems.
 unsigned int Examined();
 
+// The best candidate's live value, or 0 if nothing has been found. Widest travel wins, same rule as
+// the indicator. Written so the log can carry the scan's number and the game's own exposure on one
+// line -- which is the only way to tell, offline and after the fact, whether the scan found the
+// right buffer or merely a moving one.
+float BestValue(int* outIndex = nullptr, float* outLowest = nullptr, float* outHighest = nullptr);
+
 // Called once per frame from the Neural Rendering pass, on its command list. Copies one value out of
 // each candidate and reads back the copies taken a few frames ago.
 void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList);

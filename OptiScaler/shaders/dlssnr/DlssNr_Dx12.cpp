@@ -2438,6 +2438,35 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
             LOG_INFO("DLSS-NR game exposure {:.5f} (pre-exposure {:.3f}) -> white point would be {:.2f}",
                      g_nr.gameExposure, g_nr.gamePreExposure, g_nr.gamePreExposure / g_nr.gameExposure);
         }
+
+        // The scan's number, on the same cadence, so one log carries both.
+        //
+        // This is the whole validation. In a game that hands over an exposure texture there is a
+        // known-correct value; if the scan's candidate tracks it, the scan found the right buffer
+        // rather than merely a moving one, and can be trusted where a game hands over nothing.
+        // Comparing two numbers after the fact needs both written down, and until now the scan's
+        // value existed only in a menu nobody can read while playing.
+        {
+            int which = 0;
+            float low = 0.0f, high = 0.0f;
+            const float scanned = DlssNr::ExposureScan::BestValue(&which, &low, &high);
+
+            static float loggedScan = -1.0f;
+
+            if (scanned > 0.0f && std::abs(loggedScan - scanned) > std::max(0.02f * scanned, 1e-6f))
+            {
+                loggedScan = scanned;
+
+                if (g_nr.gameExposure > 1e-6f)
+                    LOG_INFO("DLSS-NR exposure scan: candidate {} = {:.5f} ({:.5f}..{:.5f})  |  the "
+                             "game's own exposure is {:.5f}  |  ratio {:.4f}",
+                             which, scanned, low, high, g_nr.gameExposure, scanned / g_nr.gameExposure);
+                else
+                    LOG_INFO("DLSS-NR exposure scan: candidate {} = {:.5f} ({:.5f}..{:.5f})  |  this "
+                             "game supplies no exposure to compare against",
+                             which, scanned, low, high);
+            }
+        }
     }
 
     // The upscaler's inputs are at render resolution while colour and output are at display

@@ -580,6 +580,44 @@ const char* Headline()
     return line.c_str();
 }
 
+float BestValue(int* outIndex, float* outLowest, float* outHighest)
+{
+    std::lock_guard<std::mutex> lock(g_scanMutex);
+
+    int best = -1;
+    float bestRatio = 0.0f;
+
+    for (size_t i = 0; i < g_scan.tracked.size(); ++i)
+    {
+        const Tracked& t = g_scan.tracked[i];
+
+        if (!t.moves || t.lowest <= kFloor)
+            continue;
+
+        const float ratio = t.highest / t.lowest;
+
+        if (ratio > bestRatio)
+        {
+            bestRatio = ratio;
+            best = (int) i;
+        }
+    }
+
+    if (best < 0)
+        return 0.0f;
+
+    if (outIndex != nullptr)
+        *outIndex = best + 1;
+
+    if (outLowest != nullptr)
+        *outLowest = g_scan.tracked[best].lowest;
+
+    if (outHighest != nullptr)
+        *outHighest = g_scan.tracked[best].highest;
+
+    return g_scan.tracked[best].latest;
+}
+
 std::vector<Candidate> Report()
 {
     std::lock_guard<std::mutex> lock(g_scanMutex);
