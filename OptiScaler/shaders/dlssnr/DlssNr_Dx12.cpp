@@ -1650,34 +1650,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (reduced && g_nr.colorSmall == nullptr)
         g_nr.colorSmall = CreateScratch(device, desc.Format, workWidth, workHeight);
 
-    // The meter's grid and the buffers it is read back through. Independent of the frame's size, so
-    // they are built once and survive every resolution change.
-    if (g_nr.calib == nullptr)
-    {
-        g_nr.calib = CreateScratch(device, DXGI_FORMAT_R32_FLOAT, kDlssNrMeterGrid, kDlssNrMeterGrid);
-
-        D3D12_HEAP_PROPERTIES cReadback {};
-        cReadback.Type = D3D12_HEAP_TYPE_READBACK;
-
-        D3D12_RESOURCE_DESC cBuffer {};
-        cBuffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        cBuffer.Width = kMeterBytes;
-        cBuffer.Height = 1;
-        cBuffer.DepthOrArraySize = 1;
-        cBuffer.MipLevels = 1;
-        cBuffer.Format = DXGI_FORMAT_UNKNOWN;
-        cBuffer.SampleDesc.Count = 1;
-        cBuffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-        for (auto& r : g_nr.calibReadback)
-        {
-            if (FAILED(device->CreateCommittedResource(&cReadback, D3D12_HEAP_FLAG_NONE, &cBuffer,
-                                                       D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                                       IID_PPV_ARGS(&r))))
-                r = nullptr;
-        }
-    }
-
     if (g_nr.meter == nullptr)
     {
         g_nr.meter = CreateScratch(device, DXGI_FORMAT_R32_FLOAT, kDlssNrMeterGrid, kDlssNrMeterGrid);
@@ -1940,31 +1912,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     // Measure the buffer's scale from the copy the encode just kept -- untouched, so there is no path
-    // from what this pass writes back into what this reads. Cheap and always on: the number is only a
-    // suggestion in the menu until someone takes it.
-    if (g_nr.calib != nullptr)
-    {
-        Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-        // The resolve ignores paper white entirely on an already tone-mapped frame, so a suggestion
-        // there would be a number the button cannot act on.
-        g_nr.calibPassthrough = !isHdrBuffer;
-
-        DlssNrConstants calibParams {};
-        calibParams.Mode = DlssNrMode_Calibrate;
-        calibParams.Width = kDlssNrMeterGrid;
-        calibParams.Height = kDlssNrMeterGrid;
-
-        DispatchPass(cmdList, calibParams, g_nr.hdrCopy, nullptr, nullptr, nullptr, nullptr, g_nr.calib,
-                     nullptr);
-
-        Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-        CopyCalibrationToReadback(cmdList);
-        ConsumeCalibrationReadback();
-    }
+    // (Calibration pass removed: it produced only a menu suggestion nothing consumed, at the cost
+    // of a 4096-thread dispatch, a readback and an nth_element every frame.)
 
     Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);

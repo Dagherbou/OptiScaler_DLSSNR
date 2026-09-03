@@ -74,10 +74,17 @@ struct VkState
     OwnedImage proxy;
     OwnedImage keep;
 
+    // The proxy at the model's working size, when that is below the frame. The model -- 98% of the
+    // cost -- then runs on this instead of the full proxy, which is the whole point of the working
+    // scale slider. Unused (and never created) at scale 1, so the default path is unchanged.
+    OwnedImage proxySmall;
+
     std::unique_ptr<DlssNr_Vk> pass;
 
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t workWidth = 0;
+    uint32_t workHeight = 0;
     bool reset = true;
     unsigned long long frames = 0;
 
@@ -577,6 +584,13 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     if (width == 0 || height == 0)
         return;
 
+    // The model's working size. The slider is a fraction of the frame; at 1 it is the frame, and the
+    // reduced path below never runs, so the default is byte-for-byte what it was.
+    const float workScale = std::clamp(cfg.DlssNrWorkingScale.value_or_default(), 0.25f, 1.0f);
+    const uint32_t workWidth = (uint32_t) (width * workScale + 0.5f);
+    const uint32_t workHeight = (uint32_t) (height * workScale + 0.5f);
+    const bool reduced = workWidth != width || workHeight != height;
+
     g_vk.instance = instance;
     g_vk.physicalDevice = physicalDevice;
 
@@ -677,8 +691,10 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         }
     }
 
-    // Resize. The model's feature is built for a size and has to be rebuilt when it changes.
-    if (g_vk.width != width || g_vk.height != height)
+    // Resize. The feature is built for a size and has to be rebuilt when the frame OR the working
+    // size changes -- moving the slider is a rebuild, which is why it is compared here.
+    if (g_vk.width != width || g_vk.height != height || g_vk.workWidth != workWidth ||
+        g_vk.workHeight != workHeight)
     {
         if (g_vk.feature != nullptr && g_vk.release != nullptr)
         {
@@ -697,9 +713,16 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         if (!meterReady)
             LOG_WARN("DLSS-NR Vulkan: no exposure meter; the white point stays on the slider");
 
-        if (!CreateImage(g_vk.output, width, height, working, true) ||
-            !CreateImage(g_vk.proxy, width, height, working, true) ||
-            !CreateImage(g_vk.keep, width, height, working, true))
+        DestroyImage(g_vk.proxySmall);
+
+        // output is the model's target, so it is the working size. proxy and keep are full: proxy is
+        // the source the downsample reads, keep is the untouched frame the resolve composites onto.
+        const bool ok = CreateImage(g_vk.output, workWidth, workHeight, working, true) &&
+                        CreateImage(g_vk.proxy, width, height, working, true) &&
+                        CreateImage(g_vk.keep, width, height, working, true) &&
+                        (!reduced || CreateImage(g_vk.proxySmall, workWidth, workHeight, working, true));
+
+        if (!ok)
         {
             Fail("the pass could not allocate its own surfaces");
             return;
@@ -707,13 +730,15 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
 
         g_vk.width = width;
         g_vk.height = height;
+        g_vk.workWidth = workWidth;
+        g_vk.workHeight = workHeight;
         g_vk.reset = true;
     }
 
     if (g_vk.feature == nullptr)
     {
         g_vk.feature = g_vk.create(
-            (void*) cmdBuffer, g_vk.capabilityParams, width, height, (int) cfg.DlssNrPreset.value_or_default(),
+            (void*) cmdBuffer, g_vk.capabilityParams, workWidth, workHeight, (int) cfg.DlssNrPreset.value_or_default(),
             cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
             cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
             cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, 1);
@@ -724,7 +749,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
             return;
         }
 
-        LOG_INFO("DLSS-NR Vulkan: feature up at {}x{}", width, height);
+        LOG_INFO("DLSS-NR Vulkan: feature up at {}x{} (frame {}x{})", workWidth, workHeight, width, height);
         g_vk.reset = true;
     }
 
@@ -831,6 +856,32 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         return;
     }
 
+    // The model's input: the full proxy, or a downsampled copy of it when the working scale is below
+    // the frame. Mirrors the D3D12 path -- the encode always writes a full proxy, and a separate
+    // downsample makes the small one the model actually reads.
+    OwnedImage* modelInput = &g_vk.proxy;
+
+    if (reduced && g_vk.proxySmall.Valid())
+    {
+        DlssNrConstants down = encode;
+        down.Mode = DlssNrMode_Downsample;
+        down.Width = workWidth;
+        down.Height = workHeight;
+
+        Transition(cmdBuffer, g_vk.proxy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        Transition(cmdBuffer, g_vk.proxySmall, VK_IMAGE_LAYOUT_GENERAL);
+
+        if (!g_vk.pass->Dispatch(cmdBuffer, down, workWidth, workHeight, g_vk.proxy.view, VK_NULL_HANDLE,
+                                 VK_NULL_HANDLE, VK_NULL_HANDLE, g_vk.proxySmall.view, VK_NULL_HANDLE,
+                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+        {
+            Fail("the downsample dispatch failed");
+            return;
+        }
+
+        modelInput = &g_vk.proxySmall;
+    }
+
     // -----------------------------------------------------------------------------------------
     // The meter: the game's 1x1 exposure -> texel (0,0) of the grid -> a buffer the CPU can read
     // -----------------------------------------------------------------------------------------
@@ -902,8 +953,8 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     Transition(cmdBuffer, g_vk.output, VK_IMAGE_LAYOUT_GENERAL);
 
     const int evaluated = g_vk.evaluate(
-        (void*) cmdBuffer, g_vk.feature, g_vk.capabilityParams, &g_vk.proxy.ngx, depth, motion, &g_vk.output.ngx, width,
-        height, guideWidth, guideHeight, depthInverted ? 1 : 0, g_vk.reset ? 1 : 0,
+        (void*) cmdBuffer, g_vk.feature, g_vk.capabilityParams, &modelInput->ngx, depth, motion, &g_vk.output.ngx,
+        workWidth, workHeight, guideWidth, guideHeight, depthInverted ? 1 : 0, g_vk.reset ? 1 : 0,
         cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
         cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
         cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, 1.0f, 1.0f);
@@ -929,7 +980,9 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     Transition(cmdBuffer, g_vk.output, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     Transition(cmdBuffer, g_vk.keep, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-    if (!g_vk.pass->Dispatch(cmdBuffer, resolve, width, height, g_vk.proxy.view, g_vk.output.view, g_vk.keep.view,
+    Transition(cmdBuffer, *modelInput, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    if (!g_vk.pass->Dispatch(cmdBuffer, resolve, width, height, modelInput->view, g_vk.output.view, g_vk.keep.view,
                              VK_NULL_HANDLE, colour->Resource.ImageViewInfo.ImageView, VK_NULL_HANDLE,
                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
     {
@@ -982,6 +1035,7 @@ void ShutdownVk()
 
     DestroyImage(g_vk.output);
     DestroyImage(g_vk.proxy);
+    DestroyImage(g_vk.proxySmall);
     DestroyImage(g_vk.keep);
     DestroyImage(g_vk.meter);
     DestroyMeterReadback();
