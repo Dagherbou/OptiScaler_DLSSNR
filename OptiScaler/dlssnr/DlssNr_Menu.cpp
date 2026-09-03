@@ -396,12 +396,12 @@ void RenderMenu(Config* config, float menuResScale)
                                        "Nothing found yet -- walk between light and shade.");
                 else if (!haveAnchor)
                     ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
-                                       "Found one. Set paper white below, then press Anchor here "
-                                       "under Inspect.");
+                                       "Found one. Set paper white below until the picture looks "
+                                       "right, then press Anchor here.");
                 else
                 {
                     const float trim =
-                        std::clamp(config->DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
+                        std::clamp(config->DlssNrScanTrim.value_or_default(), 0.25f, 4.0f);
                     const float ratio = config->DlssNrScanInverted.value_or_default()
                                             ? anchorNow / config->DlssNrScanAnchorValue.value_or_default()
                                             : config->DlssNrScanAnchorValue.value_or_default() / anchorNow;
@@ -450,20 +450,48 @@ void RenderMenu(Config* config, float menuResScale)
         // Switching modes is now non-destructive in both directions.
         // The trim belongs to both automatic sources, since both end in "the game's number times a
         // little". Only the manual source gets the absolute slider.
-        if (config->DlssNrWhitePointSource.value_or_default() != 0)
-        {
-            float trim = config->DlssNrWhitePointTrim.value_or_default();
+        // One slider per source, each remembering its own number.
+        //
+        // A trim on the game's exposure and a trim on a buffer the scan found are trims on different
+        // things, and a value found against one means nothing against the other. Sharing them meant
+        // changing source silently carried a number across, so a picture that had been tuned came
+        // back wrong for a reason nothing on screen explained.
+        //
+        // The scan before it is anchored is the exception, and it has to be: anchoring captures an
+        // absolute white point, so there must be an absolute slider to set. Showing a trim there
+        // asked people to "set paper white below" next to a control that was not paper white.
+        const int wpSource = (int) config->DlssNrWhitePointSource.value_or_default();
+        const bool scanAnchored = config->DlssNrScanAnchorValue.value_or_default() > 1e-9f &&
+                                  config->DlssNrScanAnchorWhitePoint.value_or_default() > 1e-6f;
+        const bool showTrim = wpSource == 1 || (wpSource == 2 && scanAnchored);
 
-            if (ImGui::SliderFloat("Trim (x the game's exposure)", &trim, 0.25f, 4.0f, "%.2fx",
-                                   ImGuiSliderFlags_Logarithmic))
-                config->DlssNrWhitePointTrim = std::clamp(trim, 0.25f, 4.0f);
+        if (showTrim)
+        {
+            const bool ofScan = wpSource == 2;
+
+            float trim = ofScan ? config->DlssNrScanTrim.value_or_default()
+                                : config->DlssNrWhitePointTrim.value_or_default();
+
+            if (ImGui::SliderFloat(ofScan ? "Trim (x the scan)" : "Trim (x the game's exposure)", &trim,
+                                   0.25f, 4.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
+            {
+                if (ofScan)
+                    config->DlssNrScanTrim = std::clamp(trim, 0.25f, 4.0f);
+                else
+                    config->DlssNrWhitePointTrim = std::clamp(trim, 0.25f, 4.0f);
+            }
 
             ImGui::SameLine();
 
             // Deliberately always present rather than greyed at 1. The point of it is that the safe
             // value is one click away without having to know what the safe value is.
             if (ImGui::SmallButton("Reset##wptrim"))
-                config->DlssNrWhitePointTrim = 1.0f;
+            {
+                if (ofScan)
+                    config->DlssNrScanTrim = 1.0f;
+                else
+                    config->DlssNrWhitePointTrim = 1.0f;
+            }
 
             HelpMarker("A multiplier on the exposure the game supplied. 1.00x takes its number"
                            "\nexactly, and that is the right answer here."
@@ -563,24 +591,22 @@ void RenderMenu(Config* config, float menuResScale)
                 const float anchorWhite = config->DlssNrScanAnchorWhitePoint.value_or_default();
                 const bool anchored = anchorValue > 1e-9f && anchorWhite > 1e-6f;
 
-                // Greyed while the game's own exposure is driving, and this greying is honest:
-                // ResolveWhitePoint guards the scan branch with `!WhitePointFromExposure`, so
-                // anchoring here really would achieve nothing until that option came off.
+                // Greyed only when the scan is NOT the chosen source -- that is, when the scan is
+                // running alongside something else and anchoring it would achieve nothing.
                 //
-                // Watching is not a conflict, so only the button is disabled and the readouts stay
-                // live -- in a game that supplies a real exposure, the scan running alongside it is
-                // the only validation there is, and it is what caught the GTA V candidate.
-                const bool exposureDriving = config->DlssNrWhitePointFromExposure.value_or_default() &&
-                                             DlssNr::GameExposureStatus().everOffered;
+                // This read the old WhitePointFromExposure flag, which consumption had already
+                // stopped using. It defaults to true, so in a game with an exposure texture the
+                // button was greyed and the panel announced "the scan is only watching" while the
+                // dropdown right above it said the scan was the source. The setting had been
+                // replaced and one of its readers had not been told.
 
-                ImGui::BeginDisabled(live <= 0.0f || exposureDriving);
+                ImGui::BeginDisabled(live <= 0.0f || config->DlssNrWhitePointSource.value_or_default() != 2);
 
                 if (ImGui::Button(anchored ? "Re-anchor here" : "Anchor here"))
                 {
                     config->DlssNrScanAnchorValue = live;
                     config->DlssNrScanAnchorWhitePoint =
                         std::max(0.01f, config->DlssNrWhitePointScale.value_or_default());
-                    config->DlssNrWhitePointFromExposure = false;
                 }
 
                 ImGui::EndDisabled();
@@ -607,9 +633,9 @@ void RenderMenu(Config* config, float menuResScale)
                                "\nelse, which is the only version of this that scales past the people"
                                "\nwilling to tune sliders.");
 
-                if (exposureDriving)
-                    ImGui::TextDisabled("(this game supplies a real exposure and it is in use -- "
-                                        "the scan is only watching)");
+                if (config->DlssNrWhitePointSource.value_or_default() != 2)
+                    ImGui::TextDisabled("(the scan is only watching -- the white point above comes "
+                                        "from somewhere else)");
 
                 if (anchored)
                 {
@@ -699,68 +725,17 @@ void RenderMenu(Config* config, float menuResScale)
 
         ImGui::SeparatorText("Inspect");
 
-        {
-            bool constDepth = config->DlssNrConstantDepth.value_or_default();
-            if (ImGui::Checkbox("Constant depth (the real question)", &constDepth))
-                config->DlssNrConstantDepth = constDepth;
-
-            HelpMarker("Hands the model a depth buffer that is one value everywhere instead of the"
-                           "\ngame's."
-                           "\n\nWhether the model READS depth is already answered -- it does, weakly."
-                           "\nThis asks the question that actually decides things: does it need depth"
-                           "\nthat is TRUE?"
-                           "\n\nMotion vectors can be manufactured from a finished frame. Depth cannot,"
-                           "\nbeyond a rough estimate from flow parallax, and that estimate does not"
-                           "\nexist while the camera is not translating. So if a flat plane holds up"
-                           "\nhere, Neural Rendering can run in games with no upscaler at all and the"
-                           "\ndepth problem disappears. If it does not, that estimate has to be good"
-                           "\nand the whole idea gets much harder."
-                           "\n\nMove around and look for artefacts at silhouettes and edges, which is"
-                           "\nwhere depth would earn its keep. Overrides the freeze below.");
-
-            bool freezeDepth = config->DlssNrFreezeDepth.value_or_default();
-            if (ImGui::Checkbox("Freeze depth (diagnostic)", &freezeDepth))
-                config->DlssNrFreezeDepth = freezeDepth;
-
-            HelpMarker("Keeps handing the model the depth from the frame this was switched on,"
-                           "\nwhile everything else stays live."
-                           "\n\nThis answers whether the model reads depth at all. A frozen guide is"
-                           "\nnot broken data -- it is ordinary depth that simply disagrees with the"
-                           "\npicture -- so anything reading it has to notice once the camera moves."
-                           "\n\nMove the camera. If the picture is unchanged, the model is not using"
-                           "\ndepth, and Neural Rendering could run in games that have no upscaler to"
-                           "\nborrow a depth buffer from.");
-
-            float mvAbuse = config->DlssNrMvScaleAbuse.value_or_default();
-            if (ImGui::SliderFloat("Exaggerate motion vectors (control)", &mvAbuse, 0.0f, 32.0f, "%.1fx"))
-                config->DlssNrMvScaleAbuse = std::clamp(mvAbuse, 0.0f, 32.0f);
-
-            ImGui::SameLine();
-
-            if (ImGui::SmallButton("Reset##mvabuse"))
-                config->DlssNrMvScaleAbuse = 1.0f;
-
-            HelpMarker("The strong control for the depth test above. Use this one, not the freeze"
-                           "\nbelow, to decide whether the mechanism works."
-                           "\n\nIt multiplies the motion vector scale the model is told, so at 8x the"
-                           "\nmodel believes every pixel moved eight times as far as it did. That is"
-                           "\nwrong in any scene, moving or still, and it has to show."
-                           "\n\nIf the picture is unchanged at 8x or 32x, the model is not reading the"
-                           "\nvectors at all, and no result from the depth test above means anything."
-                           "\nSet it back to 1 before judging anything else.");
-
-            bool freezeMotion = config->DlssNrFreezeMotion.value_or_default();
-            if (ImGui::Checkbox("Freeze motion vectors (weak control)", &freezeMotion))
-                config->DlssNrFreezeMotion = freezeMotion;
-
-            HelpMarker("Hands the model the vectors from the frame this was switched on."
-                           "\n\nWeaker than the slider above, and that is worth knowing: stale vectors"
-                           "\nare still plausible vectors, and a model that uses motion mainly to keep"
-                           "\nits detail steady between frames answers them with detail that swims"
-                           "\nrather than with a broken picture. Easy to miss in a few seconds."
-                           "\n\nSo do not conclude anything from this one being subtle. Use the"
-                           "\nexaggeration slider above as the control instead.");
-        }
+        // The depth and motion diagnostics used to sit here and are now ini-only:
+        // ConstantDepth, FreezeDepth, FreezeMotion and MvScaleAbuse.
+        //
+        // They answered their question and the answer is in the notes: motion vectors are read
+        // strongly -- 32x on the scale visibly degrades the picture -- and depth is read weakly.
+        // What is left is four controls that can only make a game look worse, in a panel people
+        // open to make it look better, next to the sliders they actually came for.
+        //
+        // Nothing is deleted. Anyone repeating the measurement sets the key and gets the same
+        // instrument, and the reason for keeping the code is that the depth reading was taken
+        // while the exaggeration slider was still at 32x and deserves a clean re-run.
 
 
         if (DlssNr::CaptureInProgress())

@@ -988,7 +988,7 @@ float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
             const float ratio = cfg.DlssNrScanInverted.value_or_default() ? now / anchorValue
                                                                          : anchorValue / now;
 
-            const float trim = std::clamp(cfg.DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
+            const float trim = std::clamp(cfg.DlssNrScanTrim.value_or_default(), 0.25f, 4.0f);
             return std::clamp(anchorWhite * ratio * trim, 0.01f, 4096.0f);
         }
     }

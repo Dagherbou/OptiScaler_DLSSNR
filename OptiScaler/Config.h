@@ -471,6 +471,13 @@ class Config
     // it is safe by construction rather than by being written down somewhere.
     CustomOptional<float> DlssNrWhitePointTrim { 1.0f };
 
+    // The scan's trim, kept apart from the exposure texture's.
+    //
+    // They are trims on different things and a value found against one is meaningless against the
+    // other. Sharing one slider meant switching source silently carried a number across, so a
+    // picture that had been tuned came back wrong for a reason nothing on screen explained.
+    CustomOptional<float> DlssNrScanTrim { 1.0f };
+
     // Which depth convention the model is told the guide uses.
     //
     //   0  what the game's own DLSS feature was created with, which is what it means for the upscaler

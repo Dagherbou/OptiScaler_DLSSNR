@@ -343,6 +343,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrScanExposure.set_from_config(readBool("DlssNr", "ScanExposure"));
             DlssNrWhitePointSource.set_from_config(readUInt("DlssNr", "WhitePointSource"));
             DlssNrScanMeter.set_from_config(readBool("DlssNr", "ScanMeter"));
+            DlssNrScanTrim.set_from_config(readFloat("DlssNr", "ScanTrim"));
             DlssNrScanAnchorValue.set_from_config(readFloat("DlssNr", "ScanAnchorValue"));
             DlssNrScanAnchorWhitePoint.set_from_config(readFloat("DlssNr", "ScanAnchorWhitePoint"));
             DlssNrScanInverted.set_from_config(readBool("DlssNr", "ScanInverted"));
