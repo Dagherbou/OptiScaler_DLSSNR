@@ -2037,126 +2037,16 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (g_ngxTime != nullptr)
         g_ngxTime->Start(cmdList);
 
-    // A feature for each extra pass, built when first needed and released when it stops being.
-    //
-    // Built here rather than beside the first because the pass count is a live setting: somebody who
-    // never raises it never pays the memory, and somebody who lowers it gets it back.
-    {
-        const unsigned int want = std::clamp(cfg.DlssNrPasses.value_or_default(), 1u, 3u);
-
-        for (unsigned int i = 1; i < 4; ++i)
-        {
-            if (i < want && g_nr.passFeature[i] == nullptr && g_nr.feature != nullptr)
-            {
-                auto snip = Util::FindFilePath(g_dllDir, "nvngx_dlssnr.dll");
-
-                if (!snip.has_value())
-                    snip = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssnr.dll");
-
-                if (snip.has_value())
-                {
-                    g_nr.passFeature[i] = g_nr.create(
-                        snip->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                        device, cmdList, g_nr.capabilityParams, workWidth, workHeight,
-                        (int) cfg.DlssNrPreset.value_or_default(), cfg.DlssNrIntensity.value_or_default(),
-                        (int) cfg.DlssNrStyle.value_or_default(),
-                        cfg.DlssNrLocalStructure.value_or_default(),
-                        // Tone belongs to the frame, not the pass, so a later pass's feature is built
-                        // with none of it -- the same rule the evaluate below follows.
-                        0.0f, cfg.DlssNrSkinStructure.value_or_default(),
-                        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, 1);
-
-                    LOG_INFO("DLSS-NR: feature for pass {} {}", i + 1,
-                             g_nr.passFeature[i] != nullptr ? "built" : "FAILED to build");
-                }
-            }
-            else if (i >= want && g_nr.passFeature[i] != nullptr)
-            {
-                // Parked, not released. The GPU can be several frames behind and this work rides the
-                // game's own queue, so freeing a feature under in-flight work is exactly the device
-                // hang the retirement list exists to prevent.
-                LOG_INFO("DLSS-NR: releasing the feature for pass {}", i + 1);
-                ParkNrFeature(g_nr.passFeature[i]);
-            }
-        }
-    }
-
-    // Run the model more than once over the same frame, each pass fed the last one's answer.
-    //
-    // Only legal because both surfaces are ours. The copy is output -> modelInput, and modelInput is
-    // colorCopy or colorSmall depending on whether the model runs below frame size -- either way a
-    // surface this pass created, so its state is ours to move rather than something to assume.
-    //
-    // Guarded on the two descriptions matching, because CopyResource requires it and a mismatch is
-    // the kind of thing that shows up as a device removal minutes later rather than as an error
-    // here. If they ever diverge, this quietly runs one pass, which is the behaviour it replaced.
-    unsigned int passes = std::clamp(cfg.DlssNrPasses.value_or_default(), 1u, 3u);
-
-    if (passes > 1 && modelInput != nullptr)
-    {
-        const D3D12_RESOURCE_DESC a = modelInput->GetDesc();
-        const D3D12_RESOURCE_DESC b = g_nr.output->GetDesc();
-
-        if (a.Format != b.Format || a.Width != b.Width || a.Height != b.Height)
-        {
-            static bool said = false;
-
-            if (!said)
-            {
-                said = true;
-                LOG_WARN("DLSS-NR: extra passes need the model's input and output to match, and here "
-                         "they do not ({}x{} fmt {} vs {}x{} fmt {}). Running one.",
-                         (unsigned int) a.Width, a.Height, (int) a.Format, (unsigned int) b.Width,
-                         b.Height, (int) b.Format);
-            }
-
-            passes = 1;
-        }
-    }
-
-    int result = 1;
-
-    for (unsigned int pass = 0; pass < passes && result == 1; ++pass)
-    {
-        if (pass > 0)
-        {
-            Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_COPY_SOURCE);
-            Barrier(cmdList, modelInput, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_COPY_DEST);
-
-            cmdList->CopyResource(modelInput, g_nr.output);
-
-            Barrier(cmdList, modelInput, D3D12_RESOURCE_STATE_COPY_DEST,
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        }
-
-        // Reset belongs to the frame, not to the pass. Telling the model to forget its history on
-        // the second pass of the same frame would throw away what the first pass just established.
-        //
-        // Tone belongs to the frame too, for a plainer reason: it is a look, and a look is applied
-        // once. Passing it every pass meant the second re-graded an already-graded picture and the
-        // third re-graded that, so colour compounded while detail did not -- the passes visibly
-        // stacked warmth and contrast, which is not what turning the count up is asking for.
-        // Structure is the thing worth repeating; tone is not.
-        const float passTone = pass == 0 ? cfg.DlssNrLocalTone.value_or_default() : 0.0f;
-        // Each pass on its own feature where one exists, so no history is shared. If a later one
-        // failed to build, that pass falls back to the first rather than not running -- a repeated
-        // pass on a shared history is worse than a separate one, but it is not nothing.
-        void* passUses = (pass > 0 && g_nr.passFeature[pass] != nullptr) ? g_nr.passFeature[pass]
-                                                                        : g_nr.feature;
-
-        result = g_nr.evaluate(
-            cmdList, passUses, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
-            workWidth, workHeight, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0,
-            (pass == 0 && g_nr.reset) ? 1 : 0, cfg.DlssNrIntensity.value_or_default(),
-            (int) cfg.DlssNrStyle.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
-            passTone, cfg.DlssNrSkinStructure.value_or_default(),
-            cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, g_nr.guideMvScaleX * mvToWork,
-            g_nr.guideMvScaleY * mvToWork);
-    }
+    // Multi-pass was removed: re-feeding the model its own output re-opened the same-command-list
+    // feature-creation hang, and the colour core is not settled enough to build on. One evaluate.
+    const int result = g_nr.evaluate(
+        cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
+        workWidth, workHeight, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0,
+        g_nr.reset ? 1 : 0, cfg.DlssNrIntensity.value_or_default(),
+        (int) cfg.DlssNrStyle.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
+        cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
+        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, g_nr.guideMvScaleX * mvToWork,
+        g_nr.guideMvScaleY * mvToWork);
 
     if (g_ngxTime != nullptr)
         g_ngxTime->End(cmdList);
