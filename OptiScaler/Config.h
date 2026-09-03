@@ -389,6 +389,19 @@ class Config
     // A lamp in the corner showing what the scan currently thinks the light is doing: red for dark,
     // green for full light, and the shades between. Off by default; it is for watching the thing
     // work, not for playing with.
+    // Where the white point comes from. One control, because there is one answer.
+    //
+    //   0  the paper white slider, and nothing else
+    //   1  the exposure the game hands the upscaler
+    //   2  a buffer the scan found, anchored to a white point the user chose once
+    //
+    // This replaces two independent checkboxes that could both be on. They were made exclusive by
+    // greying, which deadlocked -- each disabled the other, so once both were set the only way out
+    // was a button the notice never mentioned -- and then by clearing, which silently undid a
+    // setting the user had made. Both were attempts to stop an illegal state being REACHED. A single
+    // choice cannot reach it: there is nothing to keep consistent, because there is only one value.
+    CustomOptional<uint32_t> DlssNrWhitePointSource { 1 };
+
     CustomOptional<bool> DlssNrScanMeter { false };
 
     CustomOptional<float> DlssNrScanAnchorValue { 0.0f };

@@ -974,8 +974,7 @@ float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
     // menu. A game that hands over a real exposure has no business being driven by a buffer found by
     // its shape, and two sources fighting over one number is the class of bug worth making
     // unreachable rather than merely unlikely.
-    if (!cfg.DlssNrWhitePointFromExposure.value_or_default() &&
-        cfg.DlssNrScanExposure.value_or_default())
+    if (cfg.DlssNrWhitePointSource.value_or_default() == 2)
     {
         const float anchorValue = cfg.DlssNrScanAnchorValue.value_or_default();
         const float anchorWhite = cfg.DlssNrScanAnchorWhitePoint.value_or_default();
@@ -994,7 +993,7 @@ float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
         }
     }
 
-    if (cfg.DlssNrWhitePointFromExposure.value_or_default() && g_nr.gameExposure > 1e-6f)
+    if (cfg.DlssNrWhitePointSource.value_or_default() == 1 && g_nr.gameExposure > 1e-6f)
     {
         // Its own setting, not the manual divisor. See Config: they are different quantities with
         // different units and different sensible ranges, and sharing one value meant adjusting the

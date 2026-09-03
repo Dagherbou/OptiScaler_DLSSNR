@@ -313,96 +313,107 @@ void RenderMenu(Config* config, float menuResScale)
         // given game needs to go is a property of that game's exposure, not of anything we can bound.
         // One tester was still improving at 100. A linear slider over that span would spend nine
         // tenths of its travel on values nobody needs and never reach the ones they do.
-        // The two sources are mutually exclusive, and the exclusion is enforced by CLEARING the other
-        // one rather than by greying it.
+        // One dropdown, because there is one answer.
         //
-        // Greying it was wrong twice over. ResolveWhitePoint gives this option absolute priority --
-        // the scan branch is guarded by `!WhitePointFromExposure` -- so with both set the game's
-        // exposure was already driving and the scan was driving nothing, while the notice underneath
-        // announced the opposite. Worse, the two greyed each other: this box was disabled because an
-        // anchor existed, the anchor button was disabled because this box was ticked, and the only way
-        // out was a Clear anchor the notice never mentioned.
+        // This was two checkboxes that could both be on, and every attempt to stop that was a patch
+        // on a shape that should not have existed. Greying deadlocked -- each disabled the other, so
+        // once both were set the only way out was a button the notice never mentioned. Clearing
+        // worked but silently undid a setting somebody had made. Both were ways to stop an illegal
+        // state being REACHED; a single choice cannot reach it, because there is only one value to
+        // be in.
         //
-        // Anchoring already switched this option off. Ticking this option now clears the anchor, so
-        // both directions do the same thing and the state on screen is the state in use.
-        bool fromExposure = config->DlssNrWhitePointFromExposure.value_or_default();
-
-        if (ImGui::Checkbox("Take the white point from the game", &fromExposure))
-        {
-            config->DlssNrWhitePointFromExposure = fromExposure;
-
-            if (fromExposure)
-            {
-                config->DlssNrScanAnchorValue = 0.0f;
-                config->DlssNrScanAnchorWhitePoint = 0.0f;
-            }
-        }
-
-        HelpMarker("Use the exposure the game hands DLSS, instead of measuring or guessing."
-                       "\n\nExposure is how a renderer makes a cave and a field comparable: it works in"
-                       "\narbitrary units and multiplies by this before tone mapping. That is exactly why"
-                       "\none fixed paper white cannot serve both, and why the game's own number is the"
-                       "\nright source -- it is decided upstream and cannot be moved by anything this pass"
-                       "\ndoes, which is what went wrong with measuring it from the frame."
-                       "\n\nNot every game supplies it, and some supply it only on some frames; the last"
-                       "\ngood value is held across the gaps. Paper white below stays a multiplier on top."
-                       "\n\nOn by default. A game that supplies no exposure is unaffected -- nothing is"
-                       "\nread, nothing is dispatched, and the paper white below is used exactly as it"
-                       "\nwould be with this off. Only a game that hands one over behaves differently.");
-
-        // Whether this game supplies one at all, shown whether or not the box is ticked. Without this
-        // the only way to find out was to read the log, and a game that supplies nothing looks exactly
-        // like a game where the option is doing its job quietly.
+        // Each option also says whether it can actually do anything in THIS game, in colour, so the
+        // choice is made on what is available rather than on what sounds best.
         {
             const auto ex = DlssNr::GameExposureStatus();
+            const bool vk = DlssNr::IsRunningVk();
+            const bool haveExposure = vk ? DlssNr::ExposureOfferedVk() : ex.everOffered;
 
-            if (DlssNr::IsRunningVk())
-            {
-                // Vulkan reads it now, through a meter of its own. What it cannot do yet is report
-                // the value back here, so this says whether there is one rather than what it is.
-                ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                   DlssNr::ExposureOfferedVk()
-                                       ? "This game supplies an exposure and it is being read."
-                                       : "This game supplies no exposure. Paper white below is in use.");
-            }
-            else if (ex.seenFrames == 0)
-            {
-                ImGui::TextDisabled("Waiting for a frame...");
-            }
-            else if (!ex.everOffered)
-            {
-                ImGui::TextColored(ImVec4(0.85f, 0.65f, 0.25f, 1.0f),
-                                   "This game supplies no exposure. Paper white below is in use.");
-                HelpMarker("The game declined to hand DLSS an exposure texture, so there is nothing to"
-                               "\nread and this option will do nothing here."
-                               "\n\nThat is not a fault. A game can either hand over its exposure or apply"
-                               "\nit to the picture before the upscaler sees it, and both are correct."
-                               "\nCyberpunk 2077 does the second, which means the scene-to-scene variation"
-                               "\nthis option exists to cancel has already been cancelled upstream -- so one"
-                               "\nfixed paper white is the right answer there rather than a compromise.");
-            }
-            else if (!fromExposure)
-            {
-                ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                   "This game supplies an exposure. Tick above to use it.");
-            }
-            else if (ex.exposure > 1e-6f)
-            {
-                // Matches what ResolveWhitePoint actually consumes, trim bound included. A readout
-                // that disagreed with the picture would be worse than no readout.
-                const float trim =
-                    std::clamp(config->DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
-                const float wp = ex.preExposure / ex.exposure * trim;
+            float anchorNow = 0.0f;
+            const bool haveAnchor = config->DlssNrScanAnchorValue.value_or_default() > 1e-9f &&
+                                    config->DlssNrScanAnchorWhitePoint.value_or_default() > 1e-6f;
+            anchorNow = DlssNr::ExposureScan::BestValue();
 
-                ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                   "Game exposure %.4f  ->  white point %.2f%s", ex.exposure, wp,
-                                   ex.offeredNow ? "" : "  (held: absent this frame)");
-            }
-            else
+            static const char* sourceNames[] = { "Paper white only", "The game's own exposure",
+                                                 "A buffer the scan found" };
+
+            int source = (int) config->DlssNrWhitePointSource.value_or_default();
+
+            if (source < 0 || source > 2)
+                source = 0;
+
+            if (ImGui::Combo("White point from", &source, sourceNames, IM_ARRAYSIZE(sourceNames)))
+                config->DlssNrWhitePointSource = (uint32_t) source;
+
+            HelpMarker("Where the number that divides the frame comes from."
+                           "\n\nPaper white only -- the slider below and nothing else. Right for a"
+                           "\ngame whose exposure never moves, wrong the moment it does: one"
+                           "\nconstant cannot serve a cave and a field."
+                           "\n\nThe game's own exposure -- read from the texture the game hands"
+                           "\nthe upscaler. The best source there is, because it is decided"
+                           "\nupstream and nothing this pass does can move it. Not every game"
+                           "\nsupplies one."
+                           "\n\nA buffer the scan found -- for games that compute an exposure and"
+                           "\nnever pass it on. A GUESS: candidates are matched by shape, and in"
+                           "\nGTA V the best one turned out to be an accumulator that climbed"
+                           "\nsteadily while the real exposure sat still. Needs anchoring once,"
+                           "\nand checking afterwards.");
+
+            // Availability, in colour, for the option currently chosen.
+            if (source == 1)
             {
-                ImGui::TextDisabled("Reading the exposure...");
+                if (!vk && ex.seenFrames == 0)
+                    ImGui::TextDisabled("Waiting for a frame...");
+                else if (!haveExposure)
+                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
+                                       "This game supplies no exposure -- paper white is in use. Try "
+                                       "the scan instead.");
+                else if (vk)
+                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
+                                       "This game supplies an exposure and it is being read.");
+                else if (ex.exposure > 1e-6f)
+                {
+                    const float trim =
+                        std::clamp(config->DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
+                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
+                                       "Game exposure %.4f  ->  white point %.2f%s", ex.exposure,
+                                       ex.preExposure / ex.exposure * trim,
+                                       ex.offeredNow ? "" : "  (held: absent this frame)");
+                }
+                else
+                    ImGui::TextDisabled("Reading the exposure...");
+            }
+            else if (source == 2)
+            {
+                if (!config->DlssNrScanExposure.value_or_default())
+                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
+                                       "Switch on \"Look for the game's own exposure\" under Inspect.");
+                else if (anchorNow <= 0.0f)
+                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
+                                       "Nothing found yet -- walk between light and shade.");
+                else if (!haveAnchor)
+                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
+                                       "Found one. Set paper white below, then press Anchor here "
+                                       "under Inspect.");
+                else
+                {
+                    const float trim =
+                        std::clamp(config->DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
+                    const float ratio = config->DlssNrScanInverted.value_or_default()
+                                            ? anchorNow / config->DlssNrScanAnchorValue.value_or_default()
+                                            : config->DlssNrScanAnchorValue.value_or_default() / anchorNow;
+                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
+                                       "Anchored. Scan %.5f  ->  white point %.2f", anchorNow,
+                                       config->DlssNrScanAnchorWhitePoint.value_or_default() * ratio * trim);
+                }
+            }
+            else if (haveExposure)
+            {
+                ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
+                                   "This game supplies an exposure -- the option above would use it.");
             }
         }
+
 
 
 
@@ -434,7 +445,9 @@ void RenderMenu(Config* config, float menuResScale)
         // silently destroyed the number found in the other, and there was no way back to "just take
         // the game's answer" short of knowing that the number for it was 1. Separate values fix both.
         // Switching modes is now non-destructive in both directions.
-        if (fromExposure)
+        // The trim belongs to both automatic sources, since both end in "the game's number times a
+        // little". Only the manual source gets the absolute slider.
+        if (config->DlssNrWhitePointSource.value_or_default() != 0)
         {
             float trim = config->DlssNrWhitePointTrim.value_or_default();
 
@@ -526,6 +539,18 @@ void RenderMenu(Config* config, float menuResScale)
                            "\n\nOff by default because reading a buffer the game owns means assuming"
                            "\nwhat state it is in, and a buffer found by its shape comes with no"
                            "\npromise about that.");
+
+                bool meter = config->DlssNrScanMeter.value_or_default();
+                if (ImGui::Checkbox("Show the light meter on screen", &meter))
+                    config->DlssNrScanMeter = meter;
+
+                HelpMarker("A lamp in the corner: red for dark, green for full light, and the"
+                               "\nshades between, with the reading beside it."
+                               "\n\nIt is how you see at a glance that the scan is TRACKING rather"
+                               "\nthan merely running. Walk into shade and it should slide toward"
+                               "\nred; step out and it should go green. If it moves the wrong way,"
+                               "\nthat is what the setting above is for."
+                               "\n\nPurely a readout. It changes nothing.");
 
             if (scan)
             {
@@ -619,17 +644,6 @@ void RenderMenu(Config* config, float menuResScale)
                 // that matter -- anchor, and which way the number runs -- are above it.
                 if (ImGui::TreeNode("Advanced"))
                 {
-                    bool meter = config->DlssNrScanMeter.value_or_default();
-                    if (ImGui::Checkbox("Show the light meter on screen", &meter))
-                        config->DlssNrScanMeter = meter;
-
-                    HelpMarker("A lamp in the corner: red for dark, green for full light, and the"
-                                   "\nshades between, with the reading beside it."
-                                   "\n\nIt is how you see at a glance that the scan is TRACKING rather"
-                                   "\nthan merely running. Walk into shade and it should slide toward"
-                                   "\nred; step out and it should go green. If it moves the wrong way,"
-                                   "\nthat is what the setting above is for."
-                                   "\n\nPurely a readout. It changes nothing.");
 
                     const auto found = DlssNr::ExposureScan::Report();
                     const char* why = DlssNr::ExposureScan::Status();

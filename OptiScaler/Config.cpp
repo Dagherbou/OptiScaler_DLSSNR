@@ -324,6 +324,11 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrTransfer.set_from_config(readUInt("DlssNr", "Transfer"));
 
             DlssNrWhitePointFromExposure.set_from_config(readBool("DlssNr", "WhitePointFromExposure"));
+
+            // Carried over from the two-checkbox arrangement so an existing ini keeps behaving the
+            // way its owner set it up. Only consulted when the new key is absent.
+            if (!DlssNrWhitePointSource.has_value() && DlssNrWhitePointFromExposure.has_value())
+                DlssNrWhitePointSource = DlssNrWhitePointFromExposure.value() ? 1u : 0u;
             DlssNrProbeD3D11.set_from_config(readBool("DlssNr", "ProbeD3D11"));
             DlssNrDebugView.set_from_config(readUInt("DlssNr", "DebugView"));
             DlssNrCompare.set_from_config(readUInt("DlssNr", "Compare"));
@@ -336,6 +341,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrProxyProbe.set_from_config(readBool("DlssNr", "ProxyProbe"));
             DlssNrUseProxy.set_from_config(readBool("DlssNr", "UseProxy"));
             DlssNrScanExposure.set_from_config(readBool("DlssNr", "ScanExposure"));
+            DlssNrWhitePointSource.set_from_config(readUInt("DlssNr", "WhitePointSource"));
             DlssNrScanMeter.set_from_config(readBool("DlssNr", "ScanMeter"));
             DlssNrScanAnchorValue.set_from_config(readFloat("DlssNr", "ScanAnchorValue"));
             DlssNrScanAnchorWhitePoint.set_from_config(readFloat("DlssNr", "ScanAnchorWhitePoint"));
