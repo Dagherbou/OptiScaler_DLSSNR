@@ -245,7 +245,11 @@ DWORD WINAPI KernelHooks::hk_K32_GetFileAttributesW(LPCWSTR lpFileName)
         auto path = wstring_to_string(std::wstring(lpFileName));
         to_lower_in_place(path);
 
-        if (path.contains("nvngx.dll") && !path.contains("_nvngx.dll") &&
+        // "nvngx.dll_" excludes OUR neural-rendering forwarder, named nvngx.dll_dlssnr.dll -- it
+        // contains the substring "nvngx.dll", so without this the spoof redirects an attempt to open
+        // the forwarder to the signed driver nvngx.dll instead, and the wrong image is loaded as the
+        // forwarder. That crashed Dragon's Dogma 2 the moment Neural Rendering first initialised.
+        if (path.contains("nvngx.dll") && !path.contains("_nvngx.dll") && !path.contains("nvngx.dll_") &&
             !IsInsideWindowsDirectory(path)) // apply the override to just one path
         {
             LOG_DEBUG("Overriding GetFileAttributesW for nvngx");
@@ -268,7 +272,8 @@ HANDLE WINAPI KernelHooks::hk_K32_CreateFileW(LPCWSTR lpFileName, DWORD dwDesire
         auto path = wstring_to_string(std::wstring(lpFileName));
         to_lower_in_place(path);
 
-        if (path.contains("nvngx.dll") && !path.contains("_nvngx.dll") && // apply the override to just one path
+        // See the note in hk_K32_GetFileAttributesW: exclude our nvngx.dll_dlssnr.dll forwarder.
+        if (path.contains("nvngx.dll") && !path.contains("_nvngx.dll") && !path.contains("nvngx.dll_") &&
             !IsInsideWindowsDirectory(path))
         {
             static auto& signedDll = State::Instance().nvngxReplacement;

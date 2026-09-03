@@ -1148,6 +1148,23 @@ ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* c
     if (source == nullptr || !IsTypeless(source->GetDesc().Format))
         return source;
 
+    // A dynamic-resolution game reallocates its depth and motion vectors as the render size moves, so
+    // the clone made for the old size no longer matches -- and CopyResource demands identical
+    // dimensions. Copying a 1970x1108 source into a 984x554 clone is undefined and removes the device,
+    // which is the DRS crash. Rebuild the clone whenever the source's shape has changed under it.
+    if (*clone != nullptr)
+    {
+        const D3D12_RESOURCE_DESC have = (*clone)->GetDesc();
+        const D3D12_RESOURCE_DESC want = source->GetDesc();
+
+        if (have.Width != want.Width || have.Height != want.Height ||
+            have.Format != TypedGuideFormat(want.Format))
+        {
+            // Retired, not released: the previous copy may still be in flight on the game's queue.
+            ParkNrResource(*clone);
+        }
+    }
+
     if (*clone == nullptr)
     {
         *clone = CreateGuideClone(device, source);
