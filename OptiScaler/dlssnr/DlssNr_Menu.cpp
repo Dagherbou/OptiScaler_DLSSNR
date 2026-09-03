@@ -166,14 +166,14 @@ void RenderMenu(Config* config, float menuResScale)
                 passes = 1;
 
             const ImVec4 colour = passes <= 1   ? ImVec4(0.35f, 0.88f, 0.38f, 1.0f)
-                                  : passes <= 3 ? ImVec4(0.95f, 0.70f, 0.20f, 1.0f)
+                                  : passes <= 2 ? ImVec4(0.95f, 0.70f, 0.20f, 1.0f)
                                                 : ImVec4(0.92f, 0.30f, 0.25f, 1.0f);
 
             ImGui::PushStyleColor(ImGuiCol_Text, colour);
             ImGui::PushStyleColor(ImGuiCol_SliderGrab, colour);
 
-            if (ImGui::SliderInt("Passes", &passes, 1, 8, passes == 1 ? "%d (native)" : "%dx cost"))
-                config->DlssNrPasses = (uint32_t) (passes < 1 ? 1 : (passes > 8 ? 8 : passes));
+            if (ImGui::SliderInt("Passes", &passes, 1, 3, passes == 1 ? "%d (native)" : "%dx cost"))
+                config->DlssNrPasses = (uint32_t) (passes < 1 ? 1 : (passes > 3 ? 3 : passes));
 
             ImGui::PopStyleColor(2);
 
@@ -184,14 +184,18 @@ void RenderMenu(Config* config, float menuResScale)
                            "\npasses is four times the model, not four percent more. There is no"
                            "\namortisation available: the passes are sequential, because each one"
                            "\nneeds the last one's output."
-                           "\n\n1 is what the model was trained for and what every published figure"
-                           "\ndescribes. Above that it is being asked to enhance its own output,"
-                           "\nwhich is outside its training distribution -- detail compounds, and so"
-                           "\ndoes anything it got wrong. 2 often looks richer. 4 usually looks"
-                           "\nsynthetic. 8 is there because somebody was going to ask."
-                           "\n\nIf the model is running below frame size, extra passes need its input"
-                           "\nand output to match; where they do not, this quietly runs one and says"
-                           "\nso in the log.");
+                           "\n\n1 is what the model was trained for, and it is the sweet spot."
+                           "\nAbove it the model is enhancing its own output, outside its"
+                           "\ntraining distribution -- detail compounds, and so does anything"
+                           "\nit got wrong."
+                           "\n\n2 and 3 can look good with fine tuning. 3 is the ceiling: past"
+                           "\nit quality, memory and speed fall off together, and re-feeding"
+                           "\nconverges -- each pass moves the picture less than the last, so a"
+                           "\nfourth pays a whole model run to change almost nothing."
+                           "\n\nThis is a screenshot tool. It is not meant for playing."
+                           "\n\nIf the model is running below frame size, extra passes need its"
+                           "\ninput and output to match; where they do not, this quietly runs"
+                           "\none and says so in the log.");
         }
 
         // Any percentage, rather than a handful of steps somebody chose in advance. The lower bound

@@ -2019,7 +2019,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // Guarded on the two descriptions matching, because CopyResource requires it and a mismatch is
     // the kind of thing that shows up as a device removal minutes later rather than as an error
     // here. If they ever diverge, this quietly runs one pass, which is the behaviour it replaced.
-    unsigned int passes = std::clamp(cfg.DlssNrPasses.value_or_default(), 1u, 8u);
+    unsigned int passes = std::clamp(cfg.DlssNrPasses.value_or_default(), 1u, 3u);
 
     if (passes > 1 && modelInput != nullptr)
     {
