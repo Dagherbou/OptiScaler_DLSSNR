@@ -1063,22 +1063,25 @@ bool IFeature_VkwDx12::ProcessVulkanTextures(VkCommandBuffer InCmdList, const NV
             DepthCopy = std::make_unique<ResourceCopy_Vk>("DepthCopy", VulkanDevice, VulkanPhysicalDevice);
     }
 
+    vkExp.VkSourceImage = VK_NULL_HANDLE;
+    vkExp.VkSourceImageView = VK_NULL_HANDLE;
+
     NVSDK_NGX_Resource_VK* paramExposure = nullptr;
-    if (!AutoExposure())
+    const NVSDK_NGX_Result exposureGet =
+        InParameters->Get(NVSDK_NGX_Parameter_ExposureTexture, (void**) &paramExposure);
+    if (exposureGet == NVSDK_NGX_Result_Success && !NvVkResourceNotValid(paramExposure))
     {
-        if (InParameters->Get(NVSDK_NGX_Parameter_ExposureTexture, (void**) &paramExposure) !=
-                NVSDK_NGX_Result_Success &&
-            !NvVkResourceNotValid(paramExposure))
+        if (ExpCopy == nullptr || ExpCopy.get() == nullptr)
+            ExpCopy = std::make_unique<ResourceCopy_Vk>("ExpCopy", VulkanDevice, VulkanPhysicalDevice);
+    }
+    else
+    {
+        paramExposure = nullptr;
+        if (!AutoExposure())
         {
             LOG_WARN("AutoExposure disabled but ExposureTexture is not exist, it may cause problems!!");
             State::Instance().autoExposure = true;
             State::Instance().changeBackend[Handle()->Id] = true;
-            paramExposure = nullptr;
-        }
-        else
-        {
-            if (ExpCopy == nullptr || ExpCopy.get() == nullptr)
-                ExpCopy = std::make_unique<ResourceCopy_Vk>("ExpCopy", VulkanDevice, VulkanPhysicalDevice);
         }
     }
 
@@ -1208,7 +1211,8 @@ bool IFeature_VkwDx12::ProcessVulkanTextures(VkCommandBuffer InCmdList, const NV
         if (!CopyTextureFromVkToDx12(InCmdList, paramExposure, &vkExp, ExpCopy.get(), true, false))
         {
             LOG_ERROR("Failed to copy exposure texture!");
-            return false;
+            if (!AutoExposure())
+                return false;
         }
         else
         {
@@ -2157,6 +2161,11 @@ bool IFeature_VkwDx12::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter
 
         LOG_DEBUG("Dispatch!!");
         dx12EvalResult = dx12Feature->Evaluate(cmdList, InParameters);
+
+        const bool nrExposureThisFrame =
+            vkExp.Dx12Resource != nullptr && vkExp.VkSourceImage != VK_NULL_HANDLE;
+        InParameters->Set(NVSDK_NGX_Parameter_ExposureTexture,
+                          nrExposureThisFrame ? (void*) vkExp.Dx12Resource : nullptr);
 
         // The parameter block still holds the D3D12 resources written above -- the Vulkan handles are
         // not put back until after this -- so the pass reads exactly what the upscaler just wrote.

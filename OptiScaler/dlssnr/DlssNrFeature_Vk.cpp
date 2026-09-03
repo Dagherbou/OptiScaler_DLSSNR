@@ -796,14 +796,8 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     // and encoding an already tone-mapped frame a second time looks washed out and banded.
     const bool linearHdr = gameSaysHdr && FormatCanHoldLinearHdr(colour->Resource.ImageViewInfo.Format);
 
-    // The same rule as the D3D12 path, deliberately spelled the same way: the game divides its frame
-    // by preExposure and multiplies by exposure, so undoing that is the divisor this pass wants, and
-    // the slider becomes a trim on top rather than the answer.
-    //
-    // The trim is bounded here, at the point of use, rather than at the slider. Someone who found 64
-    // by hand on the manual path and then switches the exposure source on keeps that 64 in their ini;
-    // bounding it in the menu would leave the picture wrong for a reason the menu no longer showed.
-    // Their value stays in the config untouched, so switching back to manual restores it.
+    // Native Vulkan source 1 stays on the delayed courier. Do not call DecideWhitePoint; do not
+    // set UseGameExposure. P / E * trim, origin clamp, no S.
     float whitePoint = cfg.DlssNrWhitePointScale.value_or_default();
 
     if (cfg.DlssNrWhitePointSource.value_or_default() == 1 && g_vk.gameExposure > 1e-6f)
@@ -827,6 +821,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     encode.Width = width;
     encode.Height = height;
     encode.WhitePoint = whitePoint;
+    encode.UseGameExposure = 0;
     encode.Passthrough = linearHdr ? 0u : 1u;
     encode.TransferStrength = cfg.DlssNrTransferStrength.value_or_default();
     encode.ColourStrength = cfg.DlssNrColourStrength.value_or_default();
@@ -922,8 +917,10 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
             Transition(cmdBuffer, g_vk.meter, VK_IMAGE_LAYOUT_GENERAL);
 
             if (g_vk.pass->Dispatch(cmdBuffer, meter, kMeterSide, kMeterSide, VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                    VK_NULL_HANDLE, exposure->Resource.ImageViewInfo.ImageView, g_vk.meter.view,
-                                    VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    VK_NULL_HANDLE, VK_NULL_HANDLE, g_vk.meter.view, VK_NULL_HANDLE,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    exposure->Resource.ImageViewInfo.ImageView,
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
             {
                 Transition(cmdBuffer, g_vk.meter, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -993,9 +990,10 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     Transition(cmdBuffer, g_vk.keep, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     Transition(cmdBuffer, *modelInput, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    Transition(cmdBuffer, g_vk.proxy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     if (!g_vk.pass->Dispatch(cmdBuffer, resolve, width, height, modelInput->view, g_vk.output.view, g_vk.keep.view,
-                             VK_NULL_HANDLE, colour->Resource.ImageViewInfo.ImageView, VK_NULL_HANDLE,
+                             g_vk.proxy.view, colour->Resource.ImageViewInfo.ImageView, VK_NULL_HANDLE,
                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
     {
         Fail("the resolve dispatch failed");

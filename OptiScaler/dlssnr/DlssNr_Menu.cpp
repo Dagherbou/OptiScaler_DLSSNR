@@ -2,6 +2,7 @@
 #include "DlssNrFeature_Vk.h"
 
 #include "DlssNr.h"
+#include "DlssNrFeature_Dx12.h"
 #include "DlssNr_ExposureScan.h"
 
 
@@ -227,7 +228,9 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nown, rescaled so its luminance sits where the original says it should. This"
                        "\nblends between the two, so both ends are real pictures and everything between"
                        "\nthem is one too."
-                       "\n\n0 gives back exactly what the upscaler produced. 1 is the model's picture."
+                       "\n\n0 gives back the keep (the upscaler frame after a clamp and one float"
+                       "\nround-trip), not a capture 'before' and not a bit-exact upscaler copy."
+                       "\n1 is the model's picture."
                        "\n\nAbove 1 carries on past it in the same direction, which is not something the"
                        "\nmodel asked for -- use it to see what it is doing, then come back down. This"
                        "\nis the control to push if you want more effect: Intensity belongs to the model"
@@ -325,9 +328,9 @@ void RenderMenu(Config* config, float menuResScale)
         // Each option also says whether it can actually do anything in THIS game, in colour, so the
         // choice is made on what is available rather than on what sounds best.
         {
-            const auto ex = DlssNr::GameExposureStatus();
             const bool vk = DlssNr::IsRunningVk();
-            const bool haveExposure = vk ? DlssNr::ExposureOfferedVk() : ex.everOffered;
+            const bool canEnable = DlssNr::GameExposureCanEnable();
+            const bool haveExposure = vk ? DlssNr::ExposureOfferedVk() : canEnable;
 
             const float anchorNow = DlssNr::ExposureScan::BestValue();
             const bool haveAnchor = !DlssNr::ExposureScan::Anchors().empty();
@@ -366,26 +369,44 @@ void RenderMenu(Config* config, float menuResScale)
             // Availability, in colour, for the option currently chosen.
             if (source == 1)
             {
-                if (!vk && ex.seenFrames == 0)
-                    ImGui::TextDisabled("Waiting for a frame...");
-                else if (!haveExposure)
+                const auto ui = DlssNr::GameExposureUiState();
+                const auto readout = DlssNr::GameExposureMenuReadout();
+                const ImVec4 live(0.4f, 0.85f, 0.9f, 1.0f);
+
+                switch (ui)
+                {
+                case DlssNr::GameExposureWait::NativeVulkan:
+                    ImGui::TextDisabled("Menu may lag; native Vulkan picture uses the delayed courier.");
+                    break;
+                case DlssNr::GameExposureWait::Waiting:
+                    ImGui::TextDisabled("Waiting for Neural Rendering.");
+                    break;
+                case DlssNr::GameExposureWait::Passthrough:
+                    ImGui::TextDisabled("This buffer is already tone-mapped. Paper white is unused.");
+                    break;
+                case DlssNr::GameExposureWait::Absent:
                     ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
                                        "This game supplies no exposure -- paper white is in use. Try "
                                        "the scan instead.");
-                else if (vk)
-                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                       "This game supplies an exposure and it is being read.");
-                else if (ex.exposure > 1e-6f)
+                    break;
+                case DlssNr::GameExposureWait::Available:
+                    if (canEnable)
+                        ImGui::TextDisabled("Menu may lag; picture is this frame.");
+                    break;
+                }
+
+                if (readout.haveNumbers)
                 {
-                    const float trim =
-                        std::clamp(config->DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
-                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                       "Game exposure %.4f  ->  white point %.2f%s", ex.exposure,
-                                       ex.preExposure / ex.exposure * trim,
-                                       ex.offeredNow ? "" : "  (held: absent this frame)");
+                    ImGui::TextColored(live, "Exposure %.3f  ·  pre %.2f  ·  scale %.2f", readout.e,
+                                       readout.p, readout.s);
+                    ImGui::TextColored(live, "game white %.1f  ·  trim %.2f×  ·  in use %.1f",
+                                       readout.gameW, readout.slider, readout.slider * readout.gameW);
                 }
                 else
-                    ImGui::TextDisabled("Reading the exposure...");
+                {
+                    ImGui::TextColored(live, "Exposure —  ·  pre %.2f  ·  scale %.2f", readout.p,
+                                       readout.s);
+                }
             }
             else if (source == 2)
             {

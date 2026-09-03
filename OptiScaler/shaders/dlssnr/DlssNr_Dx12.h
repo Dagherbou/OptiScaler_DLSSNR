@@ -65,6 +65,9 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     static constexpr uint32_t kSrvCount = 5;
     static constexpr uint32_t kUavCount = 2;
 
+    // Unusable → dummy, no throw. Calls TranslateTypelessFormats (protected on Shader_Dx12).
+    static bool ExposureUsable(ID3D12Resource* InResource);
+
     uint32_t _numThreadsX = 8;
     uint32_t _numThreadsY = 8;
 
@@ -91,9 +94,8 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     bool DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssNrConstants& InConstants,
                   ID3D12Resource* InSource, ID3D12Resource* InModel, ID3D12Resource* InOriginal,
                   ID3D12Resource* InMotion,
-                  // Vestigial. Fed to the slot the removed edit accumulator read its history from;
-                  // nothing reads it now and every caller passes nullptr. Kept only so the binding
-                  // table keeps its shape -- not evidence that temporal accumulation exists.
-                  ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget,
+                  // t4. The game's 1x1 exposure when it is usable and Effective, otherwise the
+                  // 1x1 dummy (E = 1). Null falls back to the dummy; it must not fall back to InSource.
+                  ID3D12Resource* InExposure, ID3D12Resource* OutTarget,
                   ID3D12Resource* OutKeep);
 };
