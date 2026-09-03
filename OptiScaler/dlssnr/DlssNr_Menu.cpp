@@ -246,22 +246,32 @@ void RenderMenu(Config* config, float menuResScale)
                        "\npictures rather than adding a colour difference to one, which is what used to"
                        "\nlet a warm subject come back green.");
 
-        // Experimental (Pass 1). Off = today's soft-knee proxy, on = the unclipped RenoDX proxy.
-        bool reversible = config->DlssNrReversibleProxy.value_or_default();
-        if (ImGui::Checkbox("Reversible proxy (experimental)", &reversible))
-            config->DlssNrReversibleProxy = reversible;
+        // Experimental. 0 off (soft knee + our composition), 1 Neutwo proxy + our composition,
+        // 2 Neutwo proxy + pure-inverse replace. Always shown, no dead-control risk.
+        static const char* reversibleNames[] = { "Off (soft knee)", "Neutwo proxy + composed",
+                                                 "Neutwo proxy + replace" };
+        int reversible = (int) config->DlssNrReversibleMode.value_or_default();
+        if (reversible < 0 || reversible > 2)
+            reversible = 0;
+        if (ImGui::Combo("Reversible proxy (experimental)", &reversible, reversibleNames,
+                         IM_ARRAYSIZE(reversibleNames)))
+            config->DlssNrReversibleMode = (uint32_t) reversible;
 
-        HelpMarker("What the model is shown, and only that -- the composition above is unchanged."
+        HelpMarker("What the model is shown, and how its answer comes back."
                        "\n\nThe default soft knee rolls highlights off so hard that a scene twice as"
                        "\nbright as white and one four times as bright arrive about a thousandth apart,"
                        "\nand the model cannot resolve anything between them -- highlights come back"
-                       "\nwith light but no detail. This shows the model an unclipped curve instead"
-                       "\n(RenoDX's), where those two land far apart, so the detail is there to enhance."
-                       "\nIts colour still returns through everything above, so Detail and Colour"
-                       "\nstrength, the highlight guard and the game's palette all still apply."
-                       "\n\nA toggle on purpose: flip it in game to A/B the same frame. It shifts the"
-                       "\neffective paper white (white lands dimmer for the model), so re-check paper"
-                       "\nwhite after turning it on. Off is byte-identical to before.");
+                       "\nwith light but no detail. The other two show the model an unclipped curve"
+                       "\ninstead (RenoDX's), where those two land far apart, so the detail is there."
+                       "\n\nComposed: that better proxy, then everything above -- Detail and Colour"
+                       "\nstrength, the highlight guard, the game's palette -- unchanged. This is the"
+                       "\none to use; it keeps the product controls."
+                       "\n\nReplace: the model's answer straight back through the exact inverse, with"
+                       "\nNONE of that -- no guard, no palette, no strengths. The raw model, RenoDX's"
+                       "\nway. Its highlight slope is steep and untested in motion; a comparison lever,"
+                       "\nnot the recommended setting."
+                       "\n\nBoth shift the effective paper white (white lands dimmer for the model), so"
+                       "\nre-check paper white when you switch. Off is byte-identical to before.");
 
         ImGui::SeparatorText("Model");
 

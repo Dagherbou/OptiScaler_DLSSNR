@@ -165,10 +165,11 @@ struct alignas(256) DlssNrConstants
     // is the user's own multiplier, which holds still while the meter works.
     float DebugScale;
 
-    // Which proxy the model is shown. 0 the soft knee, 1 the unclipped reversible (Neutwo) proxy that
-    // shows the model highlight gradation the knee compresses away. Trailing field, mirroring the
-    // shader's cbuffer, so the layout stays a flat run of 4-byte scalars that C++ and HLSL agree on.
-    uint32_t ReversibleProxy;
+    // The reversible-proxy mode. 0 soft knee + our composition (default), 1 unclipped Neutwo proxy +
+    // our composition, 2 Neutwo proxy + pure-inverse replace (model's answer straight back, no
+    // composition). Trailing field, mirroring the shader's cbuffer, so the layout stays a flat run of
+    // 4-byte scalars that C++ and HLSL agree on.
+    uint32_t ReversibleMode;
 };
 
 class DlssNr_Common

@@ -25,7 +25,7 @@ cbuffer Params : register(b0)
     uint  gCompareSwap;  // put the edited frame on the other side
     uint  gTransfer;     // 0 classic, 1 matched residual -- how a below-size model comes back
     float gDebugScale;   // what the debug views are scaled by, held still while the meter moves
-    uint  gReversibleProxy; // 0 the soft-knee proxy, 1 the unclipped reversible (Neutwo) proxy
+    uint  gReversibleMode; // 0 knee+composition, 1 Neutwo+composition, 2 Neutwo+pure-inverse replace
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -335,6 +335,24 @@ float3 NeutwoEncode(float3 v)
     return v * (Neutwo(m) / m);
 }
 
+// The exact inverse of NeutwoEncode, for the "replace" decode: y/sqrt(1 - y^2) on the peak channel,
+// same one-scalar-preserves-hue trick. The inverse diverges at 1, so the peak is clamped just below
+// it -- this is the steep-highlight-slope the toggle's help warns about: a highlight at the ceiling
+// decodes to a very large but finite value. Only the replace path uses this; the composed path never
+// decodes (its ratio bridges display->linear instead), so mode 0/1 are untouched by it.
+float3 NeutwoDecode(float3 y)
+{
+    y = max(y, 0.0);
+    float m = max(y.r, max(y.g, y.b));
+    m = min(m, 0.999999);
+
+    if (m <= 1e-6)
+        return y;
+
+    float x = m * rsqrt(max(1.0 - m * m, 1e-8)); // Neutwo^-1 of the peak
+    return y * (x / m);
+}
+
 // Scale a residual so the result cannot leave the unit cube, without changing its direction.
 //
 // The model's edit is carried up from a smaller raster and laid on the frame's own proxy, so nothing
@@ -571,12 +589,12 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // is not passthrough (handled and returned above), so NeutwoEncode never sees a tone-mapped
         // frame. Both are undone by the resolve: the knee approximately, Neutwo exactly.
         float3 normalized = frame / max(gWhitePoint, 1e-4);
-        float3 display = gReversibleProxy != 0 ? NeutwoEncode(normalized) : SoftKnee(normalized);
+        float3 display = gReversibleMode != 0 ? NeutwoEncode(normalized) : SoftKnee(normalized);
 
         // The reversible proxy forces opaque alpha -- feature 18 expects an opaque colour input, and
         // the frame's own alpha is not part of what the model reads. The knee path keeps the frame's
         // alpha, so the default stays byte-identical.
-        float alpha = gReversibleProxy != 0 ? 1.0 : source.a;
+        float alpha = gReversibleMode != 0 ? 1.0 : source.a;
 
         gTarget[id.xy] = float4(LinearToSrgb(display), alpha);
         return;
@@ -626,6 +644,10 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // Nothing was encoded on the way in, so nothing is decoded here either.
     float3 proxy = gPassthrough != 0 ? proxySample.rgb : SrgbToLinear(proxySample.rgb);
     float3 model = gPassthrough != 0 ? modelSample.rgb : SrgbToLinear(modelSample.rgb);
+
+    // The model's own answer, kept before the matched-residual block below can rewrite `model`, so the
+    // replace decode uses what the model returned rather than the residual reconstruction.
+    float3 modelDirect = model;
     float4 originalSample = gCompareMode == 1 ? gOriginal.SampleLevel(gLinear, cmpUv, 0)
                                               : gOriginal.Load(int3(id.xy, 0));
 
@@ -729,7 +751,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // lands in [0,1), so it needs no saturate.
         float3 fullProxy = gPassthrough != 0
                                ? saturate(original)
-                               : (gReversibleProxy != 0 ? NeutwoEncode(original) : saturate(SoftKnee(original)));
+                               : (gReversibleMode != 0 ? NeutwoEncode(original) : saturate(SoftKnee(original)));
         proxy = fullProxy;
         proxyLuma = dot(proxy, kLuma);
 
@@ -840,6 +862,13 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
     // Both ends of the blend now sit inside the same guard, so neither needs a second clamp.
     float3 result = lerp(original * boundedRatio, upgraded, gColourStrength);
+
+    // Replace mode: the model's answer IS the picture, decoded through Neutwo's exact inverse, with
+    // NONE of the composition above -- no ratio, no highlight guard, no palette blend. This is the
+    // RenoDX reversible-bridge behaviour and the second half of the A/B: composed vs pure model. On a
+    // passthrough frame the model already worked in the frame's own space, so it is taken directly.
+    if (gReversibleMode == 2)
+        result = gPassthrough != 0 ? modelDirect : NeutwoDecode(modelDirect);
 
     // Back out of the normalised space the composition worked in.
     result *= normScale;
