@@ -152,6 +152,64 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::Spacing();
         ImGui::PushItemWidth(220.0f * menuResScale);
 
+        ImGui::SeparatorText("Cost");
+
+        {
+            // Coloured by what it costs, because the number alone does not say. The model is 98% of
+            // this pass's expense and every run pays it again, so the scale is linear and brutal:
+            // four passes is four times the model, not four percent more.
+            //
+            // Green at 1, what the model was trained for. Amber at 2 and 3, where it is being asked
+            // to enhance its own output. Red from 4, where it usually stops looking rendered.
+            //
+            // Applied when the handle is let go: every distinct value is a feature to build, and the
+            // build is spaced so the driver's latches survive it.
+            static int pendingPasses = -1;
+
+            int passes = pendingPasses >= 0 ? pendingPasses
+                                            : (int) config->DlssNrPasses.value_or_default();
+
+            if (passes < 1)
+                passes = 1;
+
+            const ImVec4 colour = passes <= 1   ? ImVec4(0.35f, 0.88f, 0.38f, 1.0f)
+                                  : passes <= 3 ? ImVec4(0.95f, 0.70f, 0.20f, 1.0f)
+                                                : ImVec4(0.92f, 0.30f, 0.25f, 1.0f);
+
+            ImGui::PushStyleColor(ImGuiCol_Text, colour);
+            ImGui::PushStyleColor(ImGuiCol_SliderGrab, colour);
+
+            if (ImGui::SliderInt("Passes", &passes, 1, (int) DlssNr::kMaxPasses,
+                                 passes == 1 ? "%d (native)" : "%dx model cost"))
+                pendingPasses = passes;
+
+            ImGui::PopStyleColor(2);
+
+            if (ImGui::IsItemDeactivatedAfterEdit() && pendingPasses >= 0)
+            {
+                config->DlssNrPasses =
+                    (uint32_t) std::clamp(pendingPasses, 1, (int) DlssNr::kMaxPasses);
+                pendingPasses = -1;
+            }
+
+            HelpMarker("How many times the model runs over the frame, each pass shown the last one's"
+                       "\nanswer."
+                       "\n\nThe most expensive control here. Cost is exactly linear: five passes is"
+                       "\nfive model runs, and the model is nearly all of what this pass costs."
+                       "\n\nWhat it buys that nothing else can is the model re-deciding where detail"
+                       "\ngoes, what hue it is, and how saturated. Detail strength amplifies the map"
+                       "\nthe first pass drew; it cannot redraw it."
+                       "\n\nWhat it does not buy is raw magnitude. Detail strength and Intensity are"
+                       "\nfree and do that. Try both, and raise Model resolution, before this."
+                       "\n\nPast 3, raise the ratio guard under Colour with it. The passes compound"
+                       "\nthe luminance ratio and the guard clamps it, so beyond its limit the extra"
+                       "\nruns are paid for and thrown away."
+                       "\n\nEach pass is its own model, with its own memory, built on a frame of its"
+                       "\nown -- so raising this takes a couple of seconds to arrive, and VRAM grows"
+                       "\nwith it."
+                       "\n\nNo effect on native Vulkan, or with the proxy path switched on.");
+        }
+
         // Any percentage, rather than a handful of steps somebody chose in advance. The lower bound
         // is 25%: below that the model is working on so little of the picture that its answer no
         // longer survives being enlarged onto it.

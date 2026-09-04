@@ -445,16 +445,21 @@ class Config
     // picture that had been tuned came back wrong for a reason nothing on screen explained.
     CustomOptional<float> DlssNrScanTrim { 1.0f };
 
-    // How many times to run the model over the same frame, each pass fed the previous one's answer.
+    // How many times to run the model over the same frame, each pass shown the last one's answer.
     //
-    // 1 is what the model was trained for and what every published number describes. Above that it
-    // is being asked to enhance its own output, which is outside its training distribution: detail
-    // compounds, and so does anything it got wrong. Two often looks richer. Four usually looks
-    // synthetic. Eight is there because somebody will want to see it.
+    // A count of features, not a setting on one: every pass has its own NGX feature carrying its own
+    // temporal history, and each is built on a frame of its own before it is first evaluated. The
+    // proxy the composition differences against is written once, by the encode, and never by the
+    // chain, so what the composition receives is the whole chain's edit against the frame's own
+    // picture rather than the last pass's edit against the one before it.
+    //
+    // 1 is what the model was trained for. Above that it is being asked to enhance its own output,
+    // which is outside its training distribution: detail compounds, and so does anything it got
+    // wrong. The ceiling is DlssNr::kMaxPasses.
     //
     // The cost is exactly linear -- the model is 98% of the frame's expense and every pass pays it
-    // again -- so 8 costs eight times, near enough. There is no shortcut and no amortisation: the
-    // passes are sequential and each one needs the last one's output.
+    // again. The passes are sequential and each one needs the last one's output, so there is no
+    // amortisation. VRAM grows with the count as well: a feature's history is its own.
     CustomOptional<uint32_t> DlssNrPasses { 1 };
 
     // Which depth convention the model is told the guide uses.

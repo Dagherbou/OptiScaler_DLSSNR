@@ -99,6 +99,29 @@ part of the solution, and builds with everything else.
   the SDK header's vtable (floats sit at slot 6); the forwarder probes it. Rebuilding every frame
   exhausts the driver's latches and the feature stops responding until the process restarts, which
   is why the rebuild is debounced.
+- **Multi-pass anchors on the proxy.** `Passes` runs the model N times over one frame, chained through
+  two work surfaces that alternate. The proxy the encode wrote is never written by the chain, so the
+  composition differences the last answer against the frame's own picture and receives the whole
+  chain's edit. Writing the proxy between passes makes the composition difference pass N against pass
+  N-1, and the effect then gets *weaker* with every pass past the first, with nothing to say so.
+  Debug view 3 is the test: the amplified edit at two passes must be visibly larger than at one.
+- **A pass feature is built on a frame that evaluates nothing.** Each extra pass owns an NGX feature
+  with its own history, created under the same guard and envelope as the main feature and followed by
+  the same early return. Builds are spaced by `kSettleFrames`; back-to-back NGX creation exhausts the
+  driver's latches. The count is deliberately absent from `TuningMatchesFeature` — it counts features,
+  it is not a create argument of any of them.
+- **A build is not a frame until something proves it.** `g_frames` counts Dispatch calls, and a title
+  that evaluates two upscaler features onto one open command list reaches the pass twice before any
+  submit. A pass feature stays out of the chain until either the present count or the command list
+  pointer has moved since its create (`PassWasSubmitted`), so the create and the first evaluate can
+  never share a list. The present count is the stronger of the two and is used wherever the swapchain
+  is wrapped; the pointer is the fallback, over-conservative by at most the frame a build already
+  costs.
+- **Extra passes are priced before they are built.** A feature's history is driver-sized at the model's
+  working resolution, and five at 4K is not free. The cost is measured across the previous create from
+  `QueryVideoMemoryInfo`'s local segment, and the ramp waits rather than builds when the budget is
+  below it. Not every allocation failure comes back as a null handle — under vkd3d-proton a
+  VkDeviceMemory failure inside the NGX snippet surfaces as `VK_ERROR_DEVICE_LOST`.
 - **Never free under the GPU.** Every retired feature or surface is parked and freed 32 evaluates
   later; every internal feature is created on a private queue and fenced before use. Both rules were
   paid for with device hangs.

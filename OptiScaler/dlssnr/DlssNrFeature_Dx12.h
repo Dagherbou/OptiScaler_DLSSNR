@@ -19,6 +19,10 @@ class Config;
 
 namespace DlssNr
 {
+// The ceiling on how many times the model runs over one frame. The array of extra features, the
+// pass-side clamp, the slider's bounds and the slider's own clamp all read this one number.
+constexpr unsigned int kMaxPasses = 5;
+
 // The model runs immediately after the game's upscaler, before the interface is drawn. It is shown a
 // display-referred proxy of that frame -- the sort of picture it was trained on -- and its answer is
 // composed back over the untouched original.
