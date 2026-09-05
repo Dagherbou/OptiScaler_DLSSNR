@@ -87,6 +87,10 @@ CalibrationReading Calibration();
 // Whether the model is loaded and running, for the overlay.
 bool IsRunning();
 
+// Number of layers in the last successfully composed D3D12 frame. Zero while disabled, preparing
+// features, or unable to run; never the requested count before those layers have actually run.
+unsigned int ActivePassCount();
+
 // Why it is not, if it is not. Empty while it is running or has not been tried yet.
 const char* FailureReason();
 

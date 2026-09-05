@@ -74,9 +74,9 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
 
     // The pass. Resources in, and nothing read from anywhere the caller cannot see.
     //
-    // This is the whole filter: it brings the model up if it is not already, builds the feature and
-    // rebuilds it when the tuning or the resolution changes, evaluates it, and runs the compute passes
-    // that show it the frame and bring its answer back. One call, like any other shader here.
+    // This is the whole filter: it prepares one independent feature per requested layer, waits a
+    // frame after creation, then cascades the model through two alternating outputs. The proxy and
+    // untouched original are retained for one final resolve. One layer uses the original path.
     //
     // Sizes come from the resources. Everything the pass cannot work out for itself is in
     // DlssNrFrameInfo; everything the user chose stays in Config. colour and output may be the same
@@ -87,7 +87,7 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
 
     // Records one pass. Resources that a given mode does not read may be null; a stand-in is bound in
     // their place so every descriptor in the table is valid.
-    // One compute pass. The public entry below drives three of these plus the model.
+    // Neural layers call NGX directly; adding layers does not consume extra shader heap slots.
     bool DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssNrConstants& InConstants,
                   ID3D12Resource* InSource, ID3D12Resource* InModel, ID3D12Resource* InOriginal,
                   ID3D12Resource* InMotion,
