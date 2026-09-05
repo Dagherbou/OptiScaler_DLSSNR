@@ -38,6 +38,7 @@
 #include <memory>
 #include <type_traits>
 #include <misc/IdentifyGpu.h>
+#include <misc/Localization.h>
 #include <hooks/Xell_Hooks.h>
 #include <low_latency/input/input_common.h>
 
@@ -294,7 +295,7 @@ void MenuCommon::ShowTooltip(const char* tip)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     {
         ImGui::BeginTooltip();
-        ImGui::Text(tip);
+        ImGui::Text(Tr(tip));
         ImGui::EndTooltip();
     }
 }
@@ -312,7 +313,7 @@ void MenuCommon::ShowResetButton(CustomOptional<bool, NoDefault>* initFlag, std:
 
     ImGui::BeginDisabled(!initFlag->has_value());
 
-    if (ImGui::Button(buttonName.c_str()))
+    if (ImGui::Button(Tr(buttonName.c_str())))
     {
         initFlag->reset();
         ReInitUpscaler();
@@ -337,6 +338,7 @@ inline void MenuCommon::ReInitUpscaler()
 void MenuCommon::SeparatorWithHelpMarker(const char* label, const char* tip)
 {
     auto marker = "(?) ";
+    label = Tr(label);
     ImGui::SeparatorTextEx(0, label, ImGui::FindRenderedTextEnd(label),
                            ImGui::CalcTextSize(marker, ImGui::FindRenderedTextEnd(marker)).x);
     ShowHelpMarker(tip);
@@ -354,7 +356,7 @@ class Keybind
     static std::string KeyNameFromVirtualKeyCode(USHORT virtualKey)
     {
         if (virtualKey == (USHORT) UnboundKey)
-            return "Unbound";
+            return Tr("Unbound");
 
         UINT scanCode = MapVirtualKeyW(virtualKey, MAPVK_VK_TO_VSC);
 
@@ -387,13 +389,13 @@ class Keybind
         if (GetKeyNameTextW(lParam, buf, static_cast<int>(std::size(buf))) != 0)
             return wstring_to_string(buf);
 
-        return "Unknown";
+        return Tr("Unknown");
     }
 
     void Render(CustomOptional<int>& configKey)
     {
         ImGui::PushID(id);
-        if (ImGui::Button(name.c_str()))
+        if (ImGui::Button(Tr(name.c_str())))
         {
             waitingForKey = true;
             capturingKey = true;
@@ -404,7 +406,7 @@ class Keybind
         if (waitingForKey)
         {
             ImGui::SameLine();
-            ImGui::Text("Press any key...");
+            ImGui::TextUnformatted(Tr("Press any key..."));
 
             if (lastKey == 0 || lastKey == VK_LBUTTON || lastKey == VK_RBUTTON || lastKey == VK_MBUTTON)
                 return;
@@ -426,7 +428,7 @@ class Keybind
         }
 
         ImGui::SameLine();
-        ImGui::Text(KeyNameFromVirtualKeyCode(configKey.value_or_default()).c_str());
+        ImGui::TextUnformatted(KeyNameFromVirtualKeyCode(configKey.value_or_default()).c_str());
 
         ImGui::SameLine();
         ImGui::PushID(id);
@@ -561,7 +563,7 @@ template <HasDefaultValue B> void MenuCommon::AddResourceBarrier(std::string nam
         }
     }
 
-    if (ImGui::BeginCombo(name.c_str(), selectedName))
+    if (ImGui::BeginCombo(Tr(name.c_str()), selectedName))
     {
         if (ImGui::Selectable(states[0], !value->has_value()))
             value->reset();
@@ -810,7 +812,7 @@ void MenuCommon::PopulateCombo(const std::string& name, TStorage& currentValue,
         }
     }
 
-    if (ImGui::BeginCombo(name.c_str(), preview.c_str()))
+    if (ImGui::BeginCombo(Tr(name.c_str()), Tr(preview.c_str())))
     {
         for (const auto& opt : options)
         {
@@ -821,12 +823,12 @@ void MenuCommon::PopulateCombo(const std::string& name, TStorage& currentValue,
                 ImGui::BeginDisabled();
 
             bool isSelected = (currentVal == opt.value);
-            if (ImGui::Selectable(opt.label.c_str(), isSelected))
+            if (ImGui::Selectable(Tr(opt.label.c_str()), isSelected))
                 currentValue = opt.value;
 
             // Show tooltip for the individual item if it exists
             if (!opt.tooltip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("%s", opt.tooltip.c_str());
+                ImGui::SetTooltip("%s", Tr(opt.tooltip.c_str()));
 
             if (opt.disabled)
                 ImGui::EndDisabled();
@@ -1681,8 +1683,8 @@ void MenuCommon::RenderNrCompareTags()
 
     // The left side is the untouched frame unless swapped -- matching the shader's
     // showOriginal = (uv.x < split) != swap.
-    const char* leftText = swap ? "DLSS NR : ON" : "DLSS NR : OFF";
-    const char* rightText = swap ? "DLSS NR : OFF" : "DLSS NR : ON";
+    const char* leftText = Tr(swap ? "DLSS NR : ON" : "DLSS NR : OFF");
+    const char* rightText = Tr(swap ? "DLSS NR : OFF" : "DLSS NR : ON");
 
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ImFont* font = ImGui::GetFont();
@@ -2245,13 +2247,13 @@ void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
         if (versionStatus.updateAvailable && !versionStatus.latestTag.empty())
         {
             ImGui::Spacing();
-            ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f)), "Update available: %s (current %s)",
+            ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f)), Tr("Update available: %s (current %s)"),
                                versionStatus.latestTag.c_str(), currentVersionText.c_str());
 
             if (!versionStatus.latestUrl.empty())
             {
                 ImGui::SameLine();
-                ImGui::TextLinkOpenURL("Open release page", versionStatus.latestUrl.c_str());
+                ImGui::TextLinkOpenURL(Tr("Open release page"), versionStatus.latestUrl.c_str());
             }
 
             ImGui::Spacing();
@@ -2300,8 +2302,8 @@ void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
 
             std::string joinedUpscalers(joined.begin(), joined.end());
 
-            ImGui::Text("Please select %s as upscaler from game\noptions and load a save game "
-                        "to enable Opti settings.\nUpscalers don't always work in menus.",
+            ImGui::Text(Tr("Please select %s as upscaler from game\noptions and load a save game "
+                           "to enable Opti settings.\nUpscalers don't always work in menus."),
                         joinedUpscalers.c_str());
 
             if (config->UseHQFont.value_or_default())
@@ -2340,7 +2342,7 @@ void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
         else
         {
             ImGui::Spacing();
-            ImGui::Text("Can't find nvngx.dll and libxess.dll and FSR inputs\nUpscaling support will NOT work.");
+            ImGui::TextUnformatted(Tr("Can't find nvngx.dll and libxess.dll and FSR inputs\nUpscaling support will NOT work."));
             ImGui::Spacing();
 
             if (config->UseHQFont.value_or_default())
@@ -2358,7 +2360,7 @@ void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
         else
             ImGui::SetWindowFontScale(menuResScale * 3.0f);
 
-        ImGui::Text("%s is active, but not currently used by the game\nPlease enter the game",
+        ImGui::Text(Tr("%s is active, but not currently used by the game\nPlease enter the game"),
                     currentFeature->Name().c_str());
 
         if (config->UseHQFont.value_or_default())
@@ -2379,7 +2381,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
     if (currentFeature != nullptr && !currentFeature->IsFrozen())
     {
         // UPSCALERS -----------------------------
-        ImGui::SeparatorText("Upscalers");
+        ImGui::SeparatorText(Tr("Upscalers"));
         ShowTooltip("Which copium do you choose?");
 
         GetCurrentBackendInfo(state.api, currentBackend, &currentBackendName);
@@ -2505,7 +2507,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
         if (state.api == DX11 && currentFeature->IsWithDx12())
         {
             ImGui::Spacing();
-            if (auto ch = ScopedCollapsingHeader("Dx11 with Dx12 Settings"); ch.IsHeaderOpen())
+            if (auto ch = ScopedCollapsingHeader(Tr("Dx11 with Dx12 Settings")); ch.IsHeaderOpen())
             {
                 ScopedIndent indent {};
                 ImGui::Spacing();
@@ -2522,7 +2524,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
         if (state.api == Vulkan && currentFeature->IsWithDx12())
         {
             ImGui::Spacing();
-            if (auto ch = ScopedCollapsingHeader("Vulkan with Dx12 Settings"); ch.IsHeaderOpen())
+            if (auto ch = ScopedCollapsingHeader(Tr("Vulkan with Dx12 Settings")); ch.IsHeaderOpen())
             {
                 ScopedIndent indent {};
                 ImGui::Spacing();
@@ -2546,7 +2548,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
         if (currentBackend == Upscaler::XeSS && !usesDlssd)
         {
             ImGui::Spacing();
-            if (auto ch = ScopedCollapsingHeader("XeSS Settings"); ch.IsHeaderOpen())
+            if (auto ch = ScopedCollapsingHeader(Tr("XeSS Settings")); ch.IsHeaderOpen())
             {
                 ScopedIndent indent {};
                 ImGui::Spacing();
@@ -2602,7 +2604,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
         // FFX -----------------
         if (!usesDlssd && (currentBackend == Upscaler::FFX || currentBackend == Upscaler::FFX_on12))
         {
-            ImGui::SeparatorText("FFX Settings");
+            ImGui::SeparatorText(Tr("FFX Settings"));
 
             if (_ffxUpscalerIndex < 0)
                 _ffxUpscalerIndex = config->FfxUpscalerIndex.value_or_default();
@@ -2836,7 +2838,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
 
                     ImGui::Spacing();
 
-                    if (auto ch = ScopedCollapsingHeader("FSR 3 Upscaler Manual Tuning"); ch.IsHeaderOpen())
+                    if (auto ch = ScopedCollapsingHeader(Tr("FSR 3 Upscaler Manual Tuning")); ch.IsHeaderOpen())
                     {
                         ScopedIndent indent {};
                         ImGui::Spacing();
@@ -2908,9 +2910,9 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
         {
 
             if (usesDlssd)
-                ImGui::SeparatorText("DLSSD Settings");
+                ImGui::SeparatorText(Tr("DLSSD Settings"));
             else
-                ImGui::SeparatorText("DLSS Settings");
+                ImGui::SeparatorText(Tr("DLSS Settings"));
 
             auto overridden =
                 usesDlssd ? state.dlssdPresetsOverriddenExternally : state.dlssPresetsOverriddenExternally;
@@ -3005,7 +3007,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
 
             ImGui::Spacing();
 
-            if (auto ch = ScopedCollapsingHeader(usesDlssd ? "Advanced DLSSD Settings" : "Advanced DLSS Settings");
+            if (auto ch = ScopedCollapsingHeader(Tr(usesDlssd ? "Advanced DLSSD Settings" : "Advanced DLSS Settings"));
                 ch.IsHeaderOpen())
             {
                 ScopedIndent indent {};
@@ -3258,7 +3260,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     if (state.activeFgInput != FGInput::ForceXeLL)
     {
-        ImGui::SeparatorText("Frame Generation");
+        ImGui::SeparatorText(Tr("Frame Generation"));
 
         if (ImGui::BeginTable("fgSelection", 2, ImGuiTableFlags_SizingStretchSame))
         {
@@ -3457,7 +3459,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
         {
             ImGui::Spacing();
 
-            if (auto ch = ScopedCollapsingHeader("Advanced FG Settings"); ch.IsHeaderOpen())
+            if (auto ch = ScopedCollapsingHeader(Tr("Advanced FG Settings")); ch.IsHeaderOpen())
             {
                 ScopedIndent indent {};
                 ImGui::Spacing();
@@ -3619,7 +3621,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         if (state.activeFgInput != FGInput::Upscaler ||
             (currentFeature != nullptr && !currentFeature->IsFrozen()) && FfxApiProxy::IsFGReady())
         {
-            ImGui::SeparatorText("Frame Generation (FSR FG)");
+            ImGui::SeparatorText(Tr("Frame Generation (FSR FG)"));
 
             if (_ffxFGIndex < 0)
                 _ffxFGIndex = config->FfxFGIndex.value_or_default();
@@ -3718,7 +3720,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
 
             ImGui::Spacing();
 
-            if (auto ch = ScopedCollapsingHeader("Extended FSR FG Settings"); ch.IsHeaderOpen())
+            if (auto ch = ScopedCollapsingHeader(Tr("Extended FSR FG Settings")); ch.IsHeaderOpen())
             {
                 ScopedIndent indent {};
                 ImGui::Spacing();
@@ -3869,7 +3871,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         state.activeFgInput != FGInput::ForceXeLL && state.currentFGSwapchain != nullptr && XeFGProxy::InitXeFG() &&
         fgOutput)
     {
-        ImGui::SeparatorText("Frame Generation (XeFG)");
+        ImGui::SeparatorText(Tr("Frame Generation (XeFG)"));
 
         bool ignoreChecks = config->FGXeFGIgnoreInitChecks.value_or_default();
 
@@ -4018,7 +4020,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         // ShowHelpMarker("Display only XeFG generated frames");
 
         ImGui::Spacing();
-        if (auto ch = ScopedCollapsingHeader("Extended XeFG Settings"); ch.IsHeaderOpen())
+        if (auto ch = ScopedCollapsingHeader(Tr("Extended XeFG Settings")); ch.IsHeaderOpen())
         {
             ImGui::Spacing();
             if (ImGui::TreeNode("Rectangle Settings"))
@@ -4071,7 +4073,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
     if (state.activeFgOutput == FGOutput::DLSSG && state.activeFgInput != FGInput::NoFG &&
         state.currentFGSwapchain != nullptr && StreamlineProxy::LoadStreamline() && fgOutput)
     {
-        ImGui::SeparatorText("Frame Generation (DLSSG)");
+        ImGui::SeparatorText(Tr("Frame Generation (DLSSG)"));
 
         if (state.activeFgNvngx == FGNvngxReplacement::None && state.isHdrActive)
         {
@@ -4274,7 +4276,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
 
             ImGui::Spacing();
 
-            if (auto ch = ScopedCollapsingHeader("Advanced OptiFG Settings"); ch.IsHeaderOpen())
+            if (auto ch = ScopedCollapsingHeader(Tr("Advanced OptiFG Settings")); ch.IsHeaderOpen())
             {
                 ScopedIndent indent {};
 
@@ -4631,7 +4633,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
 
                 ImGui::Spacing();
 
-                if (auto ch = ScopedCollapsingHeader("Active DispatchFlags"); ch.IsHeaderOpen())
+                if (auto ch = ScopedCollapsingHeader(Tr("Active DispatchFlags")); ch.IsHeaderOpen())
                 {
                     ScopedIndent indent {};
 
@@ -4866,7 +4868,7 @@ void MenuCommon::RenderFsrCommonSettings(RenderMenuContext& ctx)
                 config->FsrUseFsrInputValues = useFsrVales;
 
             ImGui::Spacing();
-            if (auto ch = ScopedCollapsingHeader("FoV & Camera Values"); ch.IsHeaderOpen())
+            if (auto ch = ScopedCollapsingHeader(Tr("FoV & Camera Values")); ch.IsHeaderOpen())
             {
                 ScopedIndent indent {};
                 ImGui::Spacing();
@@ -5038,7 +5040,7 @@ void MenuCommon::RenderFramerateSettings(RenderMenuContext& ctx)
         }
 
         ImGui::Spacing();
-        if (auto ch = ScopedCollapsingHeader("VRR Frame Cap Calculator"); ch.IsHeaderOpen())
+        if (auto ch = ScopedCollapsingHeader(Tr("VRR Frame Cap Calculator")); ch.IsHeaderOpen())
         {
             ScopedIndent indent {};
             ImGui::Spacing();
@@ -5162,7 +5164,7 @@ void MenuCommon::RenderLowLatencySettings(RenderMenuContext& ctx)
     auto config = ctx.config;
 
     // Low Latency ---------------------------
-    ImGui::SeparatorText("Low Latency");
+    ImGui::SeparatorText(Tr("Low Latency"));
 
     static std::vector<MenuOption<LowLatencyInput>> lowLatencyInput = {
         { LowLatencyInput::None, "None (Off)" },    { LowLatencyInput::Auto, "Auto" },
@@ -5264,7 +5266,7 @@ void MenuCommon::RenderActiveImageSettings(RenderMenuContext& ctx)
     if (currentFeature != nullptr && !currentFeature->IsFrozen())
     {
         // SHARPNESS -----------------------------
-        ImGui::SeparatorText("Sharpness");
+        ImGui::SeparatorText(Tr("Sharpness"));
 
         if (bool overrideSharpness = config->OverrideSharpness.value_or_default();
             ImGui::Checkbox("Override", &overrideSharpness))
@@ -5377,7 +5379,7 @@ void MenuCommon::RenderActiveImageSettings(RenderMenuContext& ctx)
                                "More red areas will have more sharpness applied\n"
                                "Green areas will get reduced sharpness");
 
-                if (auto ch = ScopedCollapsingHeader("Advanced DA Parameters"); ch.IsHeaderOpen())
+                if (auto ch = ScopedCollapsingHeader(Tr("Advanced DA Parameters")); ch.IsHeaderOpen())
                 {
                     ScopedIndent indent {};
                     ImGui::Spacing();
@@ -5468,7 +5470,7 @@ void MenuCommon::RenderActiveImageSettings(RenderMenuContext& ctx)
             }
 
             ImGui::Spacing();
-            if (auto ch = ScopedCollapsingHeader("Motion Adaptive Sharpness##2"); ch.IsHeaderOpen())
+            if (auto ch = ScopedCollapsingHeader(Tr("Motion Adaptive Sharpness##2")); ch.IsHeaderOpen())
             {
                 ScopedIndent indent {};
                 ImGui::Spacing();
@@ -5524,7 +5526,7 @@ void MenuCommon::RenderActiveImageSettings(RenderMenuContext& ctx)
         auto minSliderLimit = config->ExtendedLimits.value_or_default() ? 0.1f : 1.0f;
         auto maxSliderLimit = config->ExtendedLimits.value_or_default() ? 6.0f : 3.0f;
 
-        ImGui::SeparatorText("Upscale Ratio Override");
+        ImGui::SeparatorText(Tr("Upscale Ratio Override"));
 
         if (bool upOverride = config->UpscaleRatioOverrideEnabled.value_or_default();
             ImGui::Checkbox("Override all", &upOverride))
@@ -5595,7 +5597,7 @@ void MenuCommon::RenderActiveImageSettings(RenderMenuContext& ctx)
                 ImGui::BeginDisabled(!currentFeature->LowResMV() &&
                                      currentFeature->RenderWidth() != currentFeature->DisplayWidth());
 
-                ImGui::SeparatorText("Output Scaling");
+                ImGui::SeparatorText(Tr("Output Scaling"));
 
                 float defaultRatio = 1.5f;
 
@@ -5708,7 +5710,7 @@ void MenuCommon::RenderActiveImageSettings(RenderMenuContext& ctx)
         }
 
         // INIT -----------------------------
-        ImGui::SeparatorText("Init Flags");
+        ImGui::SeparatorText(Tr("Init Flags"));
         if (ImGui::BeginTable("init", 2, ImGuiTableFlags_SizingStretchProp))
         {
             ImGui::TableNextColumn();
@@ -5762,7 +5764,7 @@ void MenuCommon::RenderActiveImageSettings(RenderMenuContext& ctx)
             ImGui::EndTable();
 
             ImGui::Spacing();
-            if (auto ch = ScopedCollapsingHeader("Advanced Init Flags"); ch.IsHeaderOpen())
+            if (auto ch = ScopedCollapsingHeader(Tr("Advanced Init Flags")); ch.IsHeaderOpen())
             {
                 ScopedIndent indent {};
                 ImGui::Spacing();
@@ -5861,44 +5863,44 @@ void MenuCommon::RenderMagnifierSettings(RenderMenuContext& ctx)
 
     // Magnifier -----------------------------
     ImGui::Spacing();
-    if (auto ch = ScopedCollapsingHeader("Magnifier"); ch.IsHeaderOpen())
+    if (auto ch = ScopedCollapsingHeader(Tr("Magnifier")); ch.IsHeaderOpen())
     {
         ScopedIndent indent {};
         ImGui::Spacing();
 
         bool magnifierEnabled = config->MagnifierEnabled.value_or_default();
-        if (ImGui::Checkbox("Enable Magnifier", &magnifierEnabled))
+        if (ImGui::Checkbox(Tr("Enable Magnifier"), &magnifierEnabled))
             config->MagnifierEnabled = magnifierEnabled;
 
         ImGui::BeginDisabled(!magnifierEnabled);
 
         float magnifierSize = config->MagnifierSize.value_or_default();
-        if (ImGui::SliderFloat("Size", &magnifierSize, 5.0f, 50.0f, "%.1f%% of screen"))
+        if (ImGui::SliderFloat(Tr("Size"), &magnifierSize, 5.0f, 50.0f, Tr("%.1f%% of screen")))
             config->MagnifierSize = magnifierSize;
 
         int zoomFactor = config->MagnifierZoomFactor.value_or_default();
-        if (ImGui::SliderInt("Zoom Factor", &zoomFactor, 2, 20, "%dx"))
+        if (ImGui::SliderInt(Tr("Zoom Factor"), &zoomFactor, 2, 20, "%dx"))
             config->MagnifierZoomFactor = zoomFactor;
 
         float borderSize = config->MagnifierBorderSize.value_or_default();
-        if (ImGui::SliderFloat("Border Size", &borderSize, 0.0f, 2.0f, "%.2f%% of screen"))
+        if (ImGui::SliderFloat(Tr("Border Size"), &borderSize, 0.0f, 2.0f, Tr("%.2f%% of screen")))
             config->MagnifierBorderSize = borderSize;
 
         ImGui::Separator();
-        ImGui::Text("Positioning");
+        ImGui::TextUnformatted(Tr("Positioning"));
 
         bool staticMode = config->MagnifierStaticPosX.has_value() && config->MagnifierStaticPosY.has_value();
         if (staticMode)
         {
             float staticX = config->MagnifierStaticPosX.value();
-            if (ImGui::SliderFloat("Static Pos X", &staticX, 0.0f, 100.0f, "%.1f%%"))
+            if (ImGui::SliderFloat(Tr("Static Pos X"), &staticX, 0.0f, 100.0f, "%.1f%%"))
                 config->MagnifierStaticPosX = staticX;
 
             float staticY = config->MagnifierStaticPosY.value();
-            if (ImGui::SliderFloat("Static Pos Y", &staticY, 0.0f, 100.0f, "%.1f%%"))
+            if (ImGui::SliderFloat(Tr("Static Pos Y"), &staticY, 0.0f, 100.0f, "%.1f%%"))
                 config->MagnifierStaticPosY = staticY;
 
-            if (ImGui::Button("Reset Static Position (Follow Cursor)"))
+            if (ImGui::Button(Tr("Reset Static Position (Follow Cursor)")))
             {
                 config->MagnifierStaticPosX.reset();
                 config->MagnifierStaticPosY.reset();
@@ -5907,20 +5909,20 @@ void MenuCommon::RenderMagnifierSettings(RenderMenuContext& ctx)
         else
         {
             // Button to initialize static position mode
-            if (ImGui::Button("Set Static Position"))
+            if (ImGui::Button(Tr("Set Static Position")))
             {
                 config->MagnifierStaticPosX = 50.0f;
                 config->MagnifierStaticPosY = 50.0f;
             }
             ImGui::SameLine();
-            ImGui::TextDisabled("(Currently following cursor)");
+            ImGui::TextDisabled("%s", Tr("(Currently following cursor)"));
 
             float offsetX = config->MagnifierCursorOffsetX.value_or_default();
-            if (ImGui::SliderFloat("Cursor Offset X", &offsetX, -300.0f, 300.0f, "%.0f px"))
+            if (ImGui::SliderFloat(Tr("Cursor Offset X"), &offsetX, -300.0f, 300.0f, "%.0f px"))
                 config->MagnifierCursorOffsetX = offsetX;
 
             float offsetY = config->MagnifierCursorOffsetY.value_or_default();
-            if (ImGui::SliderFloat("Cursor Offset Y", &offsetY, -300.0f, 300.0f, "%.0f px"))
+            if (ImGui::SliderFloat(Tr("Cursor Offset Y"), &offsetY, -300.0f, 300.0f, "%.0f px"))
                 config->MagnifierCursorOffsetY = offsetY;
         }
 
@@ -5936,7 +5938,7 @@ void MenuCommon::RenderQuirksSettings(RenderMenuContext& ctx)
     if (state.detectedQuirks.size() > 0)
     {
         ImGui::Spacing();
-        if (auto ch = ScopedCollapsingHeader("Active Quirks"); ch.IsHeaderOpen())
+        if (auto ch = ScopedCollapsingHeader(Tr("Active Quirks")); ch.IsHeaderOpen())
         {
             ScopedIndent indent {};
             ImGui::Spacing();
@@ -5957,7 +5959,7 @@ void MenuCommon::RenderAdvancedSettings(RenderMenuContext& ctx)
 
     // ADVANCED SETTINGS -----------------------------
     ImGui::Spacing();
-    if (auto ch = ScopedCollapsingHeader("Advanced Settings"); ch.IsHeaderOpen())
+    if (auto ch = ScopedCollapsingHeader(Tr("Advanced Settings")); ch.IsHeaderOpen())
     {
         ScopedIndent indent {};
         ImGui::Spacing();
@@ -5965,7 +5967,7 @@ void MenuCommon::RenderAdvancedSettings(RenderMenuContext& ctx)
         if (currentFeature != nullptr && !currentFeature->IsFrozen())
         {
             bool extendedLimits = config->ExtendedLimits.value_or_default();
-            if (ImGui::Checkbox("Enable Extended Limits", &extendedLimits))
+            if (ImGui::Checkbox(Tr("Enable Extended Limits"), &extendedLimits))
                 config->ExtendedLimits = extendedLimits;
 
             ShowHelpMarker("Extended sliders limit for quality presets\n\n"
@@ -5974,7 +5976,7 @@ void MenuCommon::RenderAdvancedSettings(RenderMenuContext& ctx)
         }
 
         bool pcShaders = config->UsePrecompiledShaders.value_or_default();
-        if (ImGui::Checkbox("Use Precompiled Shaders", &pcShaders))
+        if (ImGui::Checkbox(Tr("Use Precompiled Shaders"), &pcShaders))
         {
             config->UsePrecompiledShaders = pcShaders;
             state.newBackend = currentBackend;
@@ -5982,18 +5984,18 @@ void MenuCommon::RenderAdvancedSettings(RenderMenuContext& ctx)
         }
 
         // DRS
-        ImGui::SeparatorText("DRS (Dynamic Resolution Scaling)");
+        ImGui::SeparatorText(Tr("DRS (Dynamic Resolution Scaling)"));
         if (ImGui::BeginTable("drs", 2, ImGuiTableFlags_SizingStretchProp))
         {
             ImGui::TableNextColumn();
             if (bool drsMin = config->DrsMinOverrideEnabled.value_or_default();
-                ImGui::Checkbox("Override Minimum", &drsMin))
+                ImGui::Checkbox(Tr("Override Minimum"), &drsMin))
                 config->DrsMinOverrideEnabled = drsMin;
             ShowHelpMarker("Fix for games ignoring official DRS limits");
 
             ImGui::TableNextColumn();
             if (bool drsMax = config->DrsMaxOverrideEnabled.value_or_default();
-                ImGui::Checkbox("Override Maximum", &drsMax))
+                ImGui::Checkbox(Tr("Override Maximum"), &drsMax))
                 config->DrsMaxOverrideEnabled = drsMax;
             ShowHelpMarker("Fix for games ignoring official DRS limits");
 
@@ -6005,7 +6007,7 @@ void MenuCommon::RenderAdvancedSettings(RenderMenuContext& ctx)
         {
             // BARRIERS -----------------------------
             ImGui::Spacing();
-            if (auto ch = ScopedCollapsingHeader("Resource Barriers"); ch.IsHeaderOpen())
+            if (auto ch = ScopedCollapsingHeader(Tr("Resource Barriers")); ch.IsHeaderOpen())
             {
                 ScopedIndent indent {};
                 ImGui::Spacing();
@@ -6022,17 +6024,17 @@ void MenuCommon::RenderAdvancedSettings(RenderMenuContext& ctx)
             if (state.api == DX12)
             {
                 ImGui::Spacing();
-                if (auto ch = ScopedCollapsingHeader("Root Signatures"); ch.IsHeaderOpen())
+                if (auto ch = ScopedCollapsingHeader(Tr("Root Signatures")); ch.IsHeaderOpen())
                 {
                     ScopedIndent indent {};
                     ImGui::Spacing();
 
                     if (bool crs = config->RestoreComputeSignature.value_or_default();
-                        ImGui::Checkbox("Restore Compute Root Signature", &crs))
+                        ImGui::Checkbox(Tr("Restore Compute Root Signature"), &crs))
                         config->RestoreComputeSignature = crs;
 
                     if (bool grs = config->RestoreGraphicSignature.value_or_default();
-                        ImGui::Checkbox("Restore Graphic Root Signature", &grs))
+                        ImGui::Checkbox(Tr("Restore Graphic Root Signature"), &grs))
                         config->RestoreGraphicSignature = grs;
                 }
             }
@@ -6046,7 +6048,7 @@ void MenuCommon::RenderLoggingSettings(RenderMenuContext& ctx)
 
     // LOGGING -----------------------------
     ImGui::Spacing();
-    if (auto ch = ScopedCollapsingHeader("Logging"); ch.IsHeaderOpen())
+    if (auto ch = ScopedCollapsingHeader(Tr("Logging")); ch.IsHeaderOpen())
     {
         ScopedIndent indent {};
         ImGui::Spacing();
@@ -6057,14 +6059,14 @@ void MenuCommon::RenderLoggingSettings(RenderMenuContext& ctx)
         else
             spdlog::default_logger()->set_level(spdlog::level::off);
 
-        if (bool toFile = config->LogToFile.value_or_default(); ImGui::Checkbox("To File", &toFile))
+        if (bool toFile = config->LogToFile.value_or_default(); ImGui::Checkbox(Tr("To File"), &toFile))
         {
             config->LogToFile = toFile;
             PrepareLogger();
         }
 
         ImGui::SameLine(0.0f, 6.0f);
-        if (bool toConsole = config->LogToConsole.value_or_default(); ImGui::Checkbox("To Console", &toConsole))
+        if (bool toConsole = config->LogToConsole.value_or_default(); ImGui::Checkbox(Tr("To Console"), &toConsole))
         {
             config->LogToConsole = toConsole;
             PrepareLogger();
@@ -6073,11 +6075,11 @@ void MenuCommon::RenderLoggingSettings(RenderMenuContext& ctx)
         const char* logLevels[] = { "Trace", "Debug", "Information", "Warning", "Error" };
         const char* selectedLevel = logLevels[config->LogLevel.value_or_default()];
 
-        if (ImGui::BeginCombo("Log Level", selectedLevel))
+        if (ImGui::BeginCombo(Tr("Log Level"), Tr(selectedLevel)))
         {
             for (int n = 0; n < 5; n++)
             {
-                if (ImGui::Selectable(logLevels[n], (config->LogLevel.value_or_default() == n)))
+                if (ImGui::Selectable(Tr(logLevels[n]), (config->LogLevel.value_or_default() == n)))
                 {
                     config->LogLevel = n;
                     spdlog::default_logger()->set_level(
@@ -6096,7 +6098,7 @@ void MenuCommon::RenderThemeSettings(RenderMenuContext& ctx)
 
     // THEME -----------------------------
     ImGui::Spacing();
-    if (auto ch = ScopedCollapsingHeader("Menu Theme and Color"); ch.IsHeaderOpen())
+    if (auto ch = ScopedCollapsingHeader(Tr("Menu Theme and Color")); ch.IsHeaderOpen())
     {
         ScopedIndent indent {};
         ImGui::Spacing();
@@ -6119,15 +6121,15 @@ void MenuCommon::RenderThemeSettings(RenderMenuContext& ctx)
         auto AccentStrong = [&](ImVec4 accent, float alpha = 1.0f)
         { return toneMapColor(ImVec4(accent.x, accent.y, accent.z, alpha)); };
 
-        if (ImGui::Checkbox("Light Theme", &lightTheme))
+        if (ImGui::Checkbox(Tr("Light Theme"), &lightTheme))
         {
             config->LightTheme = lightTheme;
             ApplyThemeStyle();
         }
 
-        ImGui::SeparatorText("Accent Colour");
+        ImGui::SeparatorText(Tr("Accent Colour"));
 
-        ImGui::Text("Presets:");
+        ImGui::TextUnformatted(Tr("Presets:"));
         ImGui::SameLine(0.0f, 6.0f);
 
         ImVec4 colorBlue = { 0.00f, 0.40f, 0.77f, 1.0f };
@@ -6321,7 +6323,7 @@ void MenuCommon::RenderThemeSettings(RenderMenuContext& ctx)
 
         ImGui::Spacing();
 
-        if (ImGui::Button("Reset Accent Color"))
+        if (ImGui::Button(Tr("Reset Accent Color")))
         {
             config->MenuAccentColorR.reset();
             config->MenuAccentColorG.reset();
@@ -6331,9 +6333,9 @@ void MenuCommon::RenderThemeSettings(RenderMenuContext& ctx)
 
         ImGui::Spacing();
 
-        ImGui::SeparatorText("Background Colour");
+        ImGui::SeparatorText(Tr("Background Colour"));
 
-        ImGui::Text("Presets:");
+        ImGui::TextUnformatted(Tr("Presets:"));
         ImGui::SameLine(0.0f, 6.0f);
 
         color = colorBlue;
@@ -6543,29 +6545,29 @@ void MenuCommon::RenderFpsOverlaySettings(RenderMenuContext& ctx)
 
     // FPS OVERLAY -----------------------------
     ImGui::Spacing();
-    if (auto ch = ScopedCollapsingHeader("FPS Overlay"); ch.IsHeaderOpen())
+    if (auto ch = ScopedCollapsingHeader(Tr("FPS Overlay")); ch.IsHeaderOpen())
     {
         ScopedIndent indent {};
         ImGui::Spacing();
 
         bool fpsEnabled = config->ShowFps.value_or_default();
-        if (ImGui::Checkbox("FPS Overlay Enabled", &fpsEnabled))
+        if (ImGui::Checkbox(Tr("FPS Overlay Enabled"), &fpsEnabled))
             config->ShowFps = fpsEnabled;
 
         ImGui::SameLine(0.0f, 6.0f);
 
         bool fpsHorizontal = config->FpsOverlayHorizontal.value_or_default();
-        if (ImGui::Checkbox("Horizontal", &fpsHorizontal))
+        if (ImGui::Checkbox(Tr("Horizontal"), &fpsHorizontal))
             config->FpsOverlayHorizontal = fpsHorizontal;
 
         const char* fpsPosition[] = { "Top Left", "Top Right", "Bottom Left", "Bottom Right" };
         const char* selectedPosition = fpsPosition[config->FpsOverlayPosition.value_or_default()];
 
-        if (ImGui::BeginCombo("Overlay Position", selectedPosition))
+        if (ImGui::BeginCombo(Tr("Overlay Position"), Tr(selectedPosition)))
         {
             for (int n = 0; n < std::size(fpsPosition); n++)
             {
-                if (ImGui::Selectable(fpsPosition[n], (config->FpsOverlayPosition.value_or_default() == n)))
+                if (ImGui::Selectable(Tr(fpsPosition[n]), (config->FpsOverlayPosition.value_or_default() == n)))
                     config->FpsOverlayPosition = (FpsOverlayPos) n;
             }
 
@@ -6576,11 +6578,11 @@ void MenuCommon::RenderFpsOverlaySettings(RenderMenuContext& ctx)
                                   "Full",     "Full + Graph", "Reflex timings" };
         const char* selectedType = fpsType[config->FpsOverlayType.value_or_default()];
 
-        if (ImGui::BeginCombo("Overlay Type", selectedType))
+        if (ImGui::BeginCombo(Tr("Overlay Type"), Tr(selectedType)))
         {
             for (int n = 0; n < std::size(fpsType); n++)
             {
-                if (ImGui::Selectable(fpsType[n], (config->FpsOverlayType.value_or_default() == n)))
+                if (ImGui::Selectable(Tr(fpsType[n]), (config->FpsOverlayType.value_or_default() == n)))
                     config->FpsOverlayType = (FpsOverlay) n;
             }
 
@@ -6588,7 +6590,7 @@ void MenuCommon::RenderFpsOverlaySettings(RenderMenuContext& ctx)
         }
 
         float fpsAlpha = config->FpsOverlayAlpha.value_or_default();
-        if (ImGui::SliderFloat("Background Alpha", &fpsAlpha, 0.0f, 1.0f, "%.2f"))
+        if (ImGui::SliderFloat(Tr("Background Alpha"), &fpsAlpha, 0.0f, 1.0f, "%.2f"))
             config->FpsOverlayAlpha = fpsAlpha;
 
         const char* options[] = { "Same as menu", "0.5", "0.6", "0.7", "0.8", "0.9", "1.0", "1.1", "1.2",
@@ -6597,7 +6599,7 @@ void MenuCommon::RenderFpsOverlaySettings(RenderMenuContext& ctx)
         float values[] = { 0.0f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f, 1.1f, 1.2f,
                            1.3f, 1.4f, 1.5f, 1.6f, 1.7f, 1.8f, 1.9f, 2.0f };
 
-        if (ImGui::SliderInt("Scale", &currentIndex, 0, IM_ARRAYSIZE(options) - 1, options[currentIndex],
+        if (ImGui::SliderInt(Tr("Scale"), &currentIndex, 0, IM_ARRAYSIZE(options) - 1, Tr(options[currentIndex]),
                              ImGuiSliderFlags_ClampOnInput))
         {
             if (currentIndex == 0)
@@ -6607,7 +6609,7 @@ void MenuCommon::RenderFpsOverlaySettings(RenderMenuContext& ctx)
         }
 
         bool useTheme = config->OverlaysUseTheme.value_or_default();
-        if (ImGui::Checkbox("Use Theme Colors", &useTheme))
+        if (ImGui::Checkbox(Tr("Use Theme Colors"), &useTheme))
             config->OverlaysUseTheme = useTheme;
     }
 }
@@ -6620,7 +6622,7 @@ void MenuCommon::RenderUpscalerInputsSettings(RenderMenuContext& ctx)
     // UPSCALER INPUTS -----------------------------
     ImGui::Spacing();
     auto uiStateOpen = currentFeature == nullptr || currentFeature->IsFrozen();
-    if (auto ch = ScopedCollapsingHeader("Upscaler Inputs", uiStateOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0);
+    if (auto ch = ScopedCollapsingHeader(Tr("Upscaler Inputs"), uiStateOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0);
         ch.IsHeaderOpen())
     {
         ScopedIndent indent {};
@@ -6631,10 +6633,10 @@ void MenuCommon::RenderUpscalerInputsSettings(RenderMenuContext& ctx)
             bool fsr2Inputs = config->UseFsr2Inputs.value_or_default();
             bool fsr2Pattern = config->Fsr2Pattern.value_or_default();
 
-            if (ImGui::Checkbox("Use Fsr2 Inputs", &fsr2Inputs))
+            if (ImGui::Checkbox(Tr("Use Fsr2 Inputs"), &fsr2Inputs))
                 config->UseFsr2Inputs = fsr2Inputs;
 
-            if (ImGui::Checkbox("Use Fsr2 Pattern Matching", &fsr2Pattern))
+            if (ImGui::Checkbox(Tr("Use Fsr2 Pattern Matching"), &fsr2Pattern))
                 config->Fsr2Pattern = fsr2Pattern;
             ShowTooltip("This setting will become active on next boot!");
         }
@@ -6644,10 +6646,10 @@ void MenuCommon::RenderUpscalerInputsSettings(RenderMenuContext& ctx)
             bool fsr3Inputs = config->UseFsr3Inputs.value_or_default();
             bool fsr3Pattern = config->Fsr3Pattern.value_or_default();
 
-            if (ImGui::Checkbox("Use Fsr3 Inputs", &fsr3Inputs))
+            if (ImGui::Checkbox(Tr("Use Fsr3 Inputs"), &fsr3Inputs))
                 config->UseFsr3Inputs = fsr3Inputs;
 
-            if (ImGui::Checkbox("Use Fsr3 Pattern Matching", &fsr3Pattern))
+            if (ImGui::Checkbox(Tr("Use Fsr3 Pattern Matching"), &fsr3Pattern))
                 config->Fsr3Pattern = fsr3Pattern;
             ShowTooltip("This setting will become active on next boot!");
         }
@@ -6656,7 +6658,7 @@ void MenuCommon::RenderUpscalerInputsSettings(RenderMenuContext& ctx)
         {
             bool ffxInputs = config->UseFfxInputs.value_or_default();
 
-            if (ImGui::Checkbox("Use Ffx Inputs", &ffxInputs))
+            if (ImGui::Checkbox(Tr("Use Ffx Inputs"), &ffxInputs))
                 config->UseFfxInputs = ffxInputs;
         }
     }
@@ -6674,7 +6676,7 @@ void MenuCommon::RenderApiAndTextureSettings(RenderMenuContext& ctx)
     {
         // V-SYNC -----------------------------
         ImGui::Spacing();
-        if (auto ch = ScopedCollapsingHeader("V-Sync Settings"); ch.IsHeaderOpen())
+        if (auto ch = ScopedCollapsingHeader(Tr("V-Sync Settings")); ch.IsHeaderOpen())
         {
             ScopedIndent indent {};
             ImGui::Spacing();
@@ -6777,7 +6779,7 @@ void MenuCommon::RenderApiAndTextureSettings(RenderMenuContext& ctx)
 
         // MIPMAP BIAS & Anisotropy -----------------------------
         ImGui::Spacing();
-        if (auto ch = ScopedCollapsingHeader("Mipmap Bias", (currentFeature == nullptr || currentFeature->IsFrozen())
+        if (auto ch = ScopedCollapsingHeader(Tr("Mipmap Bias"), (currentFeature == nullptr || currentFeature->IsFrozen())
                                                                 ? ImGuiTreeNodeFlags_DefaultOpen
                                                                 : 0);
             ch.IsHeaderOpen())
@@ -6899,7 +6901,7 @@ void MenuCommon::RenderApiAndTextureSettings(RenderMenuContext& ctx)
 
         ImGui::Spacing();
         if (auto ch = ScopedCollapsingHeader(
-                "Anisotropic Filtering",
+                Tr("Anisotropic Filtering"),
                 (currentFeature == nullptr || currentFeature->IsFrozen()) ? ImGuiTreeNodeFlags_DefaultOpen : 0);
             ch.IsHeaderOpen())
         {
@@ -6964,13 +6966,13 @@ void MenuCommon::RenderKeybindSettings(RenderMenuContext& ctx)
     auto config = ctx.config;
 
     ImGui::Spacing();
-    if (auto ch = ScopedCollapsingHeader("Keybinds"); ch.IsHeaderOpen())
+    if (auto ch = ScopedCollapsingHeader(Tr("Keybinds")); ch.IsHeaderOpen())
     {
         ScopedIndent indent {};
         ImGui::Spacing();
 
-        ImGui::Text("Key combinations are currently NOT supported!");
-        ImGui::Text("Escape to cancel, Backspace to unbind");
+        ImGui::TextUnformatted(Tr("Key combinations are currently NOT supported!"));
+        ImGui::TextUnformatted(Tr("Escape to cancel, Backspace to unbind"));
         ImGui::Spacing();
 
         static auto menu = Keybind("Menu", 10);
@@ -7156,7 +7158,7 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
 
     ImGui::PushItemWidth(100.0f * menuResScale);
 
-    auto autoText = config->MenuScale.has_value() ? "Auto" : StrFmt("Auto (%3.1f)", menuResScale);
+    auto autoText = config->MenuScale.has_value() ? Tr("Auto") : StrFmt(Tr("Auto (%3.1f)"), menuResScale);
     // clang-format off
     const char* uiScales[] = { autoText.c_str(), "0.5", "0.6", "0.7", "0.8", "0.9", "1.0", "1.1",
                                "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "2.0" };
@@ -7164,7 +7166,7 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
 
     const char* selectedScaleName = uiScales[_selectedScale];
 
-    if (ImGui::BeginCombo("Menu Scale", selectedScaleName))
+    if (ImGui::BeginCombo(Tr("Menu Scale"), selectedScaleName))
     {
         for (int n = 0; n < std::size(uiScales); n++)
         {
@@ -7186,12 +7188,12 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
 
     ImGui::SameLine(0.0f, 15.0f);
 
-    if (ImGui::Button("Save Settings"))
+    if (ImGui::Button(Tr("Save Settings")))
         config->SaveIni();
 
     ImGui::SameLine(0.0f, 6.0f);
 
-    if (ImGui::Button("Close"))
+    if (ImGui::Button(Tr("Close")))
     {
         _isVisible = false;
         hasGamepad = (io.BackendFlags | ImGuiBackendFlags_HasGamepad) > 0;
@@ -7210,7 +7212,7 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
 
     ImGui::SameLine();
 
-    auto textSize = ImGui::CalcTextSize("Open Wiki (?)");
+    auto textSize = ImGui::CalcTextSize(Tr("Open Wiki (?)"));
     auto& style = ImGui::GetStyle();
     textSize.x += style.FramePadding.x * 2.0f;
     textSize.x += style.ItemSpacing.x;
@@ -7219,7 +7221,7 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - textSize.x);
 
     // Make button text underline
-    if (ImGui::Button("Open Wiki"))
+    if (ImGui::Button(Tr("Open Wiki")))
     {
         auto pIO = &ImGui::GetPlatformIO();
         auto ctx = ImGui::GetCurrentContext();
@@ -7795,6 +7797,9 @@ void MenuCommon::Init(HWND InHwnd, bool isUWP)
         }
     }
 
+    Localization::Init();
+    const bool chinese = Localization::IsChinese();
+
     if (io.Fonts->Fonts.empty() && Config::Instance()->UseHQFont.value_or_default())
     {
         ImFontAtlas* atlas = io.Fonts;
@@ -7802,6 +7807,8 @@ void MenuCommon::Init(HWND InHwnd, bool isUWP)
 
         // This automatically becomes the next default font
         ImFontConfig fontConfig;
+        if (chinese)
+            fontConfig.Flags |= ImFontFlags_NoLoadError;
 
         if (Config::Instance()->FontSize.has_value())
             fontSize = Config::Instance()->FontSize.value();
@@ -7817,6 +7824,46 @@ void MenuCommon::Init(HWND InHwnd, bool isUWP)
             io.FontDefault = atlas->AddFontFromMemoryCompressedBase85TTF(hack_compressed_compressed_data_base85,
                                                                          fontSize, &fontConfig);
         }
+    }
+
+    if (chinese)
+    {
+        ImFontAtlas* atlas = io.Fonts;
+        // Preserve the selected Latin font (including the normal low-quality font). Merge
+        // Chinese into this context's atlas, never cache fonts across Shutdown/CreateContext.
+        if (atlas->Fonts.empty())
+        {
+            if (Config::Instance()->UseHQFont.value_or_default())
+                io.FontDefault = atlas->AddFontFromMemoryCompressedBase85TTF(hack_compressed_compressed_data_base85,
+                                                                            fontSize);
+            else
+                io.FontDefault = atlas->AddFontDefault();
+        }
+
+        wchar_t windowsDirectory[MAX_PATH + 1] = {};
+        const UINT length = GetWindowsDirectoryW(windowsDirectory, static_cast<UINT>(std::size(windowsDirectory)));
+        bool chineseFontLoaded = false;
+        if (length != 0 && length < std::size(windowsDirectory))
+        {
+            const auto fontPath = std::filesystem::path(windowsDirectory) / L"Fonts" / L"msyh.ttc";
+            ImFontConfig chineseConfig;
+            chineseConfig.MergeMode = true;
+            chineseConfig.Flags |= ImFontFlags_NoLoadError;
+            static const ImWchar s_chineseRanges[] = {
+                0x0020, 0x00FF, // Basic Latin + Latin Supplement
+                0x2000, 0x206F, // General Punctuation
+                0x3000, 0x30FF, // CJK Symbols and Punctuation, Hiragana, Katakana
+                0x31F0, 0x31FF, // Katakana Phonetic Extensions
+                0xFF00, 0xFFEF, // Halfwidth and Fullwidth Forms
+                0x4E00, 0x9FAF, // CJK Unified Ideographs
+                0,
+            };
+            const float size = Config::Instance()->UseHQFont.value_or_default() ? fontSize : 13.0f;
+            chineseFontLoaded = atlas->AddFontFromFileTTF(wstring_to_string(fontPath.wstring()).c_str(), size,
+                                                        &chineseConfig, s_chineseRanges) != nullptr;
+        }
+        if (!chineseFontLoaded)
+            LOG_WARN("Chinese UI font msyh.ttc was not available; keeping the configured menu font");
     }
 
     if (!Config::Instance()->OverlayMenu.value_or_default())

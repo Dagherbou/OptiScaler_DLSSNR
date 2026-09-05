@@ -5,6 +5,8 @@
 
 #include <optional>
 #include <filesystem>
+#include <map>
+#include <mutex>
 
 enum HasDefaultValue
 {
@@ -143,6 +145,42 @@ template <class T, HasDefaultValue defaultState = WithDefault> class CustomOptio
         else
             return other;
     }
+};
+
+// An unset field inherits the corresponding master setting; explicit defaults stay explicit.
+struct DlssNrPassSettings
+{
+    CustomOptional<float, NoDefault> Intensity;
+    CustomOptional<float, NoDefault> LocalStructure;
+    CustomOptional<float, NoDefault> LocalTone;
+    CustomOptional<float, NoDefault> SkinStructure;
+    CustomOptional<uint32_t, NoDefault> Style;
+    CustomOptional<uint32_t, NoDefault> Preset;
+    CustomOptional<bool, NoDefault> AutoMask;
+
+    bool operator==(const DlssNrPassSettings& other) const
+    {
+        const auto equal = [](const auto& left, const auto& right)
+        {
+            return left.has_value() == right.has_value() && (!left.has_value() || *left == *right);
+        };
+        return equal(Intensity, other.Intensity) && equal(LocalStructure, other.LocalStructure) &&
+               equal(LocalTone, other.LocalTone) && equal(SkinStructure, other.SkinStructure) &&
+               equal(Style, other.Style) && equal(Preset, other.Preset) && equal(AutoMask, other.AutoMask);
+    }
+};
+
+struct DlssNrResolvedPassSettings
+{
+    float Intensity;
+    float LocalStructure;
+    float LocalTone;
+    float SkinStructure;
+    uint32_t Style;
+    uint32_t Preset;
+    bool AutoMask;
+
+    bool operator==(const DlssNrResolvedPassSettings&) const = default;
 };
 
 constexpr inline int UnboundKey = -1;
@@ -475,6 +513,14 @@ class Config
     // again -- so 8 costs eight times, near enough. There is no shortcut and no amortisation: the
     // passes are sequential and each one needs the last one's output.
     CustomOptional<uint32_t> DlssNrPasses { 1 };
+    CustomOptional<bool> DlssNrIndividualPassSettings { false };
+    // Zero-based indices, including inactive layers: reducing Passes never discards overrides.
+    std::map<uint32_t, DlssNrPassSettings> DlssNrPassOverrides;
+    // Direct map access must hold this mutex. Static storage preserves Config's copyability.
+    inline static std::mutex DlssNrPassOverridesMutex;
+
+    // Resolves inheritance without inserting into the map or allocating.
+    DlssNrResolvedPassSettings GetDlssNrPassSettings(uint32_t passIndex) const;
 
     // Which depth convention the model is told the guide uses.
     //

@@ -9,6 +9,10 @@
 #include <misc/IdentifyGpu.h>
 
 #include <SimpleIni.h>
+#include <charconv>
+#include <cmath>
+#include <limits>
+#include <string_view>
 
 static CSimpleIniA ini;
 
@@ -30,20 +34,85 @@ static inline bool isInteger(const std::string& str, int& value)
 
 static inline bool isUInt(const std::string& str, uint32_t& value)
 {
-    std::istringstream iss(str);
-    return (iss >> value) && iss.eof();
+    std::string_view number(str);
+    if (number.starts_with('+'))
+        number.remove_prefix(1);
+
+    int base = 10;
+    if (number.starts_with("0x") || number.starts_with("0X"))
+    {
+        number.remove_prefix(2);
+        base = 16;
+    }
+
+    const auto [end, error] = std::from_chars(number.data(), number.data() + number.size(), value, base);
+    return error == std::errc() && end == number.data() + number.size();
 }
 
 static inline bool isFloat(const std::string& str, float& value)
 {
-    std::istringstream iss(str);
-    return (iss >> value) && iss.eof();
+    std::string_view number(str);
+    if (number.starts_with('+'))
+    {
+        number.remove_prefix(1);
+        if (number.starts_with('-'))
+            return false;
+    }
+
+    const auto [end, error] = std::from_chars(number.data(), number.data() + number.size(), value);
+    return error == std::errc() && end == number.data() + number.size() && std::isfinite(value);
+}
+
+static std::optional<uint32_t> DlssNrPassIndex(const char* section)
+{
+    constexpr std::string_view prefix = "DlssNr.Pass";
+    const std::string_view name(section);
+    if (name.size() <= prefix.size() || _strnicmp(name.data(), prefix.data(), prefix.size()) != 0)
+        return std::nullopt;
+
+    // Decimal, one-based section numbers; widen before subtracting so every map key round-trips.
+    uint64_t number = 0;
+    const auto [end, error] =
+        std::from_chars(name.data() + prefix.size(), name.data() + name.size(), number);
+    if (error != std::errc() || end != name.data() + name.size() || number == 0 ||
+        number > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1)
+        return std::nullopt;
+
+    return static_cast<uint32_t>(number - 1);
 }
 
 Config::Config()
 {
     absoluteFileName = Util::DllPath().parent_path() / fileName;
     Reload(absoluteFileName);
+}
+
+DlssNrResolvedPassSettings Config::GetDlssNrPassSettings(uint32_t passIndex) const
+{
+    DlssNrResolvedPassSettings settings {
+        DlssNrIntensity.value_or_default(),      DlssNrLocalStructure.value_or_default(),
+        DlssNrLocalTone.value_or_default(),      DlssNrSkinStructure.value_or_default(),
+        DlssNrStyle.value_or_default(),          DlssNrPreset.value_or_default(),
+        DlssNrAutoMask.value_or_default()
+    };
+
+    if (!DlssNrIndividualPassSettings.value_or_default())
+        return settings;
+
+    const std::lock_guard lock(DlssNrPassOverridesMutex);
+    const auto pass = DlssNrPassOverrides.find(passIndex);
+    if (pass == DlssNrPassOverrides.end())
+        return settings;
+
+    const auto& overrides = pass->second;
+    settings.Intensity = overrides.Intensity.value_or(settings.Intensity);
+    settings.LocalStructure = overrides.LocalStructure.value_or(settings.LocalStructure);
+    settings.LocalTone = overrides.LocalTone.value_or(settings.LocalTone);
+    settings.SkinStructure = overrides.SkinStructure.value_or(settings.SkinStructure);
+    settings.Style = overrides.Style.value_or(settings.Style);
+    settings.Preset = overrides.Preset.value_or(settings.Preset);
+    settings.AutoMask = overrides.AutoMask.value_or(settings.AutoMask);
+    return settings;
 }
 
 bool Config::Reload(std::filesystem::path iniPath)
@@ -350,7 +419,9 @@ bool Config::Reload(std::filesystem::path iniPath)
                 DlssNrWhitePointSource = DlssNrWhitePointFromExposure.value() ? 1u : 0u;
             DlssNrScanMeter.set_from_config(readBool("DlssNr", "ScanMeter"));
             DlssNrScanTrim.set_from_config(readFloat("DlssNr", "ScanTrim"));
-            DlssNrPasses.set_from_config(readUInt("DlssNr", "Passes"));
+            DlssNrPasses.set_from_config(
+                readUInt("DlssNr", "Passes").transform([](uint32_t passes) { return std::max(1u, passes); }));
+            DlssNrIndividualPassSettings.set_from_config(readBool("DlssNr", "IndividualPassSettings"));
             DlssNrScanAnchorValue.set_from_config(readFloat("DlssNr", "ScanAnchorValue"));
             DlssNrScanAnchorWhitePoint.set_from_config(readFloat("DlssNr", "ScanAnchorWhitePoint"));
             DlssNrScanAnchors.set_from_config(readString("DlssNr", "ScanAnchors"));
@@ -365,6 +436,39 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrLocalTone.set_from_config(readFloat("DlssNr", "LocalTone"));
             DlssNrSkinStructure.set_from_config(readFloat("DlssNr", "SkinStructure"));
             DlssNrAutoMask.set_from_config(readBool("DlssNr", "AutoMask"));
+
+            // Enumerate the file, not 1..Passes: sparse, inactive and very high layer indices are valid.
+            CSimpleIniA::TNamesDepend passSections;
+            ini.GetAllSections(passSections);
+            passSections.sort(CSimpleIniA::Entry::LoadOrder());
+            for (const auto& section : passSections)
+            {
+                const auto passIndex = DlssNrPassIndex(section.pItem);
+                if (!passIndex)
+                    continue;
+
+                const auto intensity = readFloat(section.pItem, "Intensity");
+                const auto localStructure = readFloat(section.pItem, "LocalStructure");
+                const auto localTone = readFloat(section.pItem, "LocalTone");
+                const auto skinStructure = readFloat(section.pItem, "SkinStructure");
+                const auto style = readUInt(section.pItem, "Style");
+                const auto preset = readUInt(section.pItem, "Preset");
+                const auto autoMask = readBool(section.pItem, "AutoMask");
+                if (!intensity && !localStructure && !localTone && !skinStructure && !style && !preset && !autoMask)
+                    continue;
+
+                // Preserve the same first-config-wins precedence as the master settings on Reload.
+                const std::lock_guard lock(DlssNrPassOverridesMutex);
+                auto& overrides = DlssNrPassOverrides[*passIndex];
+                overrides.Intensity.set_from_config(intensity);
+                overrides.LocalStructure.set_from_config(localStructure);
+                overrides.LocalTone.set_from_config(localTone);
+                overrides.SkinStructure.set_from_config(skinStructure);
+                overrides.Style.set_from_config(style);
+                overrides.Preset.set_from_config(preset);
+                overrides.AutoMask.set_from_config(autoMask);
+            }
+
             DlssNrReversibleMode.set_from_config(readUInt("DlssNr", "ReversibleMode"));
             DlssNrApplyModel.set_from_config(readBool("DlssNr", "ApplyModel"));
             DlssNrHoldFrame.set_from_config(readBool("DlssNr", "HoldFrame"));
@@ -906,10 +1010,11 @@ template <typename T> std::string GetIntValue(std::optional<T> value, bool getHe
 
 std::string GetFloatValue(std::optional<float> value)
 {
-    if (!value.has_value())
+    if (!value.has_value() || !std::isfinite(value.value()))
         return "auto";
 
-    return std::to_string(value.value());
+    // Nine significant digits preserve every finite float, including small nonzero overrides.
+    return std::format("{:.{}g}", value.value(), std::numeric_limits<float>::max_digits10);
 }
 
 bool Config::SaveIni()
@@ -1240,7 +1345,11 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "ScanAnchors", Instance()->DlssNrScanAnchors.value_for_config_or("").c_str());
     ini.SetValue("DlssNr", "ScanInverted", GetBoolValue(Instance()->DlssNrScanInverted.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ScanMeter", GetBoolValue(Instance()->DlssNrScanMeter.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "Passes", GetIntValue(Instance()->DlssNrPasses.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "Passes",
+                 GetIntValue(Instance()->DlssNrPasses.value_for_config().transform(
+                                 [](uint32_t passes) { return std::max(1u, passes); })).c_str());
+    ini.SetValue("DlssNr", "IndividualPassSettings",
+                 Instance()->DlssNrIndividualPassSettings.value_for_config_or(false) ? "true" : "false");
     ini.SetValue("DlssNr", "UseProxy", GetBoolValue(Instance()->DlssNrUseProxy.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ProxyProbe", GetBoolValue(Instance()->DlssNrProxyProbe.value_for_config()).c_str());
     // ScanExposure is a developer override with no menu control; persist it so a set ini keeps it.
@@ -1256,6 +1365,37 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "SkinStructure",
                  GetFloatValue(Instance()->DlssNrSkinStructure.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AutoMask", GetBoolValue(Instance()->DlssNrAutoMask.value_for_config()).c_str());
+    {
+        const std::lock_guard lock(DlssNrPassOverridesMutex);
+        // Rebuild this owned namespace so clearing a field/layer cannot resurrect stale keys,
+        // including alternate spellings such as Pass01. Inherited values are never materialised.
+        CSimpleIniA::TNamesDepend passSections;
+        ini.GetAllSections(passSections);
+        for (const auto& section : passSections)
+        {
+            if (DlssNrPassIndex(section.pItem))
+                ini.Delete(section.pItem, nullptr);
+        }
+
+        for (auto& [passIndex, overrides] : Instance()->DlssNrPassOverrides)
+        {
+            const auto section = std::format("DlssNr.Pass{}", static_cast<uint64_t>(passIndex) + 1);
+            if (auto value = overrides.Intensity.value_for_config(); value && std::isfinite(*value))
+                ini.SetValue(section.c_str(), "Intensity", GetFloatValue(value).c_str());
+            if (auto value = overrides.LocalStructure.value_for_config(); value && std::isfinite(*value))
+                ini.SetValue(section.c_str(), "LocalStructure", GetFloatValue(value).c_str());
+            if (auto value = overrides.LocalTone.value_for_config(); value && std::isfinite(*value))
+                ini.SetValue(section.c_str(), "LocalTone", GetFloatValue(value).c_str());
+            if (auto value = overrides.SkinStructure.value_for_config(); value && std::isfinite(*value))
+                ini.SetValue(section.c_str(), "SkinStructure", GetFloatValue(value).c_str());
+            if (auto value = overrides.Style.value_for_config())
+                ini.SetValue(section.c_str(), "Style", GetIntValue(value).c_str());
+            if (auto value = overrides.Preset.value_for_config())
+                ini.SetValue(section.c_str(), "Preset", GetIntValue(value).c_str());
+            if (auto value = overrides.AutoMask.value_for_config())
+                ini.SetValue(section.c_str(), "AutoMask", GetBoolValue(value).c_str());
+        }
+    }
     ini.SetValue("DlssNr", "ReversibleMode", GetIntValue(Instance()->DlssNrReversibleMode.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ApplyModel", GetBoolValue(Instance()->DlssNrApplyModel.value_for_config()).c_str());
     ini.SetValue("DlssNr", "HoldFrame", GetBoolValue(Instance()->DlssNrHoldFrame.value_for_config()).c_str());
@@ -1805,29 +1945,12 @@ std::optional<std::wstring> Config::readWString(std::string section, std::string
 
 std::optional<float> Config::readFloat(std::string section, std::string key)
 {
-    auto value = readString(section, key);
+    const auto value = readString(section, key);
+    float result;
+    if (value && isFloat(*value, result))
+        return result;
 
-    try
-    {
-        float result;
-
-        if (value.has_value() && isFloat(value.value(), result))
-            return result;
-
-        return std::nullopt;
-    }
-    catch (const std::bad_optional_access&) // missing or auto value
-    {
-        return std::nullopt;
-    }
-    catch (const std::invalid_argument&) // invalid float string for std::stof
-    {
-        return std::nullopt;
-    }
-    catch (const std::out_of_range&) // out of range for 32 bit float
-    {
-        return std::nullopt;
-    }
+    return std::nullopt;
 }
 
 std::optional<int> Config::readInt(std::string section, std::string key)
@@ -1874,44 +1997,12 @@ std::optional<int> Config::readInt(std::string section, std::string key)
 
 std::optional<uint32_t> Config::readUInt(std::string section, std::string key)
 {
-    auto value = readString(section, key);
-    if (!value.has_value())
-        return std::nullopt;
+    const auto value = readString(section, key);
+    uint32_t result;
+    if (value && isUInt(*value, result))
+        return result;
 
-    const auto& s = *value;
-    try
-    {
-        size_t idx = 0;
-        int result;
-
-        // detect hex prefix
-        if (s.size() > 2 && (s[0] == '0') && (s[1] == 'x' || s[1] == 'X'))
-        {
-            result = std::stoi(s, &idx, 16);
-        }
-        else
-        {
-            result = std::stoi(s, &idx, 10);
-        }
-
-        // ensure we consumed the whole string
-        if (idx == s.size())
-            return result;
-        else
-            return std::nullopt;
-    }
-    catch (const std::bad_optional_access&) // missing or auto value
-    {
-        return std::nullopt;
-    }
-    catch (const std::invalid_argument&) // invalid float string for std::stof
-    {
-        return std::nullopt;
-    }
-    catch (const std::out_of_range&) // out// out of range for 32 bit float
-    {
-        return std::nullopt;
-    }
+    return std::nullopt;
 }
 
 std::optional<bool> Config::readBool(std::string section, std::string key)
